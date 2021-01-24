@@ -1,0 +1,23 @@
+[package]
+name = "var-to-vcf"
+version = "0.1.0"
+authors = ["Clint Valentine <valentine.clint@gmail.com>"]
+edition = "2018"
+license = "MIT"
+repository = "https://github.com/clintval/var-to-vcf"
+description = "Convert variants in VarDict/VarDictJava custom format into VCF format"
+documentation = "https://github.com/clintval/var-to-vcf/README.md"
+readme = "README.md"
+categories = ["science"]
+keywords = ["variant", "calling", "VCF", "VarDict", "VarDictJava"]
+
+[[bin]]
+name = "var-to-vcf"
+path = "src/main.rs"
+
+[dependencies]
+rust-htslib = "0.35.2"
+
+[dev-dependencies]
+rstest = "0.6.4"
+tempfile = "3.1.0"
