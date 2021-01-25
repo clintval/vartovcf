@@ -64,7 +64,7 @@ impl AbstractInterval for TumorOnlyVariant {
     }
 }
 
-/// A record of output from VarDict/VarDictJava run in tumor-only mode.
+/// A record of output from VarDict/VarDictJava run in amplicon-aware mode.
 #[derive(Debug, Deserialize)]
 struct AmpliconVariant {
     sample: String,

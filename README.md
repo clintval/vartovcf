@@ -1,15 +1,13 @@
 # vartovcf
 
-**Currently under Development**
-
-Convert variants in VarDict/VarDictJava custom format into VCF format.
+Convert variants from VarDict/VarDictJava into VCF format, fast.
 
 ![The Pacific Northwest - Fish Lake](docs/cover.jpg)
 
 ```bash
 ❯ VarDictJava/build/install/VarDict/bin/VarDict \
-    -G /path/to/hg19.fa \
-    -N sample1 \
+    -G /references/hg38.fa \
+    -N my-sample \
     -b input.bam \
     -c1 -S2 -E3 -g4 -f0.05 \
     --fisher \
@@ -21,5 +19,7 @@ Convert variants in VarDict/VarDictJava custom format into VCF format.
 Features:
 
 - Unlike the Perl script bundled with VarDict, this tool streams record-by-record
-- Variants are output unsorted and a subsequent call to picard SortVcf is recommended
-- Compatibility with the VCF specification v4.2
+- Output VCF records are unsorted and a call to `picard SortVcf` is advised
+- The output is compatible with the VCF v4.2 specification
+
+**Currently under Development**

@@ -1,4 +1,4 @@
-//! Convert variants in VarDict/VarDictJava custom format into VCF format.
+//! Convert variants from VarDict/VarDictJava into VCF format, fast.
 extern crate vartovcflib;
 
 use std::path::PathBuf;
