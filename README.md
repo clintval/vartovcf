@@ -1,5 +1,6 @@
 # vartovcf
 
+**Currently under Development**
 
 Convert variants in VarDict/VarDictJava custom format into VCF format.
 
@@ -20,5 +21,5 @@ Convert variants in VarDict/VarDictJava custom format into VCF format.
 Features:
 
 - Unlike the Perl script bundled with VarDict, this tool streams record-by-record
-- Variants are output unsorted and subsequent call to picard SortVcf is recommended
+- Variants are output unsorted and a subsequent call to picard SortVcf is recommended
 - Compatibility with the VCF specification v4.2
