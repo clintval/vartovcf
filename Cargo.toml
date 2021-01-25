@@ -1,23 +1,29 @@
 [package]
-name = "var-to-vcf"
+name = "vartovcf"
 version = "0.1.0"
 authors = ["Clint Valentine <valentine.clint@gmail.com>"]
 edition = "2018"
 license = "MIT"
-repository = "https://github.com/clintval/var-to-vcf"
-description = "Convert variants in VarDict/VarDictJava custom format into VCF format"
-documentation = "https://github.com/clintval/var-to-vcf/README.md"
+repository = "https://github.com/clintval/vartovcf"
+description = "Convert variants in VarDict/VarDictJava custom format into VCF format."
+documentation = "https://github.com/clintval/vartovcf/README.md"
 readme = "README.md"
 categories = ["science"]
-keywords = ["variant", "calling", "VCF", "VarDict", "VarDictJava"]
+keywords = ["bioinformatics", "variant", "calling", "VCF", "VarDict", "VarDictJava"]
 
 [[bin]]
-name = "var-to-vcf"
+name = "vartovcf"
 path = "src/main.rs"
 
 [dependencies]
-rust-htslib = "0.35.2"
+csv = "1.1.5"
+bio-types = "0.10.0"
+env_logger = "0.8.2"
+log = "0.4.13"
+rust-htslib = "0.36"
+serde = { version = "1.0", features = ["derive"] }
+structopt = "0.3.21"
 
 [dev-dependencies]
-rstest = "0.6.4"
-tempfile = "3.1.0"
+env_logger = "0.8.2"
+
