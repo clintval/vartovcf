@@ -19,11 +19,11 @@ path = "src/lib/mod.rs"
 name = "vartovcf"
 path = "src/main.rs"
 
-
 [dependencies]
 bio-types = "0.10"
 csv = "1.1"
 env_logger = "0.8"
+linear-map = "1.2"
 log = "0.4"
 rust-htslib = "0.36"
 serde = { version = "1.0", features = ["derive"] }

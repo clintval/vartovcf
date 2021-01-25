@@ -19,6 +19,7 @@ use crate::records::TumorOnlyVariant;
 /// # Returns
 ///
 /// Returns the result of the execution with an integer exit code for success (0).
+#[must_use]
 pub fn run<P>(input: P, output: P) -> Result<i32, Box<dyn error::Error>>
     where P: AsRef<Path> + Debug {
     let input: PathBuf = fs::canonicalize(input)?;
@@ -29,11 +30,13 @@ pub fn run<P>(input: P, output: P) -> Result<i32, Box<dyn error::Error>>
         .has_headers(false)
         .from_path(input)?;
 
+    // TODO: Prepare writers over the Path, but understand they may be standard streams
+
     let mut count: isize = 0;
     for result in reader.deserialize() {
         let record: TumorOnlyVariant = result?;
-        println!("{:?}", record);
-        count += 1;
+        println!("{:?}", record); // TODO: Write to buffered writer.
+        count += 1;               // TODO: Implement a ProgressLogger like in fgbio/htsjdk?
     }
     info!("Processed {} variant records", count);
     Ok(0)

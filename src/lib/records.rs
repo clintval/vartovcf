@@ -3,7 +3,45 @@ use std::ops::Range;
 use std::str::FromStr;
 
 use bio_types::genome::{AbstractInterval, Position};
+use linear_map::LinearMap;
+use rust_htslib::bcf::{Header, HeaderRecord};
+use rust_htslib::bcf::header::HeaderRecord::Generic;
 use serde::{de::Error, Deserialize};
+
+const CARGO_PKG_NAME: &'static str = env!("CARGO_PKG_NAME");
+const CARGO_PKG_VERSION: &'static str = env!("CARGO_PKG_VERSION");
+
+/// Build a line of key-value pair data for the VCF header record.
+fn hdr_rec_format_key_values(values: &LinearMap<String, String>) -> String {
+    let mut pairs = String::new();
+    for (key, value) in values.iter() { pairs.push_str(&format!(",{}={}", key, value)) };
+    pairs
+}
+
+/// Render a header record into a string for writing to a VCF.
+fn hdr_rec_as_str(rec: &HeaderRecord) -> String {
+    match rec { // TODO: Is this really how you build the HeaderRecords?
+        HeaderRecord::Contig     {key, values} => format!("##FILTER=<ID={},{}>", key, hdr_rec_format_key_values(values)),
+        HeaderRecord::Filter     {key, values} => format!("##FILTER=<ID={},{}>", key, hdr_rec_format_key_values(values)),
+        HeaderRecord::Format     {key, values} => format!("##FILTER=<ID={},{}>", key, hdr_rec_format_key_values(values)),
+        HeaderRecord::Generic    {key, value}  => format!("##{}={}", key, value),
+        HeaderRecord::Info       {key, values} => format!("##FILTER=<ID={},{}>", key, hdr_rec_format_key_values(values)),
+        HeaderRecord::Structured {key, values} => format!("##FILTER=<ID={},{}>", key, hdr_rec_format_key_values(values)),
+    }
+}
+
+/// Create a VCF header for VarDict/VarDictJava in tumor-only mode.
+pub fn tumor_only_header(sample: String) -> Header {
+    let source = [CARGO_PKG_NAME, CARGO_PKG_VERSION].join("-");
+    let mut header = Header::default();
+    header.push_sample(&sample.into_bytes());
+    let records: Vec<HeaderRecord> = vec![
+        Generic { key: String::from("fileFormat"), value: String::from("VCFv4.2") },
+        Generic { key: String::from("source"), value: source }
+    ];
+    for record in &records { header.push_record(hdr_rec_as_str(&record).as_bytes()); }
+    header
+}
 
 /// A record of output from VarDict/VarDictJava run in tumor-only mode.
 #[derive(Debug, Deserialize)]
