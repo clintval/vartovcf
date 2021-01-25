@@ -19,7 +19,6 @@ use crate::records::TumorOnlyVariant;
 /// # Returns
 ///
 /// Returns the result of the execution with an integer exit code for success (0).
-#[must_use]
 pub fn run<P>(input: P, output: P) -> Result<i32, Box<dyn error::Error>>
     where P: AsRef<Path> + Debug {
     let input: PathBuf = fs::canonicalize(input)?;

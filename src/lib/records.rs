@@ -8,8 +8,8 @@ use rust_htslib::bcf::{Header, HeaderRecord};
 use rust_htslib::bcf::header::HeaderRecord::Generic;
 use serde::{de::Error, Deserialize};
 
-const CARGO_PKG_NAME: &'static str = env!("CARGO_PKG_NAME");
-const CARGO_PKG_VERSION: &'static str = env!("CARGO_PKG_VERSION");
+const CARGO_PKG_NAME: &str = env!("CARGO_PKG_NAME");
+const CARGO_PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Build a line of key-value pair data for the VCF header record.
 fn hdr_rec_format_key_values(values: &LinearMap<String, String>) -> String {
@@ -98,7 +98,7 @@ impl AbstractInterval for TumorOnlyVariant {
         &self.contig
     }
     fn range(&self) -> Range<Position> {
-        Range { start: self.start.clone(), end: self.end.clone() }
+        Range { start: self.start, end: self.end }
     }
 }
 
@@ -155,7 +155,7 @@ impl AbstractInterval for AmpliconVariant {
         &self.contig
     }
     fn range(&self) -> Range<Position> {
-        Range { start: self.start.clone(), end: self.end.clone() }
+        Range { start: self.start, end: self.end }
     }
 }
 
