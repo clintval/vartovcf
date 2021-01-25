@@ -1,6 +1,9 @@
 # vartovcf
 
+
 Convert variants in VarDict/VarDictJava custom format into VCF format.
+
+![The Pacific Northwest - Fish Lake](docs/cover.jpg)
 
 ```bash
 ❯ VarDictJava/build/install/VarDict/bin/VarDict \
