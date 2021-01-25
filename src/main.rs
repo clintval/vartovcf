@@ -27,8 +27,8 @@ struct Opt {
 fn main() {
     let env    = Env::default().default_filter_or(io::DEFAULT_LOG_LEVEL);
     let opt    = Opt::from_args();
-    let input  = opt.input.unwrap_or(io::stdin());
-    let output = opt.output.unwrap_or(io::stdout());
+    let input  = opt.input.unwrap_or_else(io::stdin);
+    let output = opt.output.unwrap_or_else(io::stdout);
 
     env_logger::Builder::from_env(env).init();
     match vartovcf::run(&input, &output) {
