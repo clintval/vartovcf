@@ -1,10 +1,14 @@
+//! Convert variants in VarDict/VarDictJava custom format into VCF format.
+extern crate vartovcflib;
+
 use std::path::PathBuf;
 use std::process;
 
 use env_logger::Env;
 use structopt::StructOpt;
 
-use vartovcf::{self, io};
+use vartovcflib::common::io;
+use vartovcflib::vartovcf;
 
 #[derive(Clone, StructOpt, Debug)]
 #[structopt(rename_all = "kebab-case", about)]
