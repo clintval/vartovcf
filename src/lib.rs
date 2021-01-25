@@ -1,15 +1,23 @@
-#[macro_use]
-extern crate log;
-
 use std::error;
+use std::fmt::Debug;
 use std::fs;
 use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use bio_types::genome::{AbstractInterval, Position};
 use csv::ReaderBuilder;
+use log::*;
 use serde::{de::Error, Deserialize};
+
+/// Helper methods for working with IO.
+pub mod io {
+    use std::path::PathBuf;
+    use std::str::FromStr;
+    pub const DEFAULT_LOG_LEVEL: &str = "info";
+    pub fn stdin()  -> PathBuf { PathBuf::from_str("/dev/stdin").unwrap()  }
+    pub fn stdout() -> PathBuf { PathBuf::from_str("/dev/stdout").unwrap() }
+}
 
 /// Runs the tool `vartovcf` on an input VAR file and writes the records to an output VCF file.
 ///
@@ -21,7 +29,8 @@ use serde::{de::Error, Deserialize};
 /// # Returns
 ///
 /// Returns the result of the execution with an integer exit code for success (0).
-pub fn run(input: &PathBuf, output: &PathBuf) -> Result<i32, Box<dyn error::Error>> {
+pub fn run<P>(input: P, output: P) -> Result<i32, Box<dyn error::Error>>
+  where P: AsRef<Path> + Debug {
     let input: PathBuf = fs::canonicalize(input)?;
     info!("Input file:  {:?}", input);
     info!("Output file: {:?}", output);
@@ -33,6 +42,7 @@ pub fn run(input: &PathBuf, output: &PathBuf) -> Result<i32, Box<dyn error::Erro
     let mut count: isize = 0;
     for result in reader.deserialize() {
         let record: TumorOnlyVariant = result?;
+        println!("{:?}", record);
         count += 1;
     }
     info!("Processed {} variant records", count);
@@ -56,7 +66,7 @@ fn maybe_infinite_f32<'de, D>(deserializer: D) -> Result<f32, D::Error>
 
 /// A record of output from VarDict/VarDictJava run in tumor-only mode.
 #[derive(Debug, Deserialize)]
-struct TumorOnlyVariant {
+pub struct TumorOnlyVariant {
     sample: String,
     interval_name: String,
     contig: String,
