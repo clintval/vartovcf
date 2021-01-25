@@ -7,3 +7,4 @@ Cargo.lock
 **/*.rs.bk
 
 *.iml
+.DS_Store
