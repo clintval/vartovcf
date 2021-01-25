@@ -14,7 +14,7 @@ Convert variants in VarDict/VarDictJava custom format into VCF format.
     -c1 -S2 -E3 -g4 -f0.05 \
     --fisher \
     calling-intervals.bed \
-  | vartovcf -N sample1 -A -E -f0.05 \
+  | vartovcf \
   | picard SortVcf -I:/dev/stdin -O:variants.vcf.gz
 ```
 
