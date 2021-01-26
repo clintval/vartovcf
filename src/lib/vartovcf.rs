@@ -44,7 +44,7 @@ pub fn run<I, O>(input: I, output: O, sample: String) -> Result<i32, Box<dyn err
 
     while reader.read_record(&mut carry)? {
         let var: TumorOnlyVariant = carry.deserialize(None)?;
-        let rid = writer.header().name2rid(variant_var.contig.as_bytes()).unwrap();
+        let rid = writer.header().name2rid(var.contig.as_bytes()).unwrap();
         let alleles = &[GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(1)];
         variant.set_rid(Some(rid));
         variant.set_pos(var.start as i64 - 1);
