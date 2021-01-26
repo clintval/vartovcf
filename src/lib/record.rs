@@ -178,6 +178,5 @@ pub fn tumor_only_header(sample: String) -> Header {
     header.push_record(r#"##FORMAT=<ID=AD,Number=R,Type=Integer,Description="The allelic depths for the REF and ALT alleles">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=RD,Number=2,Type=Integer,Description="The number of reference forward and reverse reads">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=ALD,Number=2,Type=Integer,Description="The number of variant call forward and reverse reads">"#.as_bytes());
-    header.push_record(r#"##contig=<ID=chr1,length=10>"#.as_bytes()); // TODO: We need to grab all these from the reference FASTA
     header
 }
