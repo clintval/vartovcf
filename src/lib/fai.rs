@@ -36,7 +36,7 @@ pub fn vcf_contig_header_records<I>(input: I) -> Result<Vec<String>, Box<dyn err
     let mut reader = ReaderBuilder::new()
         .delimiter(b'\t')
         .has_headers(false)
-        .from_path(input)?;
+        .from_path(input)?; // Find FAI file based on reference file location.
 
     let mut carry = csv::StringRecord::new();
     let mut records: Vec<String> = Vec::new();
