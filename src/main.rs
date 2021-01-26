@@ -16,6 +16,10 @@ struct Opt {
     #[structopt(short = "s", long = "--sample")]
     sample: String,
 
+    /// The indexed reference sequence file
+    #[structopt(short = "r", long = "--reference", parse(from_os_str))]
+    reference: PathBuf,
+
     /// Input VAR file or stream, defaults to /dev/stdin
     #[structopt(short = "i", long = "--input", parse(from_os_str))]
     input: Option<PathBuf>,
@@ -33,7 +37,7 @@ fn main() {
     let output = opt.output.unwrap_or_else(io::stdout);
 
     env_logger::Builder::from_env(env).init();
-    match vartovcf::run(&input, &output, opt.sample) {
+    match vartovcf::run(&input, &output,  opt.reference, opt.sample) {
         Ok(exit_code) => process::exit(exit_code),
         Err(except)   => panic!("{}", except),
     }

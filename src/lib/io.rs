@@ -14,5 +14,5 @@ pub fn stdout() -> PathBuf { PathBuf::from_str("/dev/stdout").unwrap() }
 /// Test if a path has a gzip extension or not.
 pub fn has_gzip_ext<P>(path: &P) -> bool where P: AsRef<Path> {
     let ext = path.as_ref().extension().and_then(OsStr::to_str);
-    if let Some(GZIP_EXTENSION) = ext { true } else { false }
+    matches!(ext, Some(GZIP_EXTENSION))
 }
