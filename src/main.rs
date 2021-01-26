@@ -1,13 +1,11 @@
 //! Convert variants from VarDict/VarDictJava into VCF format, fast.
-extern crate vartovcflib;
-
 use std::path::PathBuf;
 use std::process;
 
 use env_logger::Env;
 use structopt::StructOpt;
 
-use vartovcflib::common::io;
+use vartovcflib::io;
 use vartovcflib::vartovcf;
 
 #[derive(Clone, StructOpt, Debug)]
@@ -25,7 +23,8 @@ struct Opt {
 
 /// Main binary entrypoint.
 fn main() {
-    let env    = Env::default().default_filter_or(io::DEFAULT_LOG_LEVEL);
+    // Have run accept readers and writers? Box the IO?
+    let env    = Env::default().default_filter_or(vartovcflib::DEFAULT_LOG_LEVEL);
     let opt    = Opt::from_args();
     let input  = opt.input.unwrap_or_else(io::stdin);
     let output = opt.output.unwrap_or_else(io::stdout);
