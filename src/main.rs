@@ -12,6 +12,10 @@ use vartovcflib::vartovcf;
 #[structopt(rename_all = "kebab-case", about)]
 struct Opt {
 
+    /// The sample name
+    #[structopt(short = "s", long = "--sample")]
+    sample: String,
+
     /// Input VAR file or stream, defaults to /dev/stdin
     #[structopt(short = "i", long = "--input", parse(from_os_str))]
     input: Option<PathBuf>,
@@ -23,14 +27,13 @@ struct Opt {
 
 /// Main binary entrypoint.
 fn main() {
-    // Have run accept readers and writers? Box the IO?
     let env    = Env::default().default_filter_or(vartovcflib::DEFAULT_LOG_LEVEL);
     let opt    = Opt::from_args();
     let input  = opt.input.unwrap_or_else(io::stdin);
     let output = opt.output.unwrap_or_else(io::stdout);
 
     env_logger::Builder::from_env(env).init();
-    match vartovcf::run(&input, &output) {
+    match vartovcf::run(&input, &output, opt.sample) {
         Ok(exit_code) => process::exit(exit_code),
         Err(except)   => panic!("{}", except),
     }
