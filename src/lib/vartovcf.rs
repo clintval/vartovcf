@@ -24,18 +24,18 @@ pub fn run<P>(input: P, output: P) -> Result<i32, Box<dyn error::Error>>
     let input: PathBuf = fs::canonicalize(input)?;
     info!("Input file:  {:?}", input);
     info!("Output file: {:?}", output);
+
     let mut reader = ReaderBuilder::new()
         .delimiter(b'\t')
         .has_headers(false)
         .from_path(input)?;
 
-    // TODO: Prepare writers over the Path, but understand they may be standard streams
-
     let mut count: isize = 0;
-    for result in reader.deserialize() {
-        let record: TumorOnlyVariant = result?;
-        println!("{:?}", record); // TODO: Write to buffered writer.
-        count += 1;               // TODO: Implement a ProgressLogger like in fgbio/htsjdk?
+    let mut carry = csv::StringRecord::new();
+    while reader.read_record(&mut carry)? {
+        let variant_var: TumorOnlyVariant = carry.deserialize(None)?;
+        println!("{:?}", variant_var); // TODO: Write to buffered writer.
+        count += 1;
     }
     info!("Processed {} variant records", count);
     Ok(0)
