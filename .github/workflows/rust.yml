@@ -1,0 +1,21 @@
+on: [push]
+
+name: rust
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build release binary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - run: cargo build --release --all-features --verbose
+  test:
+    name: test
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - run: cargo test --verbose
