@@ -54,7 +54,6 @@ jobs:
           args: --all --no-fail-fast --verbose
 
   Coverage:
-    needs: Formatting
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
