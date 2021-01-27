@@ -37,8 +37,8 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
   Testing:
-    needs: Formatting
-    name: build release binary
+    needs: [Formatting, Linting]
+    name: Build and test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
