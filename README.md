@@ -10,13 +10,13 @@ Convert variants from VarDict/VarDictJava into VCF format, fast.
 
 ```bash
 ❯ VarDictJava/build/install/VarDict/bin/VarDict \
-    -G /references/hg38.fa \
-    -N my-sample \
     -b input.bam \
+    -G /references/hg38.fa \
+    -N dna00001 \
     -c1 -S2 -E3 -g4 -f0.05 \
     --fisher \
     calling-intervals.bed \
-  | vartovcf \
+  | vartovcf -r /references/hg38.fa -s dna00001 \
   | picard SortVcf -I:/dev/stdin -O:variants.vcf.gz
 ```
 
