@@ -37,7 +37,6 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
   Testing:
-    needs: [Formatting, Linting]
     name: Build and test
     runs-on: ubuntu-latest
     steps:
