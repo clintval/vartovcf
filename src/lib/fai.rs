@@ -31,8 +31,9 @@ impl<'a> FaiRecord<'a> {
 
 /// Read a FASTA FAI file and create a list of VCF contig header records.
 pub fn vcf_contig_header_records<I>(input: I) -> Result<Vec<String>, Box<dyn error::Error>>
-    where I: AsRef<Path> + Debug {
-
+where
+    I: AsRef<Path> + Debug,
+{
     let mut reader = ReaderBuilder::new()
         .delimiter(b'\t')
         .has_headers(false)
@@ -44,11 +45,14 @@ pub fn vcf_contig_header_records<I>(input: I) -> Result<Vec<String>, Box<dyn err
         let fai: FaiRecord = carry.deserialize(None)?;
         records.push(fai.to_vcf_contig_record());
     }
+
     Ok(records)
 }
 
 /// Add a collection of VCF contig header records to the supplied VCF header.
 pub fn contigs_to_vcf_header(contigs: &[String], mut header: Header) -> Header {
-    for contig in contigs.iter() { header.push_record(contig.as_bytes()); }
+    for contig in contigs.iter() {
+        header.push_record(contig.as_bytes());
+    }
     header
 }

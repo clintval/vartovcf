@@ -17,11 +17,17 @@ const CARGO_PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// * `"-Inf"`: floating point negative infinity
 /// * `<other>`: a non-infinite floating point number
 fn maybe_infinite_f32<'de, D>(deserializer: D) -> Result<f32, D::Error>
-    where D: serde::Deserializer<'de> {
+where
+    D: serde::Deserializer<'de>,
+{
     let s: &str = Deserialize::deserialize(deserializer)?;
-    if s == "Inf" { Ok(f32::INFINITY) }
-    else if s == "-Inf" { Ok(f32::NEG_INFINITY) }
-    else { f32::from_str(&s).map_err(D::Error::custom) }
+    if s == "Inf" {
+        Ok(f32::INFINITY)
+    } else if s == "-Inf" {
+        Ok(f32::NEG_INFINITY)
+    } else {
+        f32::from_str(&s).map_err(D::Error::custom)
+    }
 }
 
 /// A record of output from VarDict/VarDictJava run in tumor-only mode.
@@ -125,7 +131,10 @@ impl<'a> AbstractInterval for TumorOnlyVariant<'a> {
         &self.contig
     }
     fn range(&self) -> Range<Position> {
-        Range { start: self.start - 1, end: self.end }
+        Range {
+            start: self.start - 1,
+            end: self.end,
+        }
     }
 }
 
@@ -145,9 +154,9 @@ pub fn tumor_only_header(sample: String) -> Header {
     header.push_record(r#"##INFO=<ID=QUAL,Number=1,Type=Float,Description="The mean base quality (phred) of all bases that directly support the variant call">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=QSTD,Number=1,Type=Float,Description="The standard deviation of the base quality (phred)) of all bases that directly support the variant call">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=SBF,Number=1,Type=Float,Description="The Fisher test p-value for if you should reject the hypothesis that there is no strand bias. Non multiple hypothesis test corrected">"#.as_bytes());
-    header.push_record(r#"##INFO=<ID=ODDRATIO,Number=1,Type=Float,Description="The odds ratio for strand bias">"#.as_bytes());
+    header.push_record(r#"##INFO=<ID=ODDRATIO,Number=1,Type=Float,Description="The odds ratio for strand bias for this variant call">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=MQ,Number=1,Type=Float,Description="The mean mapping quality (phred) of all reads that directly support the variant call">"#.as_bytes());
-    header.push_record(r#"##INFO=<ID=SN,Number=1,Type=Float,Description="The signal to noise ratio">"#.as_bytes());
+    header.push_record(r#"##INFO=<ID=SN,Number=1,Type=Float,Description="The signal to noise ratio for this variant call">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=HIAF,Number=1,Type=Float,Description="Allele frequency calculated using only high quality bases. Lossy due to rounding">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=ADJAF,Number=1,Type=Float,Description="Adjusted allele frequency for indels due to local realignment. Lossy due to rounding">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=SHIFT3,Number=1,Type=Integer,Description="The number of bases to be shifted 3-prime for deletions due to alternative alignment(s)">"#.as_bytes());
@@ -163,18 +172,18 @@ pub fn tumor_only_header(sample: String) -> Header {
     header.push_record(r#"##INFO=<ID=SVTYPE,Number=1,Type=String,Description="The structural variant type (INV DUP DEL INS FUS), if this call is a structural variant">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="The length of stuctural variant in base pairs of reference genome, if this call is a structural variant">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=DUPRATE,Number=1,Type=Float,Description="The duplication rate, if this call is a duplication">"#.as_bytes());
-    header.push_record(r#"##FILTER=<ID=PASS,Description="The variant call has passed all filters">"#.as_bytes());
+    header.push_record(r#"##FILTER=<ID=PASS,Description="The variant call has passed all filters and may be considered for downstream analysis">"#.as_bytes(), );
     header.push_record(r#"##FILTER=<ID=q22.5,Description="The mean base quality (phred) of all bases that directly support this variant call is below 22.5">"#.as_bytes());
     header.push_record(r#"##FILTER=<ID=Q10,Description="The mean mapping quality (phred) in reads that suppr 10">"#.as_bytes());
     header.push_record(r#"##FILTER=<ID=MSI12,Description="The variant call is in a microsatellite region with 12 non-monomer MSI or 13 monomer MSI">"#.as_bytes());
     header.push_record(r#"##FILTER=<ID=NM8.0,Description="The mean mismatches in reads that support the variant call is >= 8.0, and might be a false positive or contamination">"#.as_bytes());
     header.push_record(r#"##FILTER=<ID=InGap,Description="The variant call is in a deletion gap, and might be a false positive">"#.as_bytes());
-    header.push_record(r#"##FILTER=<ID=InIns,Description="The variant call is adjacent to an insertion variant">"#.as_bytes());
-    header.push_record(r#"##FILTER=<ID=Cluster0bp,Description="At least 2 variant calls are within 0 bp">"#.as_bytes());
+    header.push_record(r#"##FILTER=<ID=InIns,Description="The variant call was found to be adjacent to an insertion variant">"#.as_bytes(), );
+    header.push_record(r#"##FILTER=<ID=Cluster0bp,Description="At least two variant calls are within 0 base pairs from each other in the reference sequence coordinate system">"#.as_bytes());
     header.push_record(r#"##FILTER=<ID=LongMSI,Description="The variant call is flanked by a long A/T stretch (>=14 base pairs)">"#.as_bytes());
-    header.push_record(r#"##FORMAT=<ID=GT,Number=1,Type=String,Description="The genotype">"#.as_bytes());
-    header.push_record(r#"##FORMAT=<ID=DP,Number=1,Type=Integer,Description="The total allele depth">"#.as_bytes());
-    header.push_record(r#"##FORMAT=<ID=VD,Number=1,Type=Integer,Description="The variant call depth">"#.as_bytes());
+    header.push_record(r#"##FORMAT=<ID=GT,Number=1,Type=String,Description="The genotype for this sample for this variant call ">"#.as_bytes());
+    header.push_record(r#"##FORMAT=<ID=DP,Number=1,Type=Integer,Description="The total allele depth at this location which potentially includes No-calls">"#.as_bytes());
+    header.push_record(r#"##FORMAT=<ID=VD,Number=1,Type=Integer,Description="The variant allele depth at this location">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=AD,Number=R,Type=Integer,Description="The allelic depths for the REF and ALT alleles">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=RD,Number=2,Type=Integer,Description="The number of reference forward and reverse reads">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=ALD,Number=2,Type=Integer,Description="The number of variant call forward and reverse reads">"#.as_bytes());
