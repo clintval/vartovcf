@@ -11,7 +11,6 @@ use vartovcflib::vartovcf;
 #[derive(Clone, StructOpt, Debug)]
 #[structopt(rename_all = "kebab-case", about)]
 struct Opt {
-
     /// The sample name
     #[structopt(short = "s", long = "--sample")]
     sample: String,
@@ -31,14 +30,14 @@ struct Opt {
 
 /// Main binary entrypoint.
 fn main() {
-    let env    = Env::default().default_filter_or(vartovcflib::DEFAULT_LOG_LEVEL);
-    let opt    = Opt::from_args();
-    let input  = opt.input.unwrap_or_else(io::stdin);
+    let env = Env::default().default_filter_or(vartovcflib::DEFAULT_LOG_LEVEL);
+    let opt = Opt::from_args();
+    let input = opt.input.unwrap_or_else(io::stdin);
     let output = opt.output.unwrap_or_else(io::stdout);
 
     env_logger::Builder::from_env(env).init();
-    match vartovcf::run(&input, &output,  opt.reference, opt.sample) {
+    match vartovcf::run(&input, &output, opt.reference, opt.sample) {
         Ok(exit_code) => process::exit(exit_code),
-        Err(except)   => panic!("{}", except),
+        Err(except) => panic!("{}", except),
     }
 }

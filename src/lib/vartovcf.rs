@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 
 use csv::ReaderBuilder;
 use log::*;
-use rust_htslib::bcf::Format;
 use rust_htslib::bcf::record::GenotypeAllele;
+use rust_htslib::bcf::Format;
 use rust_htslib::bcf::Writer as VcfWriter;
 
 use crate::fai::{contigs_to_vcf_header, vcf_contig_header_records};
@@ -28,10 +28,17 @@ use crate::record::TumorOnlyVariant;
 ///
 /// Returns the result of the execution with an integer exit code for success (0).
 ///
-pub fn run<I, O, R>(input: I, output: O, fasta: R, sample: String) -> Result<i32, Box<dyn error::Error>>
-    where I: AsRef<Path> + Debug,
-          O: AsRef<Path> + Debug,
-          R: AsRef<Path> + Debug {
+pub fn run<I, O, R>(
+    input: I,
+    output: O,
+    fasta: R,
+    sample: String,
+) -> Result<i32, Box<dyn error::Error>>
+where
+    I: AsRef<Path> + Debug,
+    O: AsRef<Path> + Debug,
+    R: AsRef<Path> + Debug,
+{
     let input: PathBuf = fs::canonicalize(input)?;
     info!("Input file:  {:?}", input);
     info!("Output file: {:?}", output);
@@ -41,14 +48,14 @@ pub fn run<I, O, R>(input: I, output: O, fasta: R, sample: String) -> Result<i32
         .has_headers(false)
         .from_path(input)?;
 
-    let contigs     = vcf_contig_header_records(fasta)?;
-    let header      = tumor_only_header(sample);
-    let header      = contigs_to_vcf_header(&contigs, header);
-    let plain_text  = !io::has_gzip_ext(&output);
-    let mut carry   = csv::StringRecord::new();
-    let mut writer  = VcfWriter::from_path(output, &header, plain_text, Format::VCF)?;
+    let contigs = vcf_contig_header_records(fasta)?;
+    let header = tumor_only_header(sample);
+    let header = contigs_to_vcf_header(&contigs, header);
+    let plain_text = !io::has_gzip_ext(&output);
+    let mut carry = csv::StringRecord::new();
+    let mut writer = VcfWriter::from_path(output, &header, plain_text, Format::VCF)?;
     let mut variant = writer.empty_record();
-    let mut count   = 0;
+    let mut count = 0;
 
     while reader.read_record(&mut carry)? {
         let var: TumorOnlyVariant = carry.deserialize(None)?;
