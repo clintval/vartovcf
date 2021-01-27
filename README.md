@@ -1,5 +1,8 @@
 # vartovcf
 
+[![Build Status](https://github.com/clintval/vartovcf/workflows/CI/badge.svg)](https://github.com/clintval/vartovcf/actions)
+[![Coverage Status](https://coveralls.io/repos/github/clintval/vartovcf/badge.svg?branch=main)](https://coveralls.io/github/clintval/vartovcf?branch=main)
+
 Convert variants from VarDict/VarDictJava into VCF format, fast.
 
 ![The Pacific Northwest - Fish Lake](docs/cover.jpg)
