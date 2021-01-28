@@ -4,6 +4,7 @@ use std::fmt::Debug;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use anyhow::Result;
 use csv::ReaderBuilder;
 use log::*;
 use rust_htslib::bcf::record::GenotypeAllele;

@@ -2,6 +2,7 @@
 use std::ops::Range;
 use std::str::FromStr;
 
+use anyhow::Result;
 use bio_types::genome::{AbstractInterval, Position};
 use rust_htslib::bcf::Header;
 use serde::{de::Error, Deserialize};
@@ -172,13 +173,13 @@ pub fn tumor_only_header(sample: String) -> Header {
     header.push_record(r#"##INFO=<ID=SVTYPE,Number=1,Type=String,Description="The structural variant type (INV DUP DEL INS FUS), if this call is a structural variant">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="The length of stuctural variant in base pairs of reference genome, if this call is a structural variant">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=DUPRATE,Number=1,Type=Float,Description="The duplication rate, if this call is a duplication">"#.as_bytes());
-    header.push_record(r#"##FILTER=<ID=PASS,Description="The variant call has passed all filters and may be considered for downstream analysis">"#.as_bytes(), );
+    header.push_record(r#"##FILTER=<ID=PASS,Description="The variant call has passed all filters and may be considered for downstream analysis">"#.as_bytes());
     header.push_record(r#"##FILTER=<ID=q22.5,Description="The mean base quality (phred) of all bases that directly support this variant call is below 22.5">"#.as_bytes());
     header.push_record(r#"##FILTER=<ID=Q10,Description="The mean mapping quality (phred) in reads that suppr 10">"#.as_bytes());
     header.push_record(r#"##FILTER=<ID=MSI12,Description="The variant call is in a microsatellite region with 12 non-monomer MSI or 13 monomer MSI">"#.as_bytes());
     header.push_record(r#"##FILTER=<ID=NM8.0,Description="The mean mismatches in reads that support the variant call is >= 8.0, and might be a false positive or contamination">"#.as_bytes());
     header.push_record(r#"##FILTER=<ID=InGap,Description="The variant call is in a deletion gap, and might be a false positive">"#.as_bytes());
-    header.push_record(r#"##FILTER=<ID=InIns,Description="The variant call was found to be adjacent to an insertion variant">"#.as_bytes(), );
+    header.push_record(r#"##FILTER=<ID=InIns,Description="The variant call was found to be adjacent to an insertion variant">"#.as_bytes());
     header.push_record(r#"##FILTER=<ID=Cluster0bp,Description="At least two variant calls are within 0 base pairs from each other in the reference sequence coordinate system">"#.as_bytes());
     header.push_record(r#"##FILTER=<ID=LongMSI,Description="The variant call is flanked by a long A/T stretch (>=14 base pairs)">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=GT,Number=1,Type=String,Description="The genotype for this sample for this variant call ">"#.as_bytes());
@@ -188,4 +189,38 @@ pub fn tumor_only_header(sample: String) -> Header {
     header.push_record(r#"##FORMAT=<ID=RD,Number=2,Type=Integer,Description="The number of reference forward and reverse reads">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=ALD,Number=2,Type=Integer,Description="The number of variant call forward and reverse reads">"#.as_bytes());
     header
+}
+
+#[cfg(test)]
+mod tests {
+    use rust_htslib::bcf::Writer;
+    use rust_htslib::bcf::{Format, HeaderRecord, Read, Reader};
+    use tempfile::NamedTempFile;
+
+    use super::*;
+
+    #[test]
+    fn test_tumor_only_header() {
+        let header = tumor_only_header("DNA00001".into());
+        let file = NamedTempFile::new().expect("Cannot create temporary file.");
+        let _ = Writer::from_path(&file.path(), &header, true, Format::VCF).unwrap();
+        let reader = Reader::from_path(file.path()).expect("Error opening tempfile.");
+        let records = reader.header().header_records();
+        assert_eq!(records.len(), 44);
+        match records[2] {
+            HeaderRecord::Generic { ref key, ref value } => {
+                assert_eq!(key, &"source");
+                assert_eq!(value, &[CARGO_PKG_NAME, CARGO_PKG_VERSION].join("-"));
+            }
+            _ => {
+                panic!(
+                    "Expected source header record (tool, version), but found: {:?}",
+                    records[2]
+                );
+            }
+        }
+        let samples = reader.header().samples();
+        assert_eq!(samples.len(), 1);
+        assert!(samples.iter().all(|&s| s == "DNA00001".as_bytes()));
+    }
 }

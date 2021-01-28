@@ -3,6 +3,7 @@ use std::error;
 use std::fmt::Debug;
 use std::path::Path;
 
+use anyhow::Result;
 use csv::ReaderBuilder;
 use rust_htslib::bcf::Header;
 use serde::Deserialize;
@@ -62,6 +63,7 @@ pub fn contigs_to_vcf_header(contigs: &[String], mut header: Header) -> Header {
 mod tests {
     use std::io::Write;
 
+    use anyhow::Result;
     use tempfile::NamedTempFile;
 
     use super::*;
