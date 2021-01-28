@@ -95,23 +95,23 @@ pub struct TumorOnlyVariant<'a> {
     /// The mean mapping quality (phred) of all reads that directly support the variant call.
     pub mean_mapping_quality: f32,
     /// The signal to noise ratio.
-    pub signal_to_noise: u32,
+    pub signal_to_noise: i32,
     /// Allele frequency calculated using only high quality bases. Lossy due to rounding.
     pub af_high_quality_bases: f32,
     /// Adjusted allele frequency for indels due to local realignment. Lossy due to rounding.
     pub af_adjusted: f32,
     /// The number of bases to be shifted 3-prime for deletions due to alternative alignment(s).
-    pub num_bases_3_prime_shift_for_deletions: u32,
+    pub num_bases_3_prime_shift_for_deletions: i32,
     /// Whether the variant call is in a microsatellite (MSI) or not. Greater than 1 indicates MSI.
-    pub microsatellite: u32,
+    pub microsatellite: i32,
     /// The length of the microSatellite in base pairs of reference genome.
-    pub microsatellite_length: u32,
+    pub microsatellite_length: i32,
     /// The length of the microSatellite in base pairs of reference genome.
     pub mean_mismatches_in_reads: f32,
     /// The number of high quality reads supporting the variant call.
-    pub high_quality_variant_reads: u32,
+    pub high_quality_variant_reads: i32,
     /// The number of high quality reads at the locus of the variant call.
-    pub high_quality_total_reads: u32,
+    pub high_quality_total_reads: i32,
     /// 5-prime reference flanking sequence.
     pub flank_seq_5_prime: &'a str,
     /// 3-prime reference flanking sequence.
@@ -121,13 +121,13 @@ pub struct TumorOnlyVariant<'a> {
     /// The type of variant this call is.
     pub variant_type: &'a str,
     /// The duplication rate, if this call is a duplication.
-    pub duplication_rate: &'a str,
+    pub duplication_rate: f32,
     /// The details of the structural variant as a 0 or as a triplet of ints separated with "=".
     // We can deserialize this further into a struct of SV details.
     pub sv_details: &'a str,
     #[serde(default)]
     /// The distance in reference genome base pairs to the nearest CRISPR-site (CRISPR-mode only).
-    pub distance_to_crispr_site: Option<u32>,
+    pub distance_to_crispr_site: Option<i32>,
 }
 
 impl<'a> AbstractInterval for TumorOnlyVariant<'a> {
@@ -150,7 +150,6 @@ pub fn tumor_only_header(sample: String) -> Header {
     header.push_sample(&sample.into_bytes());
     header.remove_filter(b"PASS");
     header.push_record(format!("##source={}", source).as_bytes());
-    header.push_record(r#"##INFO=<ID=SAMPLE,Number=1,Type=String,Description="Sample name (with whitespace translated to underscores)">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=BIAS,Number=1,Type=String,Description="Strand bias flags, see VarDictJava documentation for more information">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=REFBIAS,Number=1,Type=String,Description="Strand bias in reads that support the reference call">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=VARBIAS,Number=1,Type=String,Description="Strand bias in reads that support the variant call">"#.as_bytes());
@@ -202,7 +201,7 @@ mod tests {
     use anyhow::Result;
     use csv::ReaderBuilder;
     use rstest::*;
-    use rust_htslib::bcf::{Format, HeaderRecord, Read, Reader, Writer};
+    use rust_htslib::bcf::{Format, HeaderRecord, Read, Reader as VcfReader, Writer as VcfWriter};
     use tempfile::NamedTempFile;
 
     use super::*;
@@ -211,9 +210,9 @@ mod tests {
     #[rustfmt::skip]
     fn variants() -> Vec<TumorOnlyVariant<'static>> {
         vec!(
-            TumorOnlyVariant { sample: "DNA00001", interval_name: "NRAS-Q61", contig: "chr1", start: 114713883, end: 114713883, ref_allele: "G", alt_allele: "A", depth: 8104, alt_depth: 1, ref_forward: 2766, ref_reverse: 5280, alt_forward: 1, alt_reverse: 0, gt: "G/A", af: 0.0001, strand_bias: "2;0", mean_position_in_read: 13.0, stdev_position_in_read: 0.0, mean_base_quality: 90.0, stdev_base_quality: 0.0, strand_bias_p_value: 0.34385, strand_bias_odds_ratio: 0.0, mean_mapping_quality: 60.0, signal_to_noise: 2, af_high_quality_bases: 0.0001, af_adjusted: 0.0, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 1, microsatellite_length: 1, mean_mismatches_in_reads: 2.0, high_quality_variant_reads: 1, high_quality_total_reads: 8048, flank_seq_5_prime: "TCGCCTGTCCTCATGTATTG", flank_seq_3_prime: "TCTCTCATGGCACTGTACTC", segment: "chr1:114713749-114713988", variant_type: "SNV", duplication_rate: "0", sv_details: "0", distance_to_crispr_site: None },
-            TumorOnlyVariant { sample: "DNA00001", interval_name: "NRAS-Q61", contig: "chr1", start: 114713883, end: 114713883, ref_allele: "G", alt_allele: "T", depth: 8104, alt_depth: 1, ref_forward: 2766, ref_reverse: 5280, alt_forward: 0, alt_reverse: 1, gt: "G/T", af: 0.0001, strand_bias: "2;0", mean_position_in_read: 28.0, stdev_position_in_read: 0.0, mean_base_quality: 90.0, stdev_base_quality: 0.0, strand_bias_p_value: 1.0, strand_bias_odds_ratio: f32::INFINITY, mean_mapping_quality: 60.0, signal_to_noise: 2, af_high_quality_bases: 0.0001, af_adjusted: 0.0, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 1, microsatellite_length: 1, mean_mismatches_in_reads: 1.0, high_quality_variant_reads: 1, high_quality_total_reads: 8048, flank_seq_5_prime: "TCGCCTGTCCTCATGTATTG", flank_seq_3_prime: "TCTCTCATGGCACTGTACTC", segment: "chr1:114713749-114713988", variant_type: "SNV", duplication_rate: "0", sv_details: "0", distance_to_crispr_site: None },
-            TumorOnlyVariant { sample: "DNA00001", interval_name: "NRAS-Q61", contig: "chr1", start: 114713880, end: 114713880, ref_allele: "T", alt_allele: "A", depth: 8211, alt_depth: 1, ref_forward: 3001, ref_reverse: 5130, alt_forward: 1, alt_reverse: 0, gt: "T/A", af: 0.0001, strand_bias: "2;0", mean_position_in_read: 18.0, stdev_position_in_read: 0.0, mean_base_quality: 90.0, stdev_base_quality: 0.0, strand_bias_p_value: 0.36916, strand_bias_odds_ratio: f32::NEG_INFINITY, mean_mapping_quality: 60.0, signal_to_noise: 2, af_high_quality_bases: 0.0001, af_adjusted: 0.0, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 2, microsatellite_length: 1, mean_mismatches_in_reads: 1.0, high_quality_variant_reads: 1, high_quality_total_reads: 8132, flank_seq_5_prime: "CCTTCGCCTGTCCTCATGTA", flank_seq_3_prime: "TGGTCTCTCATGGCACTGTA", segment: "chr1:114713749-114713988", variant_type: "SNV", duplication_rate: "0", sv_details: "0", distance_to_crispr_site: None },
+            TumorOnlyVariant { sample: "DNA00001", interval_name: "NRAS-Q61", contig: "chr1", start: 114713883, end: 114713883, ref_allele: "G", alt_allele: "A", depth: 8104, alt_depth: 1, ref_forward: 2766, ref_reverse: 5280, alt_forward: 1, alt_reverse: 0, gt: "G/A", af: 0.0001, strand_bias: "2;0", mean_position_in_read: 13.0, stdev_position_in_read: 0.0, mean_base_quality: 90.0, stdev_base_quality: 0.0, strand_bias_p_value: 0.34385, strand_bias_odds_ratio: 0.0, mean_mapping_quality: 60.0, signal_to_noise: 2, af_high_quality_bases: 0.0001, af_adjusted: 0.0, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 1, microsatellite_length: 1, mean_mismatches_in_reads: 2.0, high_quality_variant_reads: 1, high_quality_total_reads: 8048, flank_seq_5_prime: "TCGCCTGTCCTCATGTATTG", flank_seq_3_prime: "TCTCTCATGGCACTGTACTC", segment: "chr1:114713749-114713988", variant_type: "SNV", duplication_rate: 0.0, sv_details: "0", distance_to_crispr_site: None },
+            TumorOnlyVariant { sample: "DNA00001", interval_name: "NRAS-Q61", contig: "chr1", start: 114713883, end: 114713883, ref_allele: "G", alt_allele: "T", depth: 8104, alt_depth: 1, ref_forward: 2766, ref_reverse: 5280, alt_forward: 0, alt_reverse: 1, gt: "G/T", af: 0.0001, strand_bias: "2;0", mean_position_in_read: 28.0, stdev_position_in_read: 0.0, mean_base_quality: 90.0, stdev_base_quality: 0.0, strand_bias_p_value: 1.0, strand_bias_odds_ratio: f32::INFINITY, mean_mapping_quality: 60.0, signal_to_noise: 2, af_high_quality_bases: 0.0001, af_adjusted: 0.0, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 1, microsatellite_length: 1, mean_mismatches_in_reads: 1.0, high_quality_variant_reads: 1, high_quality_total_reads: 8048, flank_seq_5_prime: "TCGCCTGTCCTCATGTATTG", flank_seq_3_prime: "TCTCTCATGGCACTGTACTC", segment: "chr1:114713749-114713988", variant_type: "SNV", duplication_rate: 0.0, sv_details: "0", distance_to_crispr_site: None },
+            TumorOnlyVariant { sample: "DNA00001", interval_name: "NRAS-Q61", contig: "chr1", start: 114713880, end: 114713880, ref_allele: "T", alt_allele: "A", depth: 8211, alt_depth: 1, ref_forward: 3001, ref_reverse: 5130, alt_forward: 1, alt_reverse: 0, gt: "T/A", af: 0.0001, strand_bias: "2;0", mean_position_in_read: 18.0, stdev_position_in_read: 0.0, mean_base_quality: 90.0, stdev_base_quality: 0.0, strand_bias_p_value: 0.36916, strand_bias_odds_ratio: f32::NEG_INFINITY, mean_mapping_quality: 60.0, signal_to_noise: 2, af_high_quality_bases: 0.0001, af_adjusted: 0.0, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 2, microsatellite_length: 1, mean_mismatches_in_reads: 1.0, high_quality_variant_reads: 1, high_quality_total_reads: 8132, flank_seq_5_prime: "CCTTCGCCTGTCCTCATGTA", flank_seq_3_prime: "TGGTCTCTCATGGCACTGTA", segment: "chr1:114713749-114713988", variant_type: "SNV", duplication_rate: 0.0, sv_details: "0", distance_to_crispr_site: None },
         )
     }
 
@@ -264,10 +263,10 @@ mod tests {
     fn test_tumor_only_header() {
         let header = tumor_only_header("DNA00001".into());
         let file = NamedTempFile::new().expect("Cannot create temporary file.");
-        let _ = Writer::from_path(&file.path(), &header, true, Format::VCF).unwrap();
-        let reader = Reader::from_path(&file.path()).expect("Error opening tempfile.");
+        let _ = VcfWriter::from_path(&file.path(), &header, true, Format::VCF).unwrap();
+        let reader = VcfReader::from_path(&file.path()).expect("Error opening tempfile.");
         let records = reader.header().header_records();
-        assert_eq!(records.len(), 44);
+        assert_eq!(records.len(), 43);
         match records[2] {
             HeaderRecord::Generic { ref key, ref value } => {
                 assert_eq!(key, &"source");

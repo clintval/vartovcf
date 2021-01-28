@@ -1,4 +1,5 @@
 //! Convert variants from VarDict/VarDictJava into VCF format, fast.
+//! Only output from tumor-only calling is currently supported.
 use std::path::PathBuf;
 use std::process;
 
