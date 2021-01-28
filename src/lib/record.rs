@@ -218,29 +218,12 @@ mod tests {
     }
 
     #[rstest]
+    #[rustfmt::skip]
     fn test_tumor_only_variant_interval(variants: Vec<TumorOnlyVariant>) {
         let expected = vec![
-            (
-                "chr1",
-                Range {
-                    start: 114713883 - 1,
-                    end: 114713883,
-                },
-            ),
-            (
-                "chr1",
-                Range {
-                    start: 114713883 - 1,
-                    end: 114713883,
-                },
-            ),
-            (
-                "chr1",
-                Range {
-                    start: 114713880 - 1,
-                    end: 114713880,
-                },
-            ),
+            ("chr1", Range { start: 114713883 - 1, end: 114713883 } ),
+            ("chr1", Range { start: 114713883 - 1, end: 114713883 } ),
+            ("chr1", Range { start: 114713880 - 1, end: 114713880 } ),
         ];
         for (variant, (contig, range)) in variants.iter().zip(expected.iter()) {
             assert_eq!(&variant.contig, contig);
