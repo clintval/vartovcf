@@ -1,14 +1,16 @@
 //! A module for serialization-deserialization of FASTA FAI index records.
+use std::default::Default;
 use std::error;
 use std::fmt::Debug;
 use std::path::Path;
 
+use anyhow::Result;
 use csv::ReaderBuilder;
 use rust_htslib::bcf::Header;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// A FASTA FAI index record.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct FaiRecord<'a> {
     /// Name of this reference sequence.
     pub name: &'a str,
@@ -37,13 +39,19 @@ where
     let mut reader = ReaderBuilder::new()
         .delimiter(b'\t')
         .has_headers(false)
-        .from_path(fai)?; // Find FAI file based on reference file location.
+        .from_path(&fai)
+        .unwrap_or_else(|_| panic!("Could not open an FAI reader for file path: {:?}", &fai));
 
     let mut carry = csv::StringRecord::new();
     let mut records: Vec<String> = Vec::new();
 
-    while reader.read_record(&mut carry)? {
-        let rec: FaiRecord = carry.deserialize(None)?;
+    while reader
+        .read_record(&mut carry)
+        .expect("Failed to read the FAI record.")
+    {
+        let rec: FaiRecord = carry
+            .deserialize(None)
+            .expect("Failed to deserialize the FAI record.");
         records.push(rec.to_vcf_contig_record());
     }
 
@@ -62,6 +70,7 @@ pub fn contigs_to_vcf_header(contigs: &[String], mut header: Header) -> Header {
 mod tests {
     use std::io::Write;
 
+    use anyhow::Result;
     use tempfile::NamedTempFile;
 
     use super::*;
@@ -81,13 +90,14 @@ mod tests {
 
     #[test]
     fn test_vcf_contig_header_records() -> Result<(), Box<dyn std::error::Error>> {
-        let mut file = NamedTempFile::new()?;
-        writeln!(file, "chr1\t248956422\t112\t70\t71")?;
-        writeln!(file, "chr2\t242193529\t252513167\t70\t71")?;
-        writeln!(file, "chr3\t198295559\t498166716\t70\t71")?;
-        writeln!(file, "chr4\t190214555\t699295181\t70\t71")?;
-        writeln!(file, "chr5\t181538259\t892227221\t70\t71")?;
-        let actual = vcf_contig_header_records(file.path())?;
+        let file = NamedTempFile::new().expect("Cannot create temporary file.");
+        writeln!(&file, "chr1\t248956422\t112\t70\t71")?;
+        writeln!(&file, "chr2\t242193529\t252513167\t70\t71")?;
+        writeln!(&file, "chr3\t198295559\t498166716\t70\t71")?;
+        writeln!(&file, "chr4\t190214555\t699295181\t70\t71")?;
+        writeln!(&file, "chr5\t181538259\t892227221\t70\t71")?;
+        let actual = vcf_contig_header_records(&file.path())
+            .expect("Could not parse contig header records from file.");
         let expected = vec![
             "##contig=<ID=chr1,length=248956422>",
             "##contig=<ID=chr2,length=242193529>",

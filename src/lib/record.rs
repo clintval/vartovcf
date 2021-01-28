@@ -1,10 +1,13 @@
 //! A module for serialization-deserialization friendly VarDict/VarDictJava data types.
+use std::cmp::{PartialEq, PartialOrd};
+use std::default::Default;
 use std::ops::Range;
 use std::str::FromStr;
 
+use anyhow::Result;
 use bio_types::genome::{AbstractInterval, Position};
 use rust_htslib::bcf::Header;
-use serde::{de::Error, Deserialize};
+use serde::{de::Error, Deserialize, Serialize};
 
 const CARGO_PKG_NAME: &str = env!("CARGO_PKG_NAME");
 const CARGO_PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -20,7 +23,8 @@ fn maybe_infinite_f32<'de, D>(deserializer: D) -> Result<f32, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    let s: &str = Deserialize::deserialize(deserializer)?;
+    let s: &str = Deserialize::deserialize(deserializer)
+        .expect("Could not deserialize a maybe-infinite (Inf, -Inf) floating point number.");
     if s == "Inf" {
         Ok(f32::INFINITY)
     } else if s == "-Inf" {
@@ -31,7 +35,7 @@ where
 }
 
 /// A record of output from VarDict/VarDictJava run in tumor-only mode.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize, PartialEq, PartialOrd, Serialize)]
 pub struct TumorOnlyVariant<'a> {
     /// Sample name (with whitespace translated to underscores).
     pub sample: &'a str,
@@ -139,6 +143,7 @@ impl<'a> AbstractInterval for TumorOnlyVariant<'a> {
 }
 
 /// Create a VCF header for VarDict/VarDictJava in tumor-only mode.
+#[rustfmt::skip]
 pub fn tumor_only_header(sample: String) -> Header {
     let source = [CARGO_PKG_NAME, CARGO_PKG_VERSION].join("-");
     let mut header = Header::default();
@@ -172,13 +177,13 @@ pub fn tumor_only_header(sample: String) -> Header {
     header.push_record(r#"##INFO=<ID=SVTYPE,Number=1,Type=String,Description="The structural variant type (INV DUP DEL INS FUS), if this call is a structural variant">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="The length of stuctural variant in base pairs of reference genome, if this call is a structural variant">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=DUPRATE,Number=1,Type=Float,Description="The duplication rate, if this call is a duplication">"#.as_bytes());
-    header.push_record(r#"##FILTER=<ID=PASS,Description="The variant call has passed all filters and may be considered for downstream analysis">"#.as_bytes(), );
+    header.push_record(r#"##FILTER=<ID=PASS,Description="The variant call has passed all filters and may be considered for downstream analysis">"#.as_bytes());
     header.push_record(r#"##FILTER=<ID=q22.5,Description="The mean base quality (phred) of all bases that directly support this variant call is below 22.5">"#.as_bytes());
     header.push_record(r#"##FILTER=<ID=Q10,Description="The mean mapping quality (phred) in reads that suppr 10">"#.as_bytes());
     header.push_record(r#"##FILTER=<ID=MSI12,Description="The variant call is in a microsatellite region with 12 non-monomer MSI or 13 monomer MSI">"#.as_bytes());
     header.push_record(r#"##FILTER=<ID=NM8.0,Description="The mean mismatches in reads that support the variant call is >= 8.0, and might be a false positive or contamination">"#.as_bytes());
     header.push_record(r#"##FILTER=<ID=InGap,Description="The variant call is in a deletion gap, and might be a false positive">"#.as_bytes());
-    header.push_record(r#"##FILTER=<ID=InIns,Description="The variant call was found to be adjacent to an insertion variant">"#.as_bytes(), );
+    header.push_record(r#"##FILTER=<ID=InIns,Description="The variant call was found to be adjacent to an insertion variant">"#.as_bytes());
     header.push_record(r#"##FILTER=<ID=Cluster0bp,Description="At least two variant calls are within 0 base pairs from each other in the reference sequence coordinate system">"#.as_bytes());
     header.push_record(r#"##FILTER=<ID=LongMSI,Description="The variant call is flanked by a long A/T stretch (>=14 base pairs)">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=GT,Number=1,Type=String,Description="The genotype for this sample for this variant call ">"#.as_bytes());
@@ -188,4 +193,94 @@ pub fn tumor_only_header(sample: String) -> Header {
     header.push_record(r#"##FORMAT=<ID=RD,Number=2,Type=Integer,Description="The number of reference forward and reverse reads">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=ALD,Number=2,Type=Integer,Description="The number of variant call forward and reverse reads">"#.as_bytes());
     header
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use anyhow::Result;
+    use csv::ReaderBuilder;
+    use rstest::*;
+    use rust_htslib::bcf::{Format, HeaderRecord, Read, Reader, Writer};
+    use tempfile::NamedTempFile;
+
+    use super::*;
+
+    #[fixture]
+    #[rustfmt::skip]
+    fn variants() -> Vec<TumorOnlyVariant<'static>> {
+        vec!(
+            TumorOnlyVariant { sample: "DNA00001", interval_name: "NRAS-Q61", contig: "chr1", start: 114713883, end: 114713883, ref_allele: "G", alt_allele: "A", depth: 8104, alt_depth: 1, ref_forward: 2766, ref_reverse: 5280, alt_forward: 1, alt_reverse: 0, gt: "G/A", af: 0.0001, strand_bias: "2;0", mean_position_in_read: 13.0, stdev_position_in_read: 0.0, mean_base_quality: 90.0, stdev_base_quality: 0.0, strand_bias_p_value: 0.34385, strand_bias_odds_ratio: 0.0, mean_mapping_quality: 60.0, signal_to_noise: 2, af_high_quality_bases: 0.0001, af_adjusted: 0.0, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 1, microsatellite_length: 1, mean_mismatches_in_reads: 2.0, high_quality_variant_reads: 1, high_quality_total_reads: 8048, flank_seq_5_prime: "TCGCCTGTCCTCATGTATTG", flank_seq_3_prime: "TCTCTCATGGCACTGTACTC", segment: "chr1:114713749-114713988", variant_type: "SNV", duplication_rate: "0", sv_details: "0", distance_to_crispr_site: None },
+            TumorOnlyVariant { sample: "DNA00001", interval_name: "NRAS-Q61", contig: "chr1", start: 114713883, end: 114713883, ref_allele: "G", alt_allele: "T", depth: 8104, alt_depth: 1, ref_forward: 2766, ref_reverse: 5280, alt_forward: 0, alt_reverse: 1, gt: "G/T", af: 0.0001, strand_bias: "2;0", mean_position_in_read: 28.0, stdev_position_in_read: 0.0, mean_base_quality: 90.0, stdev_base_quality: 0.0, strand_bias_p_value: 1.0, strand_bias_odds_ratio: f32::INFINITY, mean_mapping_quality: 60.0, signal_to_noise: 2, af_high_quality_bases: 0.0001, af_adjusted: 0.0, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 1, microsatellite_length: 1, mean_mismatches_in_reads: 1.0, high_quality_variant_reads: 1, high_quality_total_reads: 8048, flank_seq_5_prime: "TCGCCTGTCCTCATGTATTG", flank_seq_3_prime: "TCTCTCATGGCACTGTACTC", segment: "chr1:114713749-114713988", variant_type: "SNV", duplication_rate: "0", sv_details: "0", distance_to_crispr_site: None },
+            TumorOnlyVariant { sample: "DNA00001", interval_name: "NRAS-Q61", contig: "chr1", start: 114713880, end: 114713880, ref_allele: "T", alt_allele: "A", depth: 8211, alt_depth: 1, ref_forward: 3001, ref_reverse: 5130, alt_forward: 1, alt_reverse: 0, gt: "T/A", af: 0.0001, strand_bias: "2;0", mean_position_in_read: 18.0, stdev_position_in_read: 0.0, mean_base_quality: 90.0, stdev_base_quality: 0.0, strand_bias_p_value: 0.36916, strand_bias_odds_ratio: f32::NEG_INFINITY, mean_mapping_quality: 60.0, signal_to_noise: 2, af_high_quality_bases: 0.0001, af_adjusted: 0.0, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 2, microsatellite_length: 1, mean_mismatches_in_reads: 1.0, high_quality_variant_reads: 1, high_quality_total_reads: 8132, flank_seq_5_prime: "CCTTCGCCTGTCCTCATGTA", flank_seq_3_prime: "TGGTCTCTCATGGCACTGTA", segment: "chr1:114713749-114713988", variant_type: "SNV", duplication_rate: "0", sv_details: "0", distance_to_crispr_site: None },
+        )
+    }
+
+    #[rstest]
+    fn test_tumor_only_variant_interval(variants: Vec<TumorOnlyVariant>) {
+        let expected = vec!(
+            ("chr1", Range { start: 114713883 - 1, end: 114713883 } ),
+            ("chr1", Range { start: 114713883 - 1, end: 114713883 } ),
+            ("chr1", Range { start: 114713880 - 1, end: 114713880 } )
+        );
+        for (variant, (contig, range)) in variants.iter().zip(expected.iter()) {
+            assert_eq!(&variant.contig, contig);
+            assert_eq!(&variant.range(), range);
+        }
+    }
+
+    #[rstest]
+    fn test_maybe_infinite_f32(
+        variants: Vec<TumorOnlyVariant>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let input = PathBuf::from("test/nras.var");
+
+        let mut reader = ReaderBuilder::new()
+            .delimiter(b'\t')
+            .has_headers(false)
+            .from_path(&input)
+            .unwrap_or_else(|_| panic!("Could not open a reader for file path: {:?}", &input));
+
+        let mut index = 0;
+        let mut carry = csv::StringRecord::new();
+
+        while reader
+            .read_record(&mut carry)
+            .expect("Failed to read the TumorOnlyVariant record.")
+        {
+            let variant: TumorOnlyVariant = carry
+                .deserialize(None)
+                .expect("Failed to deserialize the TumorOnlyVariant record.");
+            assert_eq!(variants[index], variant);
+            index += 1;
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_tumor_only_header() {
+        let header = tumor_only_header("DNA00001".into());
+        let file = NamedTempFile::new().expect("Cannot create temporary file.");
+        let _ = Writer::from_path(&file.path(), &header, true, Format::VCF).unwrap();
+        let reader = Reader::from_path(&file.path()).expect("Error opening tempfile.");
+        let records = reader.header().header_records();
+        assert_eq!(records.len(), 44);
+        match records[2] {
+            HeaderRecord::Generic { ref key, ref value } => {
+                assert_eq!(key, &"source");
+                assert_eq!(value, &[CARGO_PKG_NAME, CARGO_PKG_VERSION].join("-"));
+            }
+            _ => {
+                panic!(
+                    "Expected source header record (tool, version), but found: {:?}",
+                    records[2]
+                );
+            }
+        }
+        let samples = reader.header().samples();
+        assert_eq!(samples.len(), 1);
+        assert!(samples.iter().all(|&s| s == "DNA00001".as_bytes()));
+    }
 }
