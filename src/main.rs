@@ -37,7 +37,7 @@ fn main() {
     let output = opt.output.unwrap_or_else(io::stdout);
 
     env_logger::Builder::from_env(env).init();
-    match vartovcf::run(&input, &output, opt.reference, opt.sample) {
+    match vartovcf::run(&input, &output, &opt.reference, &opt.sample) {
         Ok(exit_code) => process::exit(exit_code),
         Err(except) => panic!("{}", except),
     }

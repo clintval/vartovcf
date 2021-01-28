@@ -33,7 +33,7 @@ pub fn run<I, O, R>(
     input: I,
     output: O,
     fasta: R,
-    sample: String,
+    sample: &str,
 ) -> Result<i32, Box<dyn error::Error>>
 where
     I: AsRef<Path> + Debug,
@@ -41,7 +41,7 @@ where
     R: AsRef<Path> + Debug,
 {
     let input: PathBuf = fs::canonicalize(input)?;
-    info!("Input file:  {:?}", input);
+    info!("Input file: {:?}", input);
     info!("Output file: {:?}", output);
 
     let mut reader = ReaderBuilder::new()
@@ -104,4 +104,26 @@ where
 
     info!("Processed {} variant records", count);
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use anyhow::Result;
+    use tempfile::NamedTempFile;
+
+    use super::*;
+
+    #[test]
+    fn test_vartovcf_run() -> Result<(), Box<dyn std::error::Error>> {
+        let sample = "DNA00001";
+        let input = PathBuf::from("test/nras.var");
+        let output = NamedTempFile::new().expect("Cannot create temporary file.");
+        let reference = PathBuf::from("test/reference.fasta");
+        let exit = run(&input, &output, &reference, &sample)?;
+        assert_eq!(exit, 0);
+        // TODO: Check output against a plain text file, line-by-line?
+        Ok(())
+    }
 }
