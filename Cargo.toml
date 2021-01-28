@@ -11,6 +11,10 @@ documentation = "https://github.com/clintval/vartovcf/README.md"
 categories = ["command-line-utilities", "science"]
 keywords = ["bioinformatics", "variant", "calling", "VCF", "VarDict", "VarDictJava"]
 
+[profile.release]
+codegen-units = 1
+lto = true
+
 [lib]
 name = "vartovcflib"
 path = "src/lib/mod.rs"
