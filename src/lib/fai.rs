@@ -72,10 +72,10 @@ mod tests {
 
     use anyhow::Result;
     use rstest::*;
+    use rust_htslib::bcf::{Format, HeaderRecord, Read, Reader as VcfReader, Writer as VcfWriter};
     use tempfile::NamedTempFile;
 
     use super::*;
-    use rust_htslib::bcf::{Format, HeaderRecord, Read, Reader, Writer};
 
     #[test]
     fn test_fai_to_vcf_contig_record() {
@@ -137,8 +137,8 @@ mod tests {
         let header = contigs_to_vcf_header(&actual, header);
 
         let file = NamedTempFile::new().expect("Cannot create temporary file.");
-        let _ = Writer::from_path(&file.path(), &header, true, Format::VCF).unwrap();
-        let reader = Reader::from_path(&file.path()).expect("Error opening tempfile.");
+        let _ = VcfWriter::from_path(&file.path(), &header, true, Format::VCF).unwrap();
+        let reader = VcfReader::from_path(&file.path()).expect("Error opening tempfile.");
         let records = reader.header().header_records();
 
         fn header_record_matches_contig(record: &HeaderRecord, line: &str) -> bool {
