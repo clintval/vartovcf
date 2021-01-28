@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use csv::ReaderBuilder;
 use log::*;
-use rust_htslib::bcf::record::GenotypeAllele;
 use rust_htslib::bcf::Format;
+use rust_htslib::bcf::record::GenotypeAllele;
 use rust_htslib::bcf::Writer as VcfWriter;
 
 use crate::fai::{contigs_to_vcf_header, vcf_contig_header_records};
