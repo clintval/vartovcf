@@ -201,7 +201,8 @@ mod tests {
     use anyhow::Result;
     use csv::ReaderBuilder;
     use rstest::*;
-    use rust_htslib::bcf::{Format, HeaderRecord, Read, Reader as VcfReader, Writer as VcfWriter};
+    use rust_htslib::bcf::{Format, HeaderRecord};
+    use rust_htslib::bcf::{Reader as VcfReader, Writer as VcfWriter};
     use tempfile::NamedTempFile;
 
     use super::*;
