@@ -20,9 +20,10 @@ Convert variants from VarDict/VarDictJava into VCF format, fast.
   | picard SortVcf -I:/dev/stdin -O:variants.vcf.gz
 ```
 
-Features:
+#### Features
 
 - Unlike the Perl script bundled with VarDict, this tool streams record-by-record
+- Currently, the conversion of variant records generated in tumor-only mode is supported
 - Output VCF records are unsorted and a call to `picard SortVcf` is advised
 - The output is compatible with the VCF v4.2 specification
 
