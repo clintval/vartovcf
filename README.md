@@ -29,7 +29,7 @@ Convert variants from VarDict/VarDictJava into VCF format, fast.
 
 #### Benchmarks
 
-```
+```bash
 ❯ vartovcf -i test.var -o /dev/null -r /references/hs38DH.fa -s dna00000 
 [2021-01-28T06:50:44Z INFO  vartovcflib::vartovcf] Input file:  "/Users/clintval/test.var"
 [2021-01-28T06:50:44Z INFO  vartovcflib::vartovcf] Output file: "/dev/null"
