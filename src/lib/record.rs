@@ -21,7 +21,8 @@ fn maybe_infinite_f32<'de, D>(deserializer: D) -> Result<f32, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    let s: &str = Deserialize::deserialize(deserializer)?;
+    let s: &str = Deserialize::deserialize(deserializer)
+        .expect("Could not deserialize a maybe-infinite (Inf, -Inf) floating point number.");
     if s == "Inf" {
         Ok(f32::INFINITY)
     } else if s == "-Inf" {
@@ -204,7 +205,7 @@ mod tests {
         let header = tumor_only_header("DNA00001".into());
         let file = NamedTempFile::new().expect("Cannot create temporary file.");
         let _ = Writer::from_path(&file.path(), &header, true, Format::VCF).unwrap();
-        let reader = Reader::from_path(file.path()).expect("Error opening tempfile.");
+        let reader = Reader::from_path(&file.path()).expect("Error opening tempfile.");
         let records = reader.header().header_records();
         assert_eq!(records.len(), 44);
         match records[2] {
