@@ -1,4 +1,5 @@
 //! A module for serialization-deserialization of FASTA FAI index records.
+use std::default::Default;
 use std::error;
 use std::fmt::Debug;
 use std::path::Path;
@@ -6,10 +7,10 @@ use std::path::Path;
 use anyhow::Result;
 use csv::ReaderBuilder;
 use rust_htslib::bcf::Header;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// A FASTA FAI index record.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct FaiRecord<'a> {
     /// Name of this reference sequence.
     pub name: &'a str,
@@ -89,12 +90,12 @@ mod tests {
 
     #[test]
     fn test_vcf_contig_header_records() -> Result<(), Box<dyn std::error::Error>> {
-        let mut file = NamedTempFile::new().expect("Cannot create temporary file.");
-        writeln!(file, "chr1\t248956422\t112\t70\t71")?;
-        writeln!(file, "chr2\t242193529\t252513167\t70\t71")?;
-        writeln!(file, "chr3\t198295559\t498166716\t70\t71")?;
-        writeln!(file, "chr4\t190214555\t699295181\t70\t71")?;
-        writeln!(file, "chr5\t181538259\t892227221\t70\t71")?;
+        let file = NamedTempFile::new().expect("Cannot create temporary file.");
+        writeln!(&file, "chr1\t248956422\t112\t70\t71")?;
+        writeln!(&file, "chr2\t242193529\t252513167\t70\t71")?;
+        writeln!(&file, "chr3\t198295559\t498166716\t70\t71")?;
+        writeln!(&file, "chr4\t190214555\t699295181\t70\t71")?;
+        writeln!(&file, "chr5\t181538259\t892227221\t70\t71")?;
         let actual = vcf_contig_header_records(&file.path())
             .expect("Could not parse contig header records from file.");
         let expected = vec![

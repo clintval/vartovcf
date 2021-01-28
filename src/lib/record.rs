@@ -1,11 +1,13 @@
 //! A module for serialization-deserialization friendly VarDict/VarDictJava data types.
+use std::cmp::{PartialEq, PartialOrd};
+use std::default::Default;
 use std::ops::Range;
 use std::str::FromStr;
 
 use anyhow::Result;
 use bio_types::genome::{AbstractInterval, Position};
 use rust_htslib::bcf::Header;
-use serde::{de::Error, Deserialize};
+use serde::{de::Error, Deserialize, Serialize};
 
 const CARGO_PKG_NAME: &str = env!("CARGO_PKG_NAME");
 const CARGO_PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -33,7 +35,7 @@ where
 }
 
 /// A record of output from VarDict/VarDictJava run in tumor-only mode.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize, PartialEq, PartialOrd, Serialize)]
 pub struct TumorOnlyVariant<'a> {
     /// Sample name (with whitespace translated to underscores).
     pub sample: &'a str,
@@ -141,6 +143,7 @@ impl<'a> AbstractInterval for TumorOnlyVariant<'a> {
 }
 
 /// Create a VCF header for VarDict/VarDictJava in tumor-only mode.
+#[rustfmt::skip]
 pub fn tumor_only_header(sample: String) -> Header {
     let source = [CARGO_PKG_NAME, CARGO_PKG_VERSION].join("-");
     let mut header = Header::default();
@@ -194,11 +197,54 @@ pub fn tumor_only_header(sample: String) -> Header {
 
 #[cfg(test)]
 mod tests {
-    use rust_htslib::bcf::Writer;
-    use rust_htslib::bcf::{Format, HeaderRecord, Read, Reader};
+    use std::path::PathBuf;
+
+    use anyhow::Result;
+    use csv::ReaderBuilder;
+    use rstest::*;
+    use rust_htslib::bcf::{Format, HeaderRecord, Read, Reader, Writer};
     use tempfile::NamedTempFile;
 
     use super::*;
+
+    #[fixture]
+    #[rustfmt::skip]
+    fn expected() -> Vec<TumorOnlyVariant<'static>> {
+        vec!(
+            TumorOnlyVariant { sample: "DNA00001", interval_name: "NRAS-Q61", contig: "chr1", start: 114713883, end: 114713883, ref_allele: "G", alt_allele: "A", depth: 8104, alt_depth: 1, ref_forward: 2766, ref_reverse: 5280, alt_forward: 1, alt_reverse: 0, gt: "G/A", af: 0.0001, strand_bias: "2;0", mean_position_in_read: 13.0, stdev_position_in_read: 0.0, mean_base_quality: 90.0, stdev_base_quality: 0.0, strand_bias_p_value: 0.34385, strand_bias_odds_ratio: 0.0, mean_mapping_quality: 60.0, signal_to_noise: 2, af_high_quality_bases: 0.0001, af_adjusted: 0.0, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 1, microsatellite_length: 1, mean_mismatches_in_reads: 2.0, high_quality_variant_reads: 1, high_quality_total_reads: 8048, flank_seq_5_prime: "TCGCCTGTCCTCATGTATTG", flank_seq_3_prime: "TCTCTCATGGCACTGTACTC", segment: "chr1:114713749-114713988", variant_type: "SNV", duplication_rate: "0", sv_details: "0", distance_to_crispr_site: None },
+            TumorOnlyVariant { sample: "DNA00001", interval_name: "NRAS-Q61", contig: "chr1", start: 114713883, end: 114713883, ref_allele: "G", alt_allele: "T", depth: 8104, alt_depth: 1, ref_forward: 2766, ref_reverse: 5280, alt_forward: 0, alt_reverse: 1, gt: "G/T", af: 0.0001, strand_bias: "2;0", mean_position_in_read: 28.0, stdev_position_in_read: 0.0, mean_base_quality: 90.0, stdev_base_quality: 0.0, strand_bias_p_value: 1.0, strand_bias_odds_ratio: f32::INFINITY, mean_mapping_quality: 60.0, signal_to_noise: 2, af_high_quality_bases: 0.0001, af_adjusted: 0.0, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 1, microsatellite_length: 1, mean_mismatches_in_reads: 1.0, high_quality_variant_reads: 1, high_quality_total_reads: 8048, flank_seq_5_prime: "TCGCCTGTCCTCATGTATTG", flank_seq_3_prime: "TCTCTCATGGCACTGTACTC", segment: "chr1:114713749-114713988", variant_type: "SNV", duplication_rate: "0", sv_details: "0", distance_to_crispr_site: None },
+            TumorOnlyVariant { sample: "DNA00001", interval_name: "NRAS-Q61", contig: "chr1", start: 114713880, end: 114713880, ref_allele: "T", alt_allele: "A", depth: 8211, alt_depth: 1, ref_forward: 3001, ref_reverse: 5130, alt_forward: 1, alt_reverse: 0, gt: "T/A", af: 0.0001, strand_bias: "2;0", mean_position_in_read: 18.0, stdev_position_in_read: 0.0, mean_base_quality: 90.0, stdev_base_quality: 0.0, strand_bias_p_value: 0.36916, strand_bias_odds_ratio: f32::NEG_INFINITY, mean_mapping_quality: 60.0, signal_to_noise: 2, af_high_quality_bases: 0.0001, af_adjusted: 0.0, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 2, microsatellite_length: 1, mean_mismatches_in_reads: 1.0, high_quality_variant_reads: 1, high_quality_total_reads: 8132, flank_seq_5_prime: "CCTTCGCCTGTCCTCATGTA", flank_seq_3_prime: "TGGTCTCTCATGGCACTGTA", segment: "chr1:114713749-114713988", variant_type: "SNV", duplication_rate: "0", sv_details: "0", distance_to_crispr_site: None },
+        )
+    }
+
+    #[rstest]
+    fn test_maybe_infinite_f32(
+        expected: Vec<TumorOnlyVariant>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let input = PathBuf::from("test/nras.var");
+
+        let mut reader = ReaderBuilder::new()
+            .delimiter(b'\t')
+            .has_headers(false)
+            .from_path(&input)
+            .unwrap_or_else(|_| panic!("Could not open a reader for file path: {:?}", &input));
+
+        let mut index = 0;
+        let mut carry = csv::StringRecord::new();
+
+        while reader
+            .read_record(&mut carry)
+            .expect("Failed to read the TumorOnlyVariant record.")
+        {
+            let variant: TumorOnlyVariant = carry
+                .deserialize(None)
+                .expect("Failed to deserialize the TumorOnlyVariant record.");
+            assert_eq!(expected[index], variant);
+            index += 1;
+        }
+
+        Ok(())
+    }
 
     #[test]
     fn test_tumor_only_header() {
