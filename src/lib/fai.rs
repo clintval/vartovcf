@@ -71,9 +71,11 @@ mod tests {
     use std::io::Write;
 
     use anyhow::Result;
+    use rstest::*;
     use tempfile::NamedTempFile;
 
     use super::*;
+    use rust_htslib::bcf::{Format, HeaderRecord, Read, Reader, Writer};
 
     #[test]
     fn test_fai_to_vcf_contig_record() {
@@ -88,26 +90,75 @@ mod tests {
         assert_eq!(rec.to_vcf_contig_record(), expected);
     }
 
-    #[test]
-    fn test_vcf_contig_header_records() -> Result<(), Box<dyn std::error::Error>> {
+    #[fixture]
+    fn fai() -> NamedTempFile {
         let file = NamedTempFile::new().expect("Cannot create temporary file.");
-        writeln!(&file, "chr1\t248956422\t112\t70\t71")?;
-        writeln!(&file, "chr2\t242193529\t252513167\t70\t71")?;
-        writeln!(&file, "chr3\t198295559\t498166716\t70\t71")?;
-        writeln!(&file, "chr4\t190214555\t699295181\t70\t71")?;
-        writeln!(&file, "chr5\t181538259\t892227221\t70\t71")?;
-        let actual = vcf_contig_header_records(&file.path())
+        writeln!(&file, "chr1\t248956422\t112\t70\t71").expect("Could not write bytes.");
+        writeln!(&file, "chr2\t242193529\t252513167\t70\t71").expect("Could not write bytes.");
+        writeln!(&file, "chr3\t198295559\t498166716\t70\t71").expect("Could not write bytes.");
+        writeln!(&file, "chr4\t190214555\t699295181\t70\t71").expect("Could not write bytes.");
+        writeln!(&file, "chr5\t181538259\t892227221\t70\t71").expect("Could not write bytes.");
+        file
+    }
+
+    #[fixture]
+    fn contig_header_lines() -> Vec<String> {
+        vec![
+            "##contig=<ID=chr1,length=248956422>".into(),
+            "##contig=<ID=chr2,length=242193529>".into(),
+            "##contig=<ID=chr3,length=198295559>".into(),
+            "##contig=<ID=chr4,length=190214555>".into(),
+            "##contig=<ID=chr5,length=181538259>".into(),
+        ]
+    }
+
+    #[rstest]
+    fn test_vcf_contig_header_records(
+        fai: NamedTempFile,
+        contig_header_lines: Vec<String>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let actual = vcf_contig_header_records(&fai.path())
             .expect("Could not parse contig header records from file.");
-        let expected = vec![
-            "##contig=<ID=chr1,length=248956422>",
-            "##contig=<ID=chr2,length=242193529>",
-            "##contig=<ID=chr3,length=198295559>",
-            "##contig=<ID=chr4,length=190214555>",
-            "##contig=<ID=chr5,length=181538259>",
-        ];
-        for (left, right) in actual.iter().zip(expected.iter()) {
+        for (left, right) in actual.iter().zip(contig_header_lines.iter()) {
             assert_eq!(&left, &right)
         }
+        Ok(())
+    }
+
+    #[rstest]
+    fn test_contigs_to_vcf_header(
+        fai: NamedTempFile,
+        contig_header_lines: Vec<String>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let actual = vcf_contig_header_records(&fai.path())
+            .expect("Could not parse contig header records from file.");
+
+        let header = Header::default();
+        let header = contigs_to_vcf_header(&actual, header);
+
+        let file = NamedTempFile::new().expect("Cannot create temporary file.");
+        let _ = Writer::from_path(&file.path(), &header, true, Format::VCF).unwrap();
+        let reader = Reader::from_path(&file.path()).expect("Error opening tempfile.");
+        let records = reader.header().header_records();
+
+        fn header_record_matches_contig(record: &HeaderRecord, line: &str) -> bool {
+            match record {
+                HeaderRecord::Contig { key, values } => {
+                    line == &format!(
+                        "##{}=<ID={},length={}>",
+                        key, values["ID"], values["length"]
+                    )
+                }
+                _ => false,
+            }
+        }
+
+        let value = contig_header_lines.iter().all(|contig| {
+            records
+                .iter()
+                .any(|record| header_record_matches_contig(record, contig))
+        });
+        assert!(value);
         Ok(())
     }
 }

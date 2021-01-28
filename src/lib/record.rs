@@ -1,5 +1,5 @@
 //! A module for serialization-deserialization friendly VarDict/VarDictJava data types.
-use std::cmp::{PartialEq, PartialOrd};
+use std::cmp::PartialEq;
 use std::default::Default;
 use std::ops::Range;
 use std::str::FromStr;
@@ -35,7 +35,7 @@ where
 }
 
 /// A record of output from VarDict/VarDictJava run in tumor-only mode.
-#[derive(Debug, Default, Deserialize, PartialEq, PartialOrd, Serialize)]
+#[derive(Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct TumorOnlyVariant<'a> {
     /// Sample name (with whitespace translated to underscores).
     pub sample: &'a str,
@@ -219,11 +219,29 @@ mod tests {
 
     #[rstest]
     fn test_tumor_only_variant_interval(variants: Vec<TumorOnlyVariant>) {
-        let expected = vec!(
-            ("chr1", Range { start: 114713883 - 1, end: 114713883 } ),
-            ("chr1", Range { start: 114713883 - 1, end: 114713883 } ),
-            ("chr1", Range { start: 114713880 - 1, end: 114713880 } )
-        );
+        let expected = vec![
+            (
+                "chr1",
+                Range {
+                    start: 114713883 - 1,
+                    end: 114713883,
+                },
+            ),
+            (
+                "chr1",
+                Range {
+                    start: 114713883 - 1,
+                    end: 114713883,
+                },
+            ),
+            (
+                "chr1",
+                Range {
+                    start: 114713880 - 1,
+                    end: 114713880,
+                },
+            ),
+        ];
         for (variant, (contig, range)) in variants.iter().zip(expected.iter()) {
             assert_eq!(&variant.contig, contig);
             assert_eq!(&variant.range(), range);
