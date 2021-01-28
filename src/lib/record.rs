@@ -144,10 +144,10 @@ impl<'a> AbstractInterval for TumorOnlyVariant<'a> {
 
 /// Create a VCF header for VarDict/VarDictJava in tumor-only mode.
 #[rustfmt::skip]
-pub fn tumor_only_header(sample: String) -> Header {
+pub fn tumor_only_header(sample: &str) -> Header {
     let source = [CARGO_PKG_NAME, CARGO_PKG_VERSION].join("-");
     let mut header = Header::default();
-    header.push_sample(&sample.into_bytes());
+    header.push_sample(sample.as_bytes());
     header.remove_filter(b"PASS");
     header.push_record(format!("##source={}", source).as_bytes());
     header.push_record(r#"##INFO=<ID=BIAS,Number=1,Type=String,Description="Strand bias flags, see VarDictJava documentation for more information">"#.as_bytes());
@@ -262,7 +262,7 @@ mod tests {
 
     #[test]
     fn test_tumor_only_header() {
-        let header = tumor_only_header("DNA00001".into());
+        let header = tumor_only_header("DNA00001");
         let file = NamedTempFile::new().expect("Cannot create temporary file.");
         let _ = VcfWriter::from_path(&file.path(), &header, true, Format::VCF).unwrap();
         let reader = VcfReader::from_path(&file.path()).expect("Error opening tempfile.");
