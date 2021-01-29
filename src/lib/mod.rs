@@ -67,7 +67,7 @@ where
 
     let mut writer = match output {
         Some(output) => VcfWriter::from_path(&output, &header, !has_gzip_ext(&output), Format::VCF),
-        None => VcfWriter::from_stdout(&header, false, Format::VCF),
+        None => VcfWriter::from_stdout(&header, true, Format::VCF),
     }
     .expect("Could not build a VCF writer.");
 
@@ -77,9 +77,14 @@ where
 
     while reader.read_record(&mut carry)? {
         let var: TumorOnlyVariant = carry.deserialize(None)?;
-        let rid = writer.header().name2rid(var.contig.as_bytes()).unwrap();
 
-        // TODO: Set these correctly based on parsing the phasing information.
+        assert_eq!(
+            var.sample, sample,
+            "Variant vs sample do not match: {:?}",
+            var
+        );
+
+        let rid = writer.header().name2rid(var.contig.as_bytes()).unwrap();
         let alleles = &[GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(1)];
 
         variant.set_rid(Some(rid));
@@ -87,7 +92,7 @@ where
 
         variant.push_info_float(b"PMEAN", &[var.mean_position_in_read])?;
         variant.push_info_float(b"PSTD", &[var.stdev_position_in_read])?;
-        // variant.push_info_integer(b"BIAS", &[var.])?;
+        variant.push_info_string(b"BIAS", &[var.strand_bias.to_string().as_bytes()])?;
         // variant.push_info_integer(b"REFBIAS", &[var.])?;
         // variant.push_info_integer(b"VARBIAS", &[var.])?;
         variant.push_info_float(b"QUAL", &[var.mean_base_quality])?;
@@ -130,19 +135,20 @@ mod tests {
     use std::path::PathBuf;
 
     use anyhow::Result;
+    use file_diff::diff;
     use tempfile::NamedTempFile;
 
     use super::*;
 
     #[test]
     fn test_vartovcf_run() -> Result<(), Box<dyn std::error::Error>> {
-        let sample = "DNA00001";
+        let sample = "dna00001";
         let input = BufReader::new(File::open("tests/nras.var")?);
         let output = NamedTempFile::new().expect("Cannot create temporary file.");
         let reference = PathBuf::from("tests/reference.fa");
         let exit = vartovcf(input, Some(output.path().into()), &reference, &sample)?;
         assert_eq!(exit, 0);
-        // TODO: Check output against a plain text file, line-by-line?
+        assert!(diff(&output.path().to_str().unwrap(), "tests/nras.vcf"));
         Ok(())
     }
 }

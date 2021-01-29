@@ -27,7 +27,6 @@ pub struct FaiRecord<'a> {
 
 impl<'a> FaiRecord<'a> {
     /// Convert this FAI record into a contig header line for a VCF file.
-    #[inline(always)]
     fn to_vcf_contig_record(&self) -> String {
         format!("##contig=<ID={},length={}>", self.name, self.length)
     }
@@ -41,7 +40,6 @@ pub fn fai_file<I: AsRef<Path> + Debug>(fasta: I) -> PathBuf {
 }
 
 /// Add a collection of VCF contig header records to the supplied VCF header.
-#[inline(always)]
 pub fn contigs_to_vcf_header(contigs: &[String], mut header: Header) -> Header {
     for contig in contigs.iter() {
         header.push_record(contig.as_bytes());
