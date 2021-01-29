@@ -1,8 +1,9 @@
 //! A module for serialization-deserialization of FASTA FAI index records.
 use std::default::Default;
 use std::error;
+use std::ffi::OsString;
 use std::fmt::Debug;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use csv::ReaderBuilder;
@@ -32,6 +33,22 @@ impl<'a> FaiRecord<'a> {
     }
 }
 
+/// Given a path to a FASTA file, resolve its sibling FAI index file.
+pub fn fai_file<I: AsRef<Path> + Debug>(fasta: I) -> PathBuf {
+    let mut fasta = OsString::from(fasta.as_ref().to_path_buf());
+    fasta.push(".fai");
+    PathBuf::from(fasta)
+}
+
+/// Add a collection of VCF contig header records to the supplied VCF header.
+#[inline(always)]
+pub fn contigs_to_vcf_header(contigs: &[String], mut header: Header) -> Header {
+    for contig in contigs.iter() {
+        header.push_record(contig.as_bytes());
+    }
+    header
+}
+
 /// Read a FASTA FAI file and create a list of VCF contig header records.
 pub fn vcf_contig_header_records<I>(fai: I) -> Result<Vec<String>, Box<dyn error::Error>>
 where
@@ -59,15 +76,6 @@ where
     Ok(records)
 }
 
-/// Add a collection of VCF contig header records to the supplied VCF header.
-#[inline(always)]
-pub fn contigs_to_vcf_header(contigs: &[String], mut header: Header) -> Header {
-    for contig in contigs.iter() {
-        header.push_record(contig.as_bytes());
-    }
-    header
-}
-
 #[cfg(test)]
 mod tests {
     use std::io::Write;
@@ -91,6 +99,20 @@ mod tests {
         };
         let expected = "##contig=<ID=chr1,length=248956422>";
         assert_eq!(rec.to_vcf_contig_record(), expected);
+    }
+
+    #[test]
+    fn test_fai_file() {
+        let fasta = PathBuf::from("/references/reference.fasta");
+        assert_eq!(
+            fai_file(fasta),
+            PathBuf::from("/references/reference.fasta.fai")
+        );
+        let fasta = PathBuf::from("/references/reference.fa");
+        assert_eq!(
+            fai_file(fasta),
+            PathBuf::from("/references/reference.fa.fai")
+        );
     }
 
     #[fixture]

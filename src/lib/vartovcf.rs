@@ -11,7 +11,7 @@ use rust_htslib::bcf::record::GenotypeAllele;
 use rust_htslib::bcf::Format;
 use rust_htslib::bcf::Writer as VcfWriter;
 
-use crate::fai::{contigs_to_vcf_header, vcf_contig_header_records};
+use crate::fai::{contigs_to_vcf_header, fai_file, vcf_contig_header_records};
 use crate::io;
 use crate::record::tumor_only_header;
 use crate::record::TumorOnlyVariant;
@@ -50,7 +50,7 @@ where
         .from_path(input)?;
 
     // TODO: Consider a function to resolve the path to the sibling index file.
-    let contigs = vcf_contig_header_records(fasta.as_ref().with_extension("fa.fai"))?;
+    let contigs = vcf_contig_header_records(fai_file(fasta))?;
     let header = tumor_only_header(sample);
     let header = contigs_to_vcf_header(&contigs, header);
     let plain_text = !io::has_gzip_ext(&output);
