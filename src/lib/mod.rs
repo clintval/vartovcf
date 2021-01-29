@@ -1,7 +1,6 @@
 //! A library for working with VarDict/VarDictJava output.
 #![warn(missing_docs)]
 #![warn(missing_doc_code_examples)]
-
 use std::error;
 use std::fmt::Debug;
 use std::io::Read;
