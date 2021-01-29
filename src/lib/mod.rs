@@ -1,6 +1,7 @@
 //! A library for working with VarDict/VarDictJava output.
 #![warn(missing_docs)]
 #![warn(missing_doc_code_examples)]
+
 use std::error;
 use std::fmt::Debug;
 use std::io::Read;
@@ -14,6 +15,7 @@ use rust_htslib::bcf::Format;
 use rust_htslib::bcf::Writer as VcfWriter;
 
 use crate::fai::{contigs_to_vcf_header, fai_file, vcf_contig_header_records};
+use crate::io::has_gzip_ext;
 use crate::record::tumor_only_header;
 use crate::record::TumorOnlyVariant;
 
@@ -54,13 +56,9 @@ where
     I: Read,
     R: AsRef<Path> + Debug,
 {
-    let contigs = vcf_contig_header_records(fai_file(fasta))?;
-    let header = contigs_to_vcf_header(&contigs, tumor_only_header(sample));
-    let plain_text = if let Some(path) = &output {
-        !io::has_gzip_ext(&path)
-    } else {
-        true
-    };
+    let fai = fai_file(&fasta);
+    let contigs = vcf_contig_header_records(fai).expect("Could not read the FAI index records.");
+    let header = contigs_to_vcf_header(&contigs, tumor_only_header(&sample));
 
     let mut reader = ReaderBuilder::new()
         .delimiter(b'\t')
@@ -68,8 +66,8 @@ where
         .from_reader(input);
 
     let mut writer = match output {
-        Some(output) => VcfWriter::from_path(&output, &header, plain_text, Format::VCF),
-        None => VcfWriter::from_stdout(&header, plain_text, Format::VCF),
+        Some(output) => VcfWriter::from_path(&output, &header, !has_gzip_ext(&output), Format::VCF),
+        None => VcfWriter::from_stdout(&header, false, Format::VCF),
     }
     .expect("Could not build a VCF writer.");
 
