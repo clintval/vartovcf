@@ -66,7 +66,7 @@ pub struct PairBias {
 }
 
 impl Default for PairBias {
-    /// The default paired bias status is no strand bias detectd.
+    /// The default paired bias status is no strand bias detected.
     fn default() -> Self {
         PairBias {
             reference: StrandBias::UnDetected,
