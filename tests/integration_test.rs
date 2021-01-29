@@ -6,10 +6,11 @@ mod tests {
     use tempfile::NamedTempFile;
 
     #[test]
+    #[rustfmt::skip]
     fn run_end_to_end_success() -> Result<(), Box<dyn std::error::Error>> {
         let output = NamedTempFile::new().expect("Cannot create temporary file.");
         let output = &output.path().to_str().unwrap();
-        let mut cmd = Command::cargo_bin("vartovcf")?;
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
         cmd
             .arg("--input").arg("tests/nras.var")
             .arg("--output").arg(output)
