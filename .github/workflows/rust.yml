@@ -37,8 +37,17 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
   Testing:
-    name: Build and Test
-    runs-on: ubuntu-latest
+    name: Build and Test for ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact_name: vartovcf
+            asset_name: vartovcf-linux-amd64
+          - os: macos-latest
+            artifact_name: vartovcf
+            asset_name: vartovcf-macos-amd64
     steps:
       - name: Checkout repository
         uses: actions/checkout@v2
