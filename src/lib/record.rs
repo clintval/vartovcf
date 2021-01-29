@@ -87,7 +87,7 @@ pub struct TumorOnlyVariant<'a> {
     /// the variant call.
     pub stdev_base_quality: f32,
     /// The Fisher test p-value for if you should reject the hypothesis that there is no strand
-    /// bias. Non multiple hypothesis test corrected.
+    /// bias. Non-multiple hypothesis test corrected.
     pub strand_bias_p_value: f32,
     #[serde(deserialize_with = "maybe_infinite_f32")]
     /// The odds ratio for strand bias.
@@ -157,7 +157,7 @@ pub fn tumor_only_header(sample: &str) -> Header {
     header.push_record(r#"##INFO=<ID=PSTD,Number=1,Type=Float,Description="The standard deviation of the distance to the nearest 5 or 3 prime read end (whichever is closer) in all reads that support the variant call">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=QUAL,Number=1,Type=Float,Description="The mean base quality (phred) of all bases that directly support the variant call">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=QSTD,Number=1,Type=Float,Description="The standard deviation of the base quality (phred)) of all bases that directly support the variant call">"#.as_bytes());
-    header.push_record(r#"##INFO=<ID=SBF,Number=1,Type=Float,Description="The Fisher test p-value for if you should reject the hypothesis that there is no strand bias. Non multiple hypothesis test corrected">"#.as_bytes());
+    header.push_record(r#"##INFO=<ID=SBF,Number=1,Type=Float,Description="The Fisher test p-value for if you should reject the hypothesis that there is no strand bias. Non-multiple hypothesis test corrected">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=ODDRATIO,Number=1,Type=Float,Description="The odds ratio for strand bias for this variant call">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=MQ,Number=1,Type=Float,Description="The mean mapping quality (phred) of all reads that directly support the variant call">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=SN,Number=1,Type=Float,Description="The signal to noise ratio for this variant call">"#.as_bytes());
