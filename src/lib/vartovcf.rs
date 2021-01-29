@@ -118,9 +118,9 @@ mod tests {
     #[test]
     fn test_vartovcf_run() -> Result<(), Box<dyn std::error::Error>> {
         let sample = "DNA00001";
-        let input = PathBuf::from("test/nras.var");
+        let input = PathBuf::from("tests/nras.var");
         let output = NamedTempFile::new().expect("Cannot create temporary file.");
-        let reference = PathBuf::from("test/reference.fasta");
+        let reference = PathBuf::from("tests/reference.fa");
         let exit = run(&input, &output, &reference, &sample)?;
         assert_eq!(exit, 0);
         // TODO: Check output against a plain text file, line-by-line?
