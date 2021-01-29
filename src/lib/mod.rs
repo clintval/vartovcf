@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use csv::ReaderBuilder;
 use log::*;
-use rust_htslib::bcf::Format;
 use rust_htslib::bcf::record::GenotypeAllele;
+use rust_htslib::bcf::Format;
 use rust_htslib::bcf::Writer as VcfWriter;
 
 use crate::fai::{contigs_to_vcf_header, fai_file, vcf_contig_header_records};
@@ -77,9 +77,14 @@ where
 
     while reader.read_record(&mut carry)? {
         let var: TumorOnlyVariant = carry.deserialize(None)?;
-        assert_eq!(var.sample, sample, "Variant record and sample do not match: {:?}", var);
-        let rid = writer.header().name2rid(var.contig.as_bytes()).unwrap();
 
+        assert_eq!(
+            var.sample, sample,
+            "Variant vs sample do not match: {:?}",
+            var
+        );
+
+        let rid = writer.header().name2rid(var.contig.as_bytes()).unwrap();
         let alleles = &[GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(1)];
 
         variant.set_rid(Some(rid));
