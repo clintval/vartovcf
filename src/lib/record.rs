@@ -1,13 +1,18 @@
 //! A module for serialization-deserialization friendly VarDict/VarDictJava data types.
+use std::clone::Clone;
 use std::cmp::PartialEq;
 use std::default::Default;
+use std::fmt;
 use std::ops::Range;
 use std::str::FromStr;
+use std::string::ToString;
 
 use anyhow::Result;
 use bio_types::genome::{AbstractInterval, Position};
 use rust_htslib::bcf::Header;
 use serde::{de::Error, Deserialize, Serialize};
+
+use crate::record::StrandBias::{Detected, TooFewReads, UnDetected};
 
 const CARGO_PKG_NAME: &str = env!("CARGO_PKG_NAME");
 const CARGO_PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -24,13 +29,124 @@ where
     D: serde::Deserializer<'de>,
 {
     let s: &str = Deserialize::deserialize(deserializer)
-        .expect("Could not deserialize a maybe-infinite (Inf, -Inf) floating point number.");
+        .expect("Could not parse a maybe-infinite (Inf, -Inf) floating point number.");
     if s == "Inf" {
         Ok(f32::INFINITY)
     } else if s == "-Inf" {
         Ok(f32::NEG_INFINITY)
     } else {
         f32::from_str(&s).map_err(D::Error::custom)
+    }
+}
+
+/// Deserialize VarDict/VarDictJava strand bias status into an enumeration of strand bias. The
+/// incoming value takes the values [0-2];[0-2] (_e.g._ "0;2", "2;1"). The first value refers to
+/// reads that support the reference allele, and the second to reads that support the variant
+/// allele.
+///
+/// * `0`: there were too few reads to say otherwise (less than 12 for the sum of forward and reverse reads)
+/// * `1`: strand bias was detected
+/// * `2`: no strand bias was undetected
+fn to_strand_bias_status<'de, D>(deserializer: D) -> Result<PairBias, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s: &str = Deserialize::deserialize(deserializer)
+        .expect("Could not parse the paired strand bias status.");
+    PairBias::from_str(s).map_err(D::Error::custom)
+}
+
+/// The strand bias status for a reference allele alternate allele pair.
+#[derive(Debug, Deserialize, PartialEq, Serialize)]
+pub struct PairBias {
+    /// The reference allele strand bias status.
+    pub reference: StrandBias,
+    /// The alternate allele strand bias status.
+    pub alternate: StrandBias,
+}
+
+impl Default for PairBias {
+    /// The default paired bias status is no strand bias detectd.
+    fn default() -> Self {
+        PairBias {
+            reference: StrandBias::UnDetected,
+            alternate: StrandBias::UnDetected,
+        }
+    }
+}
+
+impl ToString for PairBias {
+    fn to_string(&self) -> String {
+        format!("{}:{}", self.reference, self.alternate)
+    }
+}
+
+/// An exception for when we cannot parse a string into a `PairBias`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PairBiasParseError;
+
+impl fmt::Display for PairBiasParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "PairBiasParseError")
+    }
+}
+
+impl FromStr for PairBias {
+    type Err = PairBiasParseError;
+
+    /// Convert a string to a `StrandBias` status.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let items: Vec<&str> = s.split(';').collect();
+        let pair = match (items.get(0), items.get(1)) {
+            (Some(reference), Some(alternate)) => PairBias {
+                reference: StrandBias::from_str(reference).map_err(|_| PairBiasParseError)?,
+                alternate: StrandBias::from_str(alternate).map_err(|_| PairBiasParseError)?,
+            },
+            (_, _) => return Err(PairBiasParseError),
+        };
+
+        Ok(pair)
+    }
+}
+
+/// Enumeration of VarDict/VarDictJava strand bias statuses.
+#[derive(Debug, Deserialize, PartialEq, Serialize)]
+pub enum StrandBias {
+    /// There were too few reads to say otherwise (less than 12 for the sum of forward and reverse reads).
+    TooFewReads,
+    /// Strand bias was detected.
+    Detected,
+    /// Strand bias was undetected.
+    UnDetected,
+}
+
+impl fmt::Display for StrandBias {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+/// An exception for when we cannot parse a string into a `StrandBias`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseStrandBiasError;
+
+impl fmt::Display for ParseStrandBiasError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ParseStrandBiasError")
+    }
+}
+
+impl FromStr for StrandBias {
+    type Err = ParseStrandBiasError;
+
+    /// Convert a string to a `StrandBias` status.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match &s[..] {
+            "0" => Ok(TooFewReads),
+            "1" => Ok(Detected),
+            "2" => Ok(UnDetected),
+            _ => Err(ParseStrandBiasError),
+        }
     }
 }
 
@@ -71,19 +187,20 @@ pub struct TumorOnlyVariant<'a> {
     /// value refers to reads that support the reference allele, and the second to reads that
     /// support the variant allele.
     ///
-    /// * `0`: small total count of reads (less than 12 for the sum of forward and reverse reads)
-    /// * `1`: strand bias
-    /// * `2`: no strand bias
-    pub strand_bias: &'a str,
+    /// * `0`: there were too few reads to say otherwise (less than 12 for the sum of forward and reverse reads)
+    /// * `1`: strand bias was detected
+    /// * `2`: no strand bias was undetected
+    #[serde(deserialize_with = "to_strand_bias_status")]
+    pub strand_bias: PairBias,
     /// The mean distance to the nearest 5 or 3 prime read end (whichever is closer) in all reads
     /// that support the variant call.
     pub mean_position_in_read: f32,
     /// The standard deviation of the distance to the nearest 5 or 3 prime read end (whichever is
     /// closer) in all reads that support the variant call.
     pub stdev_position_in_read: f32,
-    /// The mean base quality (phred) of all bases that directly support the variant call.
+    /// The mean base quality (Phred) of all bases that directly support the variant call.
     pub mean_base_quality: f32,
-    /// The standard deviation of the base quality (phred)) of all bases that directly support
+    /// The standard deviation of the base quality (Phred)) of all bases that directly support
     /// the variant call.
     pub stdev_base_quality: f32,
     /// The Fisher test p-value for if you should reject the hypothesis that there is no strand
@@ -92,7 +209,7 @@ pub struct TumorOnlyVariant<'a> {
     #[serde(deserialize_with = "maybe_infinite_f32")]
     /// The odds ratio for strand bias.
     pub strand_bias_odds_ratio: f32,
-    /// The mean mapping quality (phred) of all reads that directly support the variant call.
+    /// The mean mapping quality (Phred) of all reads that directly support the variant call.
     pub mean_mapping_quality: f32,
     /// The signal to noise ratio.
     pub signal_to_noise: i32,
@@ -150,16 +267,16 @@ pub fn tumor_only_header(sample: &str) -> Header {
     header.push_sample(sample.as_bytes());
     header.remove_filter(b"PASS");
     header.push_record(format!("##source={}", source).as_bytes());
-    header.push_record(r#"##INFO=<ID=BIAS,Number=1,Type=String,Description="Strand bias flags, see VarDictJava documentation for more information">"#.as_bytes());
+    header.push_record(r#"##INFO=<ID=BIAS,Number=1,Type=String,Description="Strand bias flags (UnDetected, Detected, TooFewReads) in the format `reference`:`alternate`.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=REFBIAS,Number=1,Type=String,Description="Strand bias in reads that support the reference call">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=VARBIAS,Number=1,Type=String,Description="Strand bias in reads that support the variant call">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=PMEAN,Number=1,Type=Float,Description="The mean distance to the nearest 5 or 3 prime read end (whichever is closer) in all reads that support the variant call">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=PSTD,Number=1,Type=Float,Description="The standard deviation of the distance to the nearest 5 or 3 prime read end (whichever is closer) in all reads that support the variant call">"#.as_bytes());
-    header.push_record(r#"##INFO=<ID=QUAL,Number=1,Type=Float,Description="The mean base quality (phred) of all bases that directly support the variant call">"#.as_bytes());
-    header.push_record(r#"##INFO=<ID=QSTD,Number=1,Type=Float,Description="The standard deviation of the base quality (phred)) of all bases that directly support the variant call">"#.as_bytes());
+    header.push_record(r#"##INFO=<ID=QUAL,Number=1,Type=Float,Description="The mean base quality (Phred) of all bases that directly support the variant call">"#.as_bytes());
+    header.push_record(r#"##INFO=<ID=QSTD,Number=1,Type=Float,Description="The standard deviation of the base quality (Phred)) of all bases that directly support the variant call">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=SBF,Number=1,Type=Float,Description="The Fisher test p-value for if you should reject the hypothesis that there is no strand bias. Non-multiple hypothesis test corrected">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=ODDRATIO,Number=1,Type=Float,Description="The odds ratio for strand bias for this variant call">"#.as_bytes());
-    header.push_record(r#"##INFO=<ID=MQ,Number=1,Type=Float,Description="The mean mapping quality (phred) of all reads that directly support the variant call">"#.as_bytes());
+    header.push_record(r#"##INFO=<ID=MQ,Number=1,Type=Float,Description="The mean mapping quality (Phred) of all reads that directly support the variant call">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=SN,Number=1,Type=Float,Description="The signal to noise ratio for this variant call">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=HIAF,Number=1,Type=Float,Description="Allele frequency calculated using only high quality bases. Lossy due to rounding">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=ADJAF,Number=1,Type=Float,Description="Adjusted allele frequency for indels due to local realignment. Lossy due to rounding">"#.as_bytes());
@@ -177,8 +294,8 @@ pub fn tumor_only_header(sample: &str) -> Header {
     header.push_record(r#"##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="The length of stuctural variant in base pairs of reference genome, if this call is a structural variant">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=DUPRATE,Number=1,Type=Float,Description="The duplication rate, if this call is a duplication">"#.as_bytes());
     header.push_record(r#"##FILTER=<ID=PASS,Description="The variant call has passed all filters and may be considered for downstream analysis">"#.as_bytes());
-    header.push_record(r#"##FILTER=<ID=q22.5,Description="The mean base quality (phred) of all bases that directly support this variant call is below 22.5">"#.as_bytes());
-    header.push_record(r#"##FILTER=<ID=Q10,Description="The mean mapping quality (phred) in reads that suppr 10">"#.as_bytes());
+    header.push_record(r#"##FILTER=<ID=q22.5,Description="The mean base quality (Phred) of all bases that directly support this variant call is below 22.5">"#.as_bytes());
+    header.push_record(r#"##FILTER=<ID=Q10,Description="The mean mapping quality (Phred) in reads that suppr 10">"#.as_bytes());
     header.push_record(r#"##FILTER=<ID=MSI12,Description="The variant call is in a microsatellite region with 12 non-monomer MSI or 13 monomer MSI">"#.as_bytes());
     header.push_record(r#"##FILTER=<ID=NM8.0,Description="The mean mismatches in reads that support the variant call is >= 8.0, and might be a false positive or contamination">"#.as_bytes());
     header.push_record(r#"##FILTER=<ID=InGap,Description="The variant call is in a deletion gap, and might be a false positive">"#.as_bytes());
@@ -211,9 +328,9 @@ mod tests {
     #[rustfmt::skip]
     fn variants() -> Vec<TumorOnlyVariant<'static>> {
         vec!(
-            TumorOnlyVariant { sample: "dna00001", interval_name: "NRAS-Q61", contig: "chr1", start: 114713883, end: 114713883, ref_allele: "G", alt_allele: "A", depth: 8104, alt_depth: 1, ref_forward: 2766, ref_reverse: 5280, alt_forward: 1, alt_reverse: 0, gt: "G/A", af: 0.0001, strand_bias: "2;0", mean_position_in_read: 13.0, stdev_position_in_read: 0.0, mean_base_quality: 90.0, stdev_base_quality: 0.0, strand_bias_p_value: 0.34385, strand_bias_odds_ratio: 0.0, mean_mapping_quality: 60.0, signal_to_noise: 2, af_high_quality_bases: 0.0001, af_adjusted: 0.0, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 1, microsatellite_length: 1, mean_mismatches_in_reads: 2.0, high_quality_variant_reads: 1, high_quality_total_reads: 8048, flank_seq_5_prime: "TCGCCTGTCCTCATGTATTG", flank_seq_3_prime: "TCTCTCATGGCACTGTACTC", segment: "chr1:114713749-114713988", variant_type: "SNV", duplication_rate: 0.0, sv_details: "0", distance_to_crispr_site: None },
-            TumorOnlyVariant { sample: "dna00001", interval_name: "NRAS-Q61", contig: "chr1", start: 114713883, end: 114713883, ref_allele: "G", alt_allele: "T", depth: 8104, alt_depth: 1, ref_forward: 2766, ref_reverse: 5280, alt_forward: 0, alt_reverse: 1, gt: "G/T", af: 0.0001, strand_bias: "2;0", mean_position_in_read: 28.0, stdev_position_in_read: 0.0, mean_base_quality: 90.0, stdev_base_quality: 0.0, strand_bias_p_value: 1.0, strand_bias_odds_ratio: f32::INFINITY, mean_mapping_quality: 60.0, signal_to_noise: 2, af_high_quality_bases: 0.0001, af_adjusted: 0.0, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 1, microsatellite_length: 1, mean_mismatches_in_reads: 1.0, high_quality_variant_reads: 1, high_quality_total_reads: 8048, flank_seq_5_prime: "TCGCCTGTCCTCATGTATTG", flank_seq_3_prime: "TCTCTCATGGCACTGTACTC", segment: "chr1:114713749-114713988", variant_type: "SNV", duplication_rate: 0.0, sv_details: "0", distance_to_crispr_site: None },
-            TumorOnlyVariant { sample: "dna00001", interval_name: "NRAS-Q61", contig: "chr1", start: 114713880, end: 114713880, ref_allele: "T", alt_allele: "A", depth: 8211, alt_depth: 1, ref_forward: 3001, ref_reverse: 5130, alt_forward: 1, alt_reverse: 0, gt: "T/A", af: 0.0001, strand_bias: "2;0", mean_position_in_read: 18.0, stdev_position_in_read: 0.0, mean_base_quality: 90.0, stdev_base_quality: 0.0, strand_bias_p_value: 0.36916, strand_bias_odds_ratio: f32::NEG_INFINITY, mean_mapping_quality: 60.0, signal_to_noise: 2, af_high_quality_bases: 0.0001, af_adjusted: 0.0, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 2, microsatellite_length: 1, mean_mismatches_in_reads: 1.0, high_quality_variant_reads: 1, high_quality_total_reads: 8132, flank_seq_5_prime: "CCTTCGCCTGTCCTCATGTA", flank_seq_3_prime: "TGGTCTCTCATGGCACTGTA", segment: "chr1:114713749-114713988", variant_type: "SNV", duplication_rate: 0.0, sv_details: "0", distance_to_crispr_site: None },
+            TumorOnlyVariant { sample: "dna00001", interval_name: "NRAS-Q61", contig: "chr1", start: 114713883, end: 114713883, ref_allele: "G", alt_allele: "A", depth: 8104, alt_depth: 1, ref_forward: 2766, ref_reverse: 5280, alt_forward: 1, alt_reverse: 0, gt: "G/A", af: 0.0001, strand_bias: PairBias::from_str("2;0").unwrap(), mean_position_in_read: 13.0, stdev_position_in_read: 0.0, mean_base_quality: 90.0, stdev_base_quality: 0.0, strand_bias_p_value: 0.34385, strand_bias_odds_ratio: 0.0, mean_mapping_quality: 60.0, signal_to_noise: 2, af_high_quality_bases: 0.0001, af_adjusted: 0.0, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 1, microsatellite_length: 1, mean_mismatches_in_reads: 2.0, high_quality_variant_reads: 1, high_quality_total_reads: 8048, flank_seq_5_prime: "TCGCCTGTCCTCATGTATTG", flank_seq_3_prime: "TCTCTCATGGCACTGTACTC", segment: "chr1:114713749-114713988", variant_type: "SNV", duplication_rate: 0.0, sv_details: "0", distance_to_crispr_site: None },
+            TumorOnlyVariant { sample: "dna00001", interval_name: "NRAS-Q61", contig: "chr1", start: 114713883, end: 114713883, ref_allele: "G", alt_allele: "T", depth: 8104, alt_depth: 1, ref_forward: 2766, ref_reverse: 5280, alt_forward: 0, alt_reverse: 1, gt: "G/T", af: 0.0001, strand_bias: PairBias::from_str("2;0").unwrap(), mean_position_in_read: 28.0, stdev_position_in_read: 0.0, mean_base_quality: 90.0, stdev_base_quality: 0.0, strand_bias_p_value: 1.0, strand_bias_odds_ratio: f32::INFINITY, mean_mapping_quality: 60.0, signal_to_noise: 2, af_high_quality_bases: 0.0001, af_adjusted: 0.0, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 1, microsatellite_length: 1, mean_mismatches_in_reads: 1.0, high_quality_variant_reads: 1, high_quality_total_reads: 8048, flank_seq_5_prime: "TCGCCTGTCCTCATGTATTG", flank_seq_3_prime: "TCTCTCATGGCACTGTACTC", segment: "chr1:114713749-114713988", variant_type: "SNV", duplication_rate: 0.0, sv_details: "0", distance_to_crispr_site: None },
+            TumorOnlyVariant { sample: "dna00001", interval_name: "NRAS-Q61", contig: "chr1", start: 114713880, end: 114713880, ref_allele: "T", alt_allele: "A", depth: 8211, alt_depth: 1, ref_forward: 3001, ref_reverse: 5130, alt_forward: 1, alt_reverse: 0, gt: "T/A", af: 0.0001, strand_bias: PairBias::from_str("2;0").unwrap(), mean_position_in_read: 18.0, stdev_position_in_read: 0.0, mean_base_quality: 90.0, stdev_base_quality: 0.0, strand_bias_p_value: 0.36916, strand_bias_odds_ratio: f32::NEG_INFINITY, mean_mapping_quality: 60.0, signal_to_noise: 2, af_high_quality_bases: 0.0001, af_adjusted: 0.0, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 2, microsatellite_length: 1, mean_mismatches_in_reads: 1.0, high_quality_variant_reads: 1, high_quality_total_reads: 8132, flank_seq_5_prime: "CCTTCGCCTGTCCTCATGTA", flank_seq_3_prime: "TGGTCTCTCATGGCACTGTA", segment: "chr1:114713749-114713988", variant_type: "SNV", duplication_rate: 0.0, sv_details: "0", distance_to_crispr_site: None },
         )
     }
 

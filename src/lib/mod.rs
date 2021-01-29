@@ -67,7 +67,7 @@ where
 
     let mut writer = match output {
         Some(output) => VcfWriter::from_path(&output, &header, !has_gzip_ext(&output), Format::VCF),
-        None => VcfWriter::from_stdout(&header, false, Format::VCF),
+        None => VcfWriter::from_stdout(&header, true, Format::VCF),
     }
     .expect("Could not build a VCF writer.");
 
@@ -87,7 +87,7 @@ where
 
         variant.push_info_float(b"PMEAN", &[var.mean_position_in_read])?;
         variant.push_info_float(b"PSTD", &[var.stdev_position_in_read])?;
-        // variant.push_info_integer(b"BIAS", &[var.])?;
+        variant.push_info_string(b"BIAS", &[var.strand_bias.to_string().as_bytes()])?;
         // variant.push_info_integer(b"REFBIAS", &[var.])?;
         // variant.push_info_integer(b"VARBIAS", &[var.])?;
         variant.push_info_float(b"QUAL", &[var.mean_base_quality])?;
