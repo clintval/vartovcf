@@ -80,7 +80,6 @@ where
         assert_eq!(var.sample, sample, "Variant record and sample do not match: {:?}", var);
         let rid = writer.header().name2rid(var.contig.as_bytes()).unwrap();
 
-        // TODO: Set these correctly based on parsing the phasing information.
         let alleles = &[GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(1)];
 
         variant.set_rid(Some(rid));
