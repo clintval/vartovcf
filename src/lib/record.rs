@@ -343,7 +343,7 @@ mod tests {
             ("chr1", Range { start: 114713880 - 1, end: 114713880 } ),
         ];
         for (variant, (contig, range)) in variants.iter().zip(expected.iter()) {
-            assert_eq!(&variant.contig, contig);
+            assert_eq!(&variant.contig(), contig);
             assert_eq!(&variant.range(), range);
         }
     }
@@ -378,6 +378,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(tarpaulin_include))]
     fn test_tumor_only_header() {
         let header = tumor_only_header("dna00001");
         let file = NamedTempFile::new().expect("Cannot create temporary file.");
@@ -390,7 +391,7 @@ mod tests {
             assert_eq!(key, &"source");
             assert_eq!(value, &[CARGO_PKG_NAME, CARGO_PKG_VERSION].join("-"));
         } else {
-            panic!("Expected source header record (tool, version) at this index")
+            panic!("Expected source header record (tool, version) at this index.")
         }
 
         let samples = reader.header().samples();
