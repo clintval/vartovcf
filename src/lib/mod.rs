@@ -25,7 +25,7 @@ pub mod record;
 pub const DEFAULT_LOG_LEVEL: &str = "info";
 
 /// Namespace for path parts and extensions.
-mod path {
+pub mod path {
 
     /// The Gzip extension.
     pub const GZIP_EXTENSION: &str = "gz";
