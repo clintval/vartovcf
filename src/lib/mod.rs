@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use csv::ReaderBuilder;
 use log::*;
-use rust_htslib::bcf::record::GenotypeAllele;
 use rust_htslib::bcf::Format;
+use rust_htslib::bcf::record::GenotypeAllele;
 use rust_htslib::bcf::Writer as VcfWriter;
 
 use crate::fai::{contigs_to_vcf_header, fai_file, vcf_contig_header_records};
@@ -77,6 +77,7 @@ where
 
     while reader.read_record(&mut carry)? {
         let var: TumorOnlyVariant = carry.deserialize(None)?;
+        assert_eq!(var.sample, sample, "Variant record and sample do not match: {:?}", var);
         let rid = writer.header().name2rid(var.contig.as_bytes()).unwrap();
 
         // TODO: Set these correctly based on parsing the phasing information.
@@ -130,19 +131,20 @@ mod tests {
     use std::path::PathBuf;
 
     use anyhow::Result;
+    use file_diff::diff;
     use tempfile::NamedTempFile;
 
     use super::*;
 
     #[test]
     fn test_vartovcf_run() -> Result<(), Box<dyn std::error::Error>> {
-        let sample = "DNA00001";
+        let sample = "dna00001";
         let input = BufReader::new(File::open("tests/nras.var")?);
         let output = NamedTempFile::new().expect("Cannot create temporary file.");
         let reference = PathBuf::from("tests/reference.fa");
         let exit = vartovcf(input, Some(output.path().into()), &reference, &sample)?;
         assert_eq!(exit, 0);
-        // TODO: Check output against a plain text file, line-by-line?
+        assert!(diff(&output.path().to_str().unwrap(), "tests/nras.vcf"));
         Ok(())
     }
 }
