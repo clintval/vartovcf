@@ -35,8 +35,8 @@ Convert variants from VarDict/VarDictJava into VCF format, fast.
 [2021-01-28T06:50:44Z INFO  vartovcflib::vartovcf] Output file: "/dev/null"
 [2021-01-28T06:50:45Z INFO  vartovcflib::vartovcf] Processed 22353 variant records
 
-❯ hyperfine --warmup 5 'vartovcf -i test.var -o /dev/null -r /references/hs38DH.fa' -s dna00001
-Benchmark #1: vartovcf -i test.var -o /dev/null -r /references/hs38DH.fa -s dna00001
+❯ hyperfine --warmup 5 'vartovcf -r /references/hs38DH.fa -s dna00001 < test.var > /dev/null'
+Benchmark #1: vartovcf -r /references/hs38DH.fa -s dna00001 < test.var > /dev/null
   Time (mean ± σ):     210.2 ms ±   2.5 ms    [User: 204.4 ms, System: 4.2 ms]
   Range (min … max):   206.9 ms … 218.0 ms    14 runs
 
