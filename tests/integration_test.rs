@@ -28,21 +28,19 @@ mod tests {
     #[test]
     #[rustfmt::skip]
     fn run_end_to_end_success_streaming_io() -> Result<(), Box<dyn std::error::Error>> {
-        let expected = read_to_string("tests/nras.vcf")?;
         let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
         cmd
             .arg("--reference").arg("tests/reference.fa")
             .arg("--sample").arg("dna00001")
             .pipe_stdin("tests/nras.var")?
             .assert()
-            .stdout(expected);
+            .stdout(read_to_string("tests/nras.vcf")?);
         Ok(())
     }
 
     #[test]
     #[rustfmt::skip]
     fn run_end_to_end_success_streaming_io_with_dash() -> Result<(), Box<dyn std::error::Error>> {
-        let expected = read_to_string("tests/nras.vcf")?;
         let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
         cmd
             .arg("--input").arg("-")
@@ -51,7 +49,7 @@ mod tests {
             .arg("--sample").arg("dna00001")
             .pipe_stdin("tests/nras.var")?
             .assert()
-            .stdout(expected);
+            .stdout(read_to_string("tests/nras.vcf")?);
         Ok(())
     }
 }
