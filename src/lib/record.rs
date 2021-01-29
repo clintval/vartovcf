@@ -378,7 +378,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(tarpaulin_include))]
     fn test_tumor_only_header() {
         let header = tumor_only_header("dna00001");
         let file = NamedTempFile::new().expect("Cannot create temporary file.");

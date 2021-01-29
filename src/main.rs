@@ -50,9 +50,10 @@ fn main() -> Result<(), Error> {
             Box::new(std::io::stdin())
         }
     };
+
     match &opt.output {
-        Some(output) => info!("Output file: {:?}", output),
-        None => info!("Output stream: STDOUT"),
+        Some(output) if output.to_str().unwrap() != "-" => info!("Output file: {:?}", output),
+        _ => info!("Output stream: STDOUT"),
     }
 
     match vartovcf(input, opt.output, &opt.reference, &opt.sample) {
