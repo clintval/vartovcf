@@ -34,7 +34,7 @@ serde = { version = "1.0", features = ["derive"] }
 structopt = "0.3"
 
 [dev-dependencies]
-assert_cmd = "0.10"
+assert_cmd = "1.0.2"
 env_logger = "0.8"
 file_diff = "1.0.0"
 rstest = "0.6"
