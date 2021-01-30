@@ -2,6 +2,7 @@
 use std::clone::Clone;
 use std::cmp::PartialEq;
 use std::default::Default;
+use std::error;
 use std::fmt;
 use std::ops::Range;
 use std::str::FromStr;
@@ -56,6 +57,61 @@ where
     PairBias::from_str(s).map_err(D::Error::custom)
 }
 
+impl error::Error for ParsePairBiasError {}
+
+/// An exception for when we cannot parse a string into a `StrandBias`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseStrandBiasError;
+
+impl fmt::Display for ParseStrandBiasError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ParseStrandBiasError")
+    }
+}
+
+impl error::Error for ParseStrandBiasError {}
+
+/// An exception for when we cannot parse a string into a `PairBias`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsePairBiasError;
+
+impl fmt::Display for ParsePairBiasError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ParsePairBiasError")
+    }
+}
+
+/// Enumeration of VarDict/VarDictJava strand bias statuses.
+#[derive(Debug, Deserialize, PartialEq, Serialize)]
+pub enum StrandBias {
+    /// There were too few reads to say otherwise (less than 12 for the sum of forward and reverse reads).
+    TooFewReads,
+    /// Strand bias was detected.
+    Detected,
+    /// Strand bias was undetected.
+    UnDetected,
+}
+
+impl fmt::Display for StrandBias {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl FromStr for StrandBias {
+    type Err = ParseStrandBiasError;
+
+    /// Convert a string to a `StrandBias` status.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match &s[..] {
+            "0" => Ok(TooFewReads),
+            "1" => Ok(Detected),
+            "2" => Ok(UnDetected),
+            _ => Err(ParseStrandBiasError),
+        }
+    }
+}
+
 /// The strand bias status for a reference allele alternate allele pair.
 #[derive(Debug, Deserialize, PartialEq, Serialize)]
 pub struct PairBias {
@@ -81,72 +137,21 @@ impl ToString for PairBias {
     }
 }
 
-/// An exception for when we cannot parse a string into a `PairBias`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PairBiasParseError;
-
-impl fmt::Display for PairBiasParseError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "PairBiasParseError")
-    }
-}
-
 impl FromStr for PairBias {
-    type Err = PairBiasParseError;
+    type Err = ParsePairBiasError;
 
     /// Convert a string to a `StrandBias` status.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let items: Vec<&str> = s.split(';').collect();
         let pair = match (items.get(0), items.get(1)) {
             (Some(reference), Some(alternate)) => PairBias {
-                reference: StrandBias::from_str(reference).map_err(|_| PairBiasParseError)?,
-                alternate: StrandBias::from_str(alternate).map_err(|_| PairBiasParseError)?,
+                reference: StrandBias::from_str(reference).map_err(|_| ParsePairBiasError)?,
+                alternate: StrandBias::from_str(alternate).map_err(|_| ParsePairBiasError)?,
             },
-            (_, _) => return Err(PairBiasParseError),
+            (_, _) => return Err(ParsePairBiasError),
         };
 
         Ok(pair)
-    }
-}
-
-/// Enumeration of VarDict/VarDictJava strand bias statuses.
-#[derive(Debug, Deserialize, PartialEq, Serialize)]
-pub enum StrandBias {
-    /// There were too few reads to say otherwise (less than 12 for the sum of forward and reverse reads).
-    TooFewReads,
-    /// Strand bias was detected.
-    Detected,
-    /// Strand bias was undetected.
-    UnDetected,
-}
-
-impl fmt::Display for StrandBias {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self)
-    }
-}
-
-/// An exception for when we cannot parse a string into a `StrandBias`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParseStrandBiasError;
-
-impl fmt::Display for ParseStrandBiasError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "ParseStrandBiasError")
-    }
-}
-
-impl FromStr for StrandBias {
-    type Err = ParseStrandBiasError;
-
-    /// Convert a string to a `StrandBias` status.
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match &s[..] {
-            "0" => Ok(TooFewReads),
-            "1" => Ok(Detected),
-            "2" => Ok(UnDetected),
-            _ => Err(ParseStrandBiasError),
-        }
     }
 }
 
@@ -332,6 +337,54 @@ mod tests {
             TumorOnlyVariant { sample: "dna00001", interval_name: "NRAS-Q61", contig: "chr1", start: 114713883, end: 114713883, ref_allele: "G", alt_allele: "T", depth: 8104, alt_depth: 1, ref_forward: 2766, ref_reverse: 5280, alt_forward: 0, alt_reverse: 1, gt: "G/T", af: 0.0001, strand_bias: PairBias::from_str("2;0").unwrap(), mean_position_in_read: 28.0, stdev_position_in_read: 0.0, mean_base_quality: 90.0, stdev_base_quality: 0.0, strand_bias_p_value: 1.0, strand_bias_odds_ratio: f32::INFINITY, mean_mapping_quality: 60.0, signal_to_noise: 2, af_high_quality_bases: 0.0001, af_adjusted: 0.0, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 1, microsatellite_length: 1, mean_mismatches_in_reads: 1.0, high_quality_variant_reads: 1, high_quality_total_reads: 8048, flank_seq_5_prime: "TCGCCTGTCCTCATGTATTG", flank_seq_3_prime: "TCTCTCATGGCACTGTACTC", segment: "chr1:114713749-114713988", variant_type: "SNV", duplication_rate: 0.0, sv_details: "0", distance_to_crispr_site: None },
             TumorOnlyVariant { sample: "dna00001", interval_name: "NRAS-Q61", contig: "chr1", start: 114713880, end: 114713880, ref_allele: "T", alt_allele: "A", depth: 8211, alt_depth: 1, ref_forward: 3001, ref_reverse: 5130, alt_forward: 1, alt_reverse: 0, gt: "T/A", af: 0.0001, strand_bias: PairBias::from_str("2;0").unwrap(), mean_position_in_read: 18.0, stdev_position_in_read: 0.0, mean_base_quality: 90.0, stdev_base_quality: 0.0, strand_bias_p_value: 0.36916, strand_bias_odds_ratio: f32::NEG_INFINITY, mean_mapping_quality: 60.0, signal_to_noise: 2, af_high_quality_bases: 0.0001, af_adjusted: 0.0, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 2, microsatellite_length: 1, mean_mismatches_in_reads: 1.0, high_quality_variant_reads: 1, high_quality_total_reads: 8132, flank_seq_5_prime: "CCTTCGCCTGTCCTCATGTA", flank_seq_3_prime: "TGGTCTCTCATGGCACTGTA", segment: "chr1:114713749-114713988", variant_type: "SNV", duplication_rate: 0.0, sv_details: "0", distance_to_crispr_site: None },
         )
+    }
+
+    #[test]
+    fn test_pair_bias_default() {
+        let expected = PairBias {
+            reference: StrandBias::UnDetected,
+            alternate: StrandBias::UnDetected,
+        };
+        assert_eq!(PairBias::default(), expected);
+    }
+
+    #[rstest(
+        int,
+        expected,
+        case("0", StrandBias::TooFewReads),
+        case("1", StrandBias::Detected),
+        case("2", StrandBias::UnDetected)
+    )]
+    fn test_strand_bias_from_str(int: &str, expected: StrandBias) {
+        assert_eq!(StrandBias::from_str(int).expect("Parse failed!"), expected);
+    }
+
+    #[test]
+    fn test_strand_bias_err_display() {
+        assert_eq!(&format!("{}", ParseStrandBiasError), "ParseStrandBiasError");
+    }
+
+    #[test]
+    fn test_strand_bias_from_str_err() {
+        assert_eq!(StrandBias::from_str("3"), Err(ParseStrandBiasError));
+    }
+
+    #[rstest(
+        left => ["0", "1", "2"],
+        right => ["0", "1", "2"]
+    )]
+    fn test_pair_bias_from_str(left: &str, right: &str) {
+        assert!(PairBias::from_str(&format!("{};{}", left, right)).is_ok());
+    }
+
+    #[test]
+    fn test_pair_bias_err_display() {
+        assert_eq!(&format!("{}", ParsePairBiasError), "ParsePairBiasError");
+    }
+
+    #[test]
+    fn test_pair_bias_from_str_err() {
+        assert_eq!(PairBias::from_str("3;0"), Err(ParsePairBiasError));
     }
 
     #[rstest]
