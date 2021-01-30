@@ -77,12 +77,10 @@ where
 
     while reader.read_record(&mut carry)? {
         let var: TumorOnlyVariant = carry.deserialize(None)?;
-
-        assert_eq!(
-            var.sample, sample,
-            "Variant vs sample do not match: {:?}",
-            var
-        );
+        if var.sample != sample {
+            let message = format!("Expected sample '{}' found '{}'", sample, var.sample);
+            return Err(message.into());
+        };
 
         let rid = writer.header().name2rid(var.contig.as_bytes()).unwrap();
         let alleles = &[GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(1)];
@@ -150,5 +148,15 @@ mod tests {
         assert_eq!(exit, 0);
         assert!(diff(&output.path().to_str().unwrap(), "tests/nras.vcf"));
         Ok(())
+    }
+
+    #[test]
+    fn test_when_incorrect_sample() {
+        let sample = "XXXXXXXX";
+        let input = BufReader::new(File::open("tests/nras.var").unwrap());
+        let output = NamedTempFile::new().expect("Cannot create temporary file.");
+        let reference = PathBuf::from("tests/reference.fa");
+        let result = vartovcf(input, Some(output.path().into()), &reference, &sample);
+        assert!(result.is_err());
     }
 }
