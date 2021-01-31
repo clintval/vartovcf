@@ -94,7 +94,7 @@ impl RecordLogger for ProgressLogger<'_> {
         let since = ProgressLogger::format_duration(now.duration_since(self.since)?);
         let elapsed = ProgressLogger::format_duration(self.elapsed_time()?);
         info!(
-            "{} {} {}. Elapsed time: {}. Time for last {} {}: {}",
+            "{} {} {}. Elapsed time: {}. Time of last {} {}: {}",
             self.verb.to_capitalized(),
             self.count,
             self.noun,
