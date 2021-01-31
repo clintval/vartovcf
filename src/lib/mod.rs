@@ -14,7 +14,7 @@ use rust_htslib::bcf::record::GenotypeAllele;
 use rust_htslib::bcf::Format;
 use rust_htslib::bcf::Writer as VcfWriter;
 
-use crate::fai::{contigs_to_vcf_header, fai_file, vcf_contig_header_records};
+use crate::fai::{reference_contigs_to_vcf_header, reference_path_to_vcf_header};
 use crate::io::has_gzip_ext;
 use crate::record::tumor_only_header;
 use crate::record::TumorOnlyVariant;
@@ -56,9 +56,10 @@ where
     I: Read,
     R: AsRef<Path> + Debug,
 {
-    let fai = fai_file(&fasta);
-    let contigs = vcf_contig_header_records(fai).expect("Could not read the FAI index records.");
-    let header = contigs_to_vcf_header(&contigs, tumor_only_header(&sample));
+    let mut header = tumor_only_header(&sample);
+    reference_contigs_to_vcf_header(&fasta, &mut header);
+    reference_path_to_vcf_header(&fasta, &mut header)
+        .expect("Could not add the FASTA file path to the VCF header");
 
     let mut reader = ReaderBuilder::new()
         .delimiter(b'\t')

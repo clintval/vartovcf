@@ -40,11 +40,10 @@ pub fn fai_file<I: AsRef<Path> + Debug>(fasta: I) -> PathBuf {
 }
 
 /// Add a collection of VCF contig header records to the supplied VCF header.
-pub fn contigs_to_vcf_header(contigs: &[String], mut header: Header) -> Header {
+pub fn contigs_to_vcf_header(contigs: &[String], header: &mut Header) {
     for contig in contigs.iter() {
         header.push_record(contig.as_bytes());
     }
-    header
 }
 
 /// Read a FASTA FAI file and create a list of VCF contig header records.
@@ -72,6 +71,31 @@ where
     }
 
     Ok(records)
+}
+
+/// Add the reference contigs from an indexed FASTA file to the VCF header.
+pub fn reference_contigs_to_vcf_header<I>(fasta: I, header: &mut Header)
+where
+    I: AsRef<Path> + Debug,
+{
+    let fai = fai_file(&fasta);
+    let contigs = vcf_contig_header_records(fai).expect("Could not read the FAI index records.");
+    contigs_to_vcf_header(&contigs, header);
+}
+
+/// Add a VCF header record containing the filepath of the reference FASTA.
+pub fn reference_path_to_vcf_header<I>(
+    fasta: I,
+    header: &mut Header,
+) -> Result<(), Box<dyn error::Error>>
+where
+    I: AsRef<Path> + Debug,
+{
+    match fasta.as_ref().to_str() {
+        Some(path) => header.push_record(format!("##reference={}", path).as_bytes()),
+        None => return Err("Could not create a string out of the FASTA path".into()),
+    };
+    Ok(())
 }
 
 #[cfg(test)]
@@ -156,11 +180,11 @@ mod tests {
         let actual = vcf_contig_header_records(&fai.path())
             .expect("Could not parse contig header records from file.");
 
-        let header = Header::default();
-        let header = contigs_to_vcf_header(&actual, header);
+        let mut header = Header::default();
+        contigs_to_vcf_header(&actual, &mut header);
 
         let file = NamedTempFile::new().expect("Cannot create temporary file.");
-        let _ = VcfWriter::from_path(&file.path(), &header, true, Format::VCF).unwrap();
+        let _ = VcfWriter::from_path(&file.path(), &mut header, true, Format::VCF).unwrap();
         let reader = VcfReader::from_path(&file.path()).expect("Error opening tempfile.");
         let records = reader.header().header_records();
 
@@ -183,5 +207,28 @@ mod tests {
         });
         assert!(value);
         Ok(())
+    }
+
+    #[test]
+    fn reference_path_to_vcf_header_exists() {
+        let mut header = Header::default();
+        reference_path_to_vcf_header(&"/references/hg19.fa", &mut header)
+            .expect("Could not add the FASTA file path to the VCF header");
+
+        let file = NamedTempFile::new().expect("Cannot create temporary file.");
+        let _ = VcfWriter::from_path(&file.path(), &mut header, true, Format::VCF).unwrap();
+        let reader = VcfReader::from_path(&file.path()).expect("Error opening tempfile.");
+        let records = reader.header().header_records();
+
+        let test = records.iter().any(|rec| match rec {
+            HeaderRecord::Generic { key, value } => {
+                key == "reference" && value == "/references/hg19.fa"
+            }
+            _ => false,
+        });
+        assert!(
+            test,
+            "Could not find the reference record in the VCF header"
+        )
     }
 }
