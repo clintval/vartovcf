@@ -31,17 +31,19 @@ Convert variants from VarDict/VarDictJava into VCF format, fast.
 
 ```bash
 ❯ vartovcf -r /references/hs38DH.fa -s dna00001 < test.var > /dev/null
-[2021-01-28T06:50:44Z INFO  vartovcflib::vartovcf] Input stream: STDIN
-[2021-01-28T06:50:44Z INFO  vartovcflib::vartovcf] Output stream: STDOUT
-[2021-01-28T06:50:45Z INFO  vartovcflib::vartovcf] Processed 22353 variant records
+[2021-01-31T03:45:12Z INFO  vartovcf] Input stream: STDIN
+[2021-01-31T03:45:12Z INFO  vartovcf] Output stream: STDOUT
+[2021-01-31T03:45:12Z INFO  vartovcflib::progress_logger] Logging records started at: 2021-01-30 22:45:12.
+[2021-01-31T03:45:17Z INFO  vartovcflib::progress_logger] Processed 100000 variant records. Elapsed time: 00:00:05. Time of last 100000 variant records: 00:00:05
+[2021-01-31T03:45:21Z INFO  vartovcflib::progress_logger] Processed 156471 variant records. Elapsed time: 00:00:08. Time of last 56471 variant records: 00:00:03
 
 ❯ hyperfine --warmup 5 'vartovcf -r /references/hs38DH.fa -s dna00001 < test.var > /dev/null'
 Benchmark #1: vartovcf -r /references/hs38DH.fa -s dna00001 < test.var > /dev/null
-  Time (mean ± σ):     210.2 ms ±   2.5 ms    [User: 204.4 ms, System: 4.2 ms]
-  Range (min … max):   206.9 ms … 218.0 ms    14 runs
+  Time (mean ± σ):      1.565 s ±  0.043 s    [User: 1.543 s, System: 0.019 s]
+  Range (min … max):    1.528 s …  1.679 s    10 runs
 
 ❯ hyperfine --warmup 5 'var2vcf_valid.pl -N dna00001 -f 0.0 -E < test.var > /dev/null'
 Benchmark #1: var2vcf_valid.pl -N dna00001 -f 0.0 -E < test.var > /dev/null
-  Time (mean ± σ):     443.2 ms ±  17.0 ms    [User: 416.7 ms, System: 29.1 ms]
-  Range (min … max):   419.6 ms … 469.5 ms    10 runs
+  Time (mean ± σ):      1.815 s ±  0.021 s    [User: 1.680 s, System: 0.128 s]
+  Range (min … max):    1.789 s …  1.848 s    10 runs
 ```
