@@ -88,7 +88,10 @@ where
         };
 
         let rid = writer.header().name2rid(var.contig.as_bytes()).unwrap();
-        let alleles = &[GenotypeAllele::UnphasedMissing, GenotypeAllele::UnphasedMissing];
+        let alleles = &[
+            GenotypeAllele::UnphasedMissing,
+            GenotypeAllele::UnphasedMissing,
+        ];
 
         variant.set_rid(Some(rid));
         variant.set_pos(var.start as i64 - 1);

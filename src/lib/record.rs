@@ -253,7 +253,6 @@ pub struct TumorOnlyVariant<'a> {
 }
 
 impl<'a> TumorOnlyVariant<'a> {
-
     /// Return the "AD" formatted VCF field for this record.
     pub fn ad_value(&self) -> String {
         if self.alt_depth == 0 {
