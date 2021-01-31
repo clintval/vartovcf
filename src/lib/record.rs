@@ -173,17 +173,17 @@ pub struct TumorOnlyVariant<'a> {
     /// The alternate allele, simple or symbolic.
     pub alt_allele: &'a str,
     /// The total allele depth at this call locus.
-    pub depth: u32,
+    pub depth: i32,
     /// The total alternate depth at this call locus.
-    pub alt_depth: u32,
+    pub alt_depth: i32,
     /// The number of forward reads supporting the reference call.
-    pub ref_forward: u32,
+    pub ref_forward: i32,
     /// The number of reverse reads supporting the reference call.
-    pub ref_reverse: u32,
+    pub ref_reverse: i32,
     /// The number of forward reads supporting the alternate call.
-    pub alt_forward: u32,
+    pub alt_forward: i32,
     /// The number of alternate reads supporting the alternate call.
-    pub alt_reverse: u32,
+    pub alt_reverse: i32,
     /// The call's genotype.
     pub gt: &'a str,
     /// The allele frequency of the alternate allele.
@@ -252,6 +252,27 @@ pub struct TumorOnlyVariant<'a> {
     pub distance_to_crispr_site: Option<i32>,
 }
 
+impl<'a> TumorOnlyVariant<'a> {
+    /// Return the "AD" formatted VCF field for this record.
+    pub fn ad_value(&self) -> String {
+        if self.alt_depth == 0 {
+            format!("{}", self.depth)
+        } else {
+            format!("{},{}", self.depth - self.alt_depth, self.alt_depth)
+        }
+    }
+
+    /// Return the "ALD" formatted VCF field for this record.
+    pub fn ald_value(&self) -> String {
+        format!("{},{}", self.alt_forward, self.alt_reverse)
+    }
+
+    /// Return the "RD" formatted VCF field for this record.
+    pub fn rd_value(&self) -> String {
+        format!("{},{}", self.ref_forward, self.ref_reverse)
+    }
+}
+
 impl<'a> AbstractInterval for TumorOnlyVariant<'a> {
     fn contig(&self) -> &str {
         &self.contig
@@ -308,11 +329,11 @@ pub fn tumor_only_header(sample: &str) -> Header {
     header.push_record(r#"##FILTER=<ID=Cluster0bp,Description="At least two variant calls are within 0 base pairs from each other in the reference sequence coordinate system">"#.as_bytes());
     header.push_record(r#"##FILTER=<ID=LongMSI,Description="The variant call is flanked by a long A/T stretch (>=14 base pairs)">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=GT,Number=1,Type=String,Description="The genotype for this sample for this variant call ">"#.as_bytes());
-    header.push_record(r#"##FORMAT=<ID=DP,Number=1,Type=Integer,Description="The total allele depth at this location which potentially includes No-calls">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=VD,Number=1,Type=Integer,Description="The variant allele depth at this location">"#.as_bytes());
+    header.push_record(r#"##FORMAT=<ID=DP,Number=1,Type=Integer,Description="The total allele depth at this location which potentially includes No-calls">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=AD,Number=R,Type=Integer,Description="The allelic depths for the REF and ALT alleles">"#.as_bytes());
-    header.push_record(r#"##FORMAT=<ID=RD,Number=2,Type=Integer,Description="The number of reference forward and reverse reads">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=ALD,Number=2,Type=Integer,Description="The number of variant call forward and reverse reads">"#.as_bytes());
+    header.push_record(r#"##FORMAT=<ID=RD,Number=2,Type=Integer,Description="The number of reference forward and reverse reads">"#.as_bytes());
     header
 }
 
@@ -385,6 +406,30 @@ mod tests {
     #[test]
     fn test_pair_bias_from_str_err() {
         assert_eq!(PairBias::from_str("3;0"), Err(ParsePairBiasError));
+    }
+
+    #[rstest]
+    fn test_tumor_only_variant_ad_value(variants: Vec<TumorOnlyVariant>) {
+        let expected = vec!["8103,1", "8103,1", "8210,1"];
+        for (variant, ad) in variants.iter().zip(expected.iter()) {
+            assert_eq!(&variant.ad_value(), ad);
+        }
+    }
+
+    #[rstest]
+    fn test_tumor_only_variant_ald_value(variants: Vec<TumorOnlyVariant>) {
+        let expected = vec!["1,0", "0,1", "1,0"];
+        for (variant, ad) in variants.iter().zip(expected.iter()) {
+            assert_eq!(&variant.ald_value(), ad);
+        }
+    }
+
+    #[rstest]
+    fn test_tumor_only_variant_rd_value(variants: Vec<TumorOnlyVariant>) {
+        let expected = vec!["2766,5280", "2766,5280", "3001,5130"];
+        for (variant, ad) in variants.iter().zip(expected.iter()) {
+            assert_eq!(&variant.rd_value(), ad);
+        }
     }
 
     #[rstest]

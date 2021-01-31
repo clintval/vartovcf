@@ -36,14 +36,14 @@
 ##FILTER=<ID=Cluster0bp,Description="At least two variant calls are within 0 base pairs from each other in the reference sequence coordinate system">
 ##FILTER=<ID=LongMSI,Description="The variant call is flanked by a long A/T stretch (>=14 base pairs)">
 ##FORMAT=<ID=GT,Number=1,Type=String,Description="The genotype for this sample for this variant call">
-##FORMAT=<ID=DP,Number=1,Type=Integer,Description="The total allele depth at this location which potentially includes No-calls">
 ##FORMAT=<ID=VD,Number=1,Type=Integer,Description="The variant allele depth at this location">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="The total allele depth at this location which potentially includes No-calls">
 ##FORMAT=<ID=AD,Number=R,Type=Integer,Description="The allelic depths for the REF and ALT alleles">
-##FORMAT=<ID=RD,Number=2,Type=Integer,Description="The number of reference forward and reverse reads">
 ##FORMAT=<ID=ALD,Number=2,Type=Integer,Description="The number of variant call forward and reverse reads">
+##FORMAT=<ID=RD,Number=2,Type=Integer,Description="The number of reference forward and reverse reads">
 ##contig=<ID=chr1,length=248956422>
 ##reference=tests/reference.fa
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	dna00001
-chr1	114713883	.	G	A	0	.	PMEAN=13;PSTD=0;BIAS=UnDetected:TooFewReads;QUAL=90;QSTD=0;SBF=0.34385;ODDRATIO=0;MQ=60;SN=2;HIAF=0.0001;ADJAF=0;SHIFT3=0;MSI=1;MSILEN=1;NM=2;LSEQ=TCGCCTGTCCTCATGTATTG;RSEQ=TCTCTCATGGCACTGTACTC;HICNT=1;HICOV=8048;DUPRATE=0	GT	0/1
-chr1	114713883	.	G	T	0	.	PMEAN=28;PSTD=0;BIAS=UnDetected:TooFewReads;QUAL=90;QSTD=0;SBF=1;ODDRATIO=inf;MQ=60;SN=2;HIAF=0.0001;ADJAF=0;SHIFT3=0;MSI=1;MSILEN=1;NM=1;LSEQ=TCGCCTGTCCTCATGTATTG;RSEQ=TCTCTCATGGCACTGTACTC;HICNT=1;HICOV=8048;DUPRATE=0	GT	0/1
-chr1	114713880	.	T	A	0	.	PMEAN=18;PSTD=0;BIAS=UnDetected:TooFewReads;QUAL=90;QSTD=0;SBF=0.36916;ODDRATIO=-inf;MQ=60;SN=2;HIAF=0.0001;ADJAF=0;SHIFT3=0;MSI=2;MSILEN=1;NM=1;LSEQ=CCTTCGCCTGTCCTCATGTA;RSEQ=TGGTCTCTCATGGCACTGTA;HICNT=1;HICOV=8132;DUPRATE=0	GT	0/1
+chr1	114713883	.	G	A	0	.	PMEAN=13;PSTD=0;BIAS=UnDetected:TooFewReads;QUAL=90;QSTD=0;SBF=0.34385;ODDRATIO=0;MQ=60;SN=2;HIAF=0.0001;ADJAF=0;SHIFT3=0;MSI=1;MSILEN=1;NM=2;LSEQ=TCGCCTGTCCTCATGTATTG;RSEQ=TCTCTCATGGCACTGTACTC;HICNT=1;HICOV=8048;DUPRATE=0	GT:VD:DP:AD:ALD:RD	./.:1:8104:8103,1:1,0:2766,5280
+chr1	114713883	.	G	T	0	.	PMEAN=28;PSTD=0;BIAS=UnDetected:TooFewReads;QUAL=90;QSTD=0;SBF=1;ODDRATIO=inf;MQ=60;SN=2;HIAF=0.0001;ADJAF=0;SHIFT3=0;MSI=1;MSILEN=1;NM=1;LSEQ=TCGCCTGTCCTCATGTATTG;RSEQ=TCTCTCATGGCACTGTACTC;HICNT=1;HICOV=8048;DUPRATE=0	GT:VD:DP:AD:ALD:RD	./.:1:8104:8103,1:0,1:2766,5280
+chr1	114713880	.	T	A	0	.	PMEAN=18;PSTD=0;BIAS=UnDetected:TooFewReads;QUAL=90;QSTD=0;SBF=0.36916;ODDRATIO=-inf;MQ=60;SN=2;HIAF=0.0001;ADJAF=0;SHIFT3=0;MSI=2;MSILEN=1;NM=1;LSEQ=CCTTCGCCTGTCCTCATGTA;RSEQ=TGGTCTCTCATGGCACTGTA;HICNT=1;HICOV=8132;DUPRATE=0	GT:VD:DP:AD:ALD:RD	./.:1:8211:8210,1:1,0:3001,5130
