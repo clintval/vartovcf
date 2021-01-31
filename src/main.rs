@@ -1,4 +1,4 @@
-//! Convert variants from VarDict/VarDictJava into VCF format, fast.
+//! Convert variants from VarDict/VarDictJava into VCF v4.2 format.
 //! Only output from tumor-only calling is currently supported.
 use std::fs::File;
 use std::io::{BufReader, Read};

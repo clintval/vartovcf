@@ -4,7 +4,7 @@
 [![Coverage Status](https://coveralls.io/repos/github/clintval/vartovcf/badge.svg?branch=main)](https://coveralls.io/github/clintval/vartovcf?branch=main)
 [![Language](https://img.shields.io/badge/language-rust-a72144.svg)](https://www.rust-lang.org/)
 
-Convert variants from VarDict/VarDictJava into VCF format, fast.
+Convert variants from VarDict/VarDictJava into VCF v4.2 format.
 
 ![The Pacific Northwest - Fish Lake](docs/cover.jpg)
 
@@ -17,14 +17,14 @@ Convert variants from VarDict/VarDictJava into VCF format, fast.
     --fisher \
     calling-intervals.bed \
   | vartovcf -r /references/hg38.fa -s dna00001 \
-  | picard SortVcf -I:/dev/stdin -O:variants.vcf.gz
+  | bcftools sort -Oz > variants.vcf.gz
 ```
 
 #### Features
 
 - Unlike the Perl script bundled with VarDict, this tool streams record-by-record
 - Only the conversion of variant records generated with tumor-only mode is supported
-- Output VCF records are unsorted and a call to `picard SortVcf` is advised
+- Output VCF records are unsorted and a call to `bcftools sort` is advised
 - The output is compliant with the VCF v4.2 and v4.3 specifications
 
 #### Benchmarks
