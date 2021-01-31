@@ -16,11 +16,13 @@ use rust_htslib::bcf::Writer as VcfWriter;
 
 use crate::fai::{reference_contigs_to_vcf_header, reference_path_to_vcf_header};
 use crate::io::has_gzip_ext;
+use crate::progress_logger::{ProgressLogger, RecordLogger, DEFAULT_LOG_EVERY};
 use crate::record::tumor_only_header;
 use crate::record::TumorOnlyVariant;
 
 pub mod fai;
 pub mod io;
+pub mod progress_logger;
 pub mod record;
 
 /// The default log level for the `vartovcf` tool.
@@ -61,6 +63,8 @@ where
     reference_path_to_vcf_header(&fasta, &mut header)
         .expect("Could not add the FASTA file path to the VCF header");
 
+    let mut progress = ProgressLogger::new("processed", "variant records", DEFAULT_LOG_EVERY);
+
     let mut reader = ReaderBuilder::new()
         .delimiter(b'\t')
         .has_headers(false)
@@ -72,7 +76,6 @@ where
     }
     .expect("Could not build a VCF writer.");
 
-    let mut count = 0;
     let mut carry = csv::StringRecord::new();
     let mut variant = writer.empty_record();
 
@@ -80,6 +83,7 @@ where
         let var: TumorOnlyVariant = carry.deserialize(None)?;
         if var.sample != sample {
             let message = format!("Expected sample '{}' found '{}'", sample, var.sample);
+            progress.emit()?;
             return Err(message.into());
         };
 
@@ -120,10 +124,11 @@ where
         variant.set_alleles(&[var.ref_allele.as_bytes(), var.alt_allele.as_bytes()])?;
 
         writer.write(&variant)?;
-        count += 1;
+        progress.observe()?;
     }
 
-    info!("Processed {} variant records", count);
+    progress.emit()?;
+
     Ok(0)
 }
 
