@@ -88,7 +88,7 @@ where
         };
 
         let rid = writer.header().name2rid(var.contig.as_bytes()).unwrap();
-        let alleles = &[GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(1)];
+        let alleles = &[GenotypeAllele::UnphasedMissing, GenotypeAllele::UnphasedMissing];
 
         variant.set_rid(Some(rid));
         variant.set_pos(var.start as i64 - 1);
@@ -119,6 +119,12 @@ where
         // variant.push_info_integer(b"SVTYPE", &[var.])?;
         // variant.push_info_integer(b"SVLEN", &[var.])?; // Ensure is negative for deletion
         variant.push_info_float(b"DUPRATE", &[var.duplication_rate])?;
+
+        variant.push_format_integer(b"VD", &[var.alt_depth])?;
+        variant.push_format_integer(b"DP", &[var.depth])?;
+        variant.push_format_string(b"AD", &[var.ad_value().as_bytes()])?;
+        variant.push_format_string(b"ALD", &[var.ald_value().as_bytes()])?;
+        variant.push_format_string(b"RD", &[var.rd_value().as_bytes()])?;
 
         variant.push_genotypes(alleles).unwrap();
         variant.set_alleles(&[var.ref_allele.as_bytes(), var.alt_allele.as_bytes()])?;
