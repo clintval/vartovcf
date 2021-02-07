@@ -13,6 +13,7 @@ use log::*;
 use rust_htslib::bcf::record::GenotypeAllele;
 use rust_htslib::bcf::Format;
 use rust_htslib::bcf::Writer as VcfWriter;
+use strum::{EnumString, EnumVariantNames, ToString as EnumToString};
 
 use crate::fai::{reference_contigs_to_vcf_header, reference_path_to_vcf_header};
 use crate::io::has_gzip_ext;
@@ -35,6 +36,17 @@ pub mod path {
     pub const GZIP_EXTENSION: &str = "gz";
 }
 
+/// The variant calling modes for VarDict/VarDictJava.
+#[derive(Clone, Copy, Debug, EnumString, EnumToString, EnumVariantNames, PartialOrd, PartialEq)]
+pub enum VarDictMode {
+    /// The amplicon variant calling mode.
+    Amplicon,
+    /// The tumor-normal variant calling mode.
+    TumorNormal,
+    /// The tumor-only variant calling mode.
+    TumorOnly,
+}
+
 /// Runs the tool `vartovcf` on an input VAR file and writes the records to an output VCF file.
 ///
 /// # Arguments
@@ -43,6 +55,7 @@ pub mod path {
 /// * `output` - The output VCF file or stream
 /// * `fasta` - The reference sequence FASTA file, must be indexed
 /// * `sample` - The sample name
+/// * `mode` - The variant calling modes for VarDict/VarDictJava
 ///
 /// # Returns
 ///
@@ -53,11 +66,17 @@ pub fn vartovcf<I, R>(
     output: Option<PathBuf>,
     fasta: R,
     sample: &str,
+    mode: &VarDictMode,
 ) -> Result<i32, Box<dyn error::Error>>
 where
     I: Read,
     R: AsRef<Path> + Debug,
 {
+    assert_eq!(
+        mode,
+        &VarDictMode::TumorOnly,
+        "The only mode currently supported is [TumorOnly]."
+    );
     let mut header = tumor_only_header(&sample);
     reference_contigs_to_vcf_header(&fasta, &mut header);
     reference_path_to_vcf_header(&fasta, &mut header)
@@ -151,6 +170,7 @@ mod tests {
     use file_diff::diff;
     use tempfile::NamedTempFile;
 
+    use super::VarDictMode::TumorOnly;
     use super::*;
 
     #[test]
@@ -159,7 +179,13 @@ mod tests {
         let input = BufReader::new(File::open("tests/nras.var")?);
         let output = NamedTempFile::new().expect("Cannot create temporary file.");
         let reference = PathBuf::from("tests/reference.fa");
-        let exit = vartovcf(input, Some(output.path().into()), &reference, &sample)?;
+        let exit = vartovcf(
+            input,
+            Some(output.path().into()),
+            &reference,
+            &sample,
+            &TumorOnly,
+        )?;
         assert_eq!(exit, 0);
         assert!(diff(&output.path().to_str().unwrap(), "tests/nras.vcf"));
         Ok(())
@@ -171,7 +197,13 @@ mod tests {
         let input = BufReader::new(File::open("tests/nras.var").unwrap());
         let output = NamedTempFile::new().expect("Cannot create temporary file.");
         let reference = PathBuf::from("tests/reference.fa");
-        let result = vartovcf(input, Some(output.path().into()), &reference, &sample);
+        let result = vartovcf(
+            input,
+            Some(output.path().into()),
+            &reference,
+            &sample,
+            &TumorOnly,
+        );
         assert!(result.is_err());
     }
 }
