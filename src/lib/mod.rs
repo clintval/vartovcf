@@ -37,7 +37,7 @@ pub mod path {
 }
 
 /// The variant calling modes for VarDict/VarDictJava.
-#[derive(Clone, Copy, Debug, EnumString, EnumToString, EnumVariantNames, PartialOrd, PartialEq)]
+#[derive(Clone, Copy, Debug, EnumString, EnumToString, EnumVariantNames, PartialEq, PartialOrd)]
 pub enum VarDictMode {
     /// The amplicon variant calling mode.
     Amplicon,

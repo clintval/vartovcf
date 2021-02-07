@@ -12,8 +12,7 @@ use anyhow::Result;
 use bio_types::genome::{AbstractInterval, Position};
 use rust_htslib::bcf::Header;
 use serde::{de::Error, Deserialize, Serialize};
-
-use crate::record::StrandBias::{Detected, TooFewReads, UnDetected};
+use strum::EnumString;
 
 const CARGO_PKG_NAME: &str = env!("CARGO_PKG_NAME");
 const CARGO_PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -72,7 +71,7 @@ impl fmt::Display for ParseStrandBiasError {
 impl error::Error for ParseStrandBiasError {}
 
 /// An exception for when we cannot parse a string into a `PairBias`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ParsePairBiasError;
 
 impl fmt::Display for ParsePairBiasError {
@@ -82,13 +81,16 @@ impl fmt::Display for ParsePairBiasError {
 }
 
 /// Enumeration of VarDict/VarDictJava strand bias statuses.
-#[derive(Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Debug, Deserialize, EnumString, Eq, PartialEq, Serialize)]
 pub enum StrandBias {
     /// There were too few reads to say otherwise (less than 12 for the sum of forward and reverse reads).
+    #[strum(to_string = "0")]
     TooFewReads,
     /// Strand bias was detected.
+    #[strum(to_string = "1")]
     Detected,
     /// Strand bias was undetected.
+    #[strum(to_string = "2")]
     UnDetected,
 }
 
@@ -98,22 +100,8 @@ impl fmt::Display for StrandBias {
     }
 }
 
-impl FromStr for StrandBias {
-    type Err = ParseStrandBiasError;
-
-    /// Convert a string to a `StrandBias` status.
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match &s[..] {
-            "0" => Ok(TooFewReads),
-            "1" => Ok(Detected),
-            "2" => Ok(UnDetected),
-            _ => Err(ParseStrandBiasError),
-        }
-    }
-}
-
 /// The strand bias status for a reference allele alternate allele pair.
-#[derive(Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PairBias {
     /// The reference allele strand bias status.
     pub reference: StrandBias,
@@ -150,7 +138,6 @@ impl FromStr for PairBias {
             },
             (_, _) => return Err(ParsePairBiasError),
         };
-
         Ok(pair)
     }
 }
@@ -383,11 +370,6 @@ mod tests {
     #[test]
     fn test_strand_bias_err_display() {
         assert_eq!(&format!("{}", ParseStrandBiasError), "ParseStrandBiasError");
-    }
-
-    #[test]
-    fn test_strand_bias_from_str_err() {
-        assert_eq!(StrandBias::from_str("3"), Err(ParseStrandBiasError));
     }
 
     #[rstest(
