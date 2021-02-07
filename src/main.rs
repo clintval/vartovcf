@@ -1,5 +1,4 @@
 //! Convert variants from VarDict/VarDictJava into VCF v4.2 format.
-//! Only output from tumor-only calling is currently supported.
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::PathBuf;
@@ -9,27 +8,37 @@ use anyhow::{Error, Result};
 use env_logger::Env;
 use log::*;
 use structopt::StructOpt;
+use strum::VariantNames;
 
-use vartovcflib::vartovcf;
+use vartovcflib::{vartovcf, VarDictMode};
 
 #[derive(Clone, Debug, StructOpt)]
-#[structopt(rename_all = "kebab-case", about)]
+#[structopt(
+    setting = structopt::clap::AppSettings::ColoredHelp,
+    setting = structopt::clap::AppSettings::DeriveDisplayOrder,
+    rename_all = "kebab-case",
+    about
+)]
 struct Opt {
-    /// The sample name
-    #[structopt(short = "s", long = "--sample")]
-    sample: String,
-
-    /// The indexed reference sequence file
+    /// The indexed FASTA reference sequence file
     #[structopt(short = "r", long = "--reference", parse(from_os_str))]
     reference: PathBuf,
 
-    /// Input VAR file or stream, defaults to /dev/stdin
+    /// The input sample name, must match input data stream
+    #[structopt(short = "s", long = "--sample")]
+    sample: String,
+
+    /// Input VAR file or stream [default: /dev/stdin]
     #[structopt(short = "i", long = "--input", parse(from_os_str))]
     input: Option<PathBuf>,
 
-    /// Output VCF file or stream, defaults to /dev/stdout
+    /// Output VCF file or stream [default: /dev/stdout]
     #[structopt(short = "o", long = "--output", parse(from_os_str))]
     output: Option<PathBuf>,
+
+    /// The variant calling mode, only TumorOnly is supported.
+    #[structopt(short = "m", long = "--mode", default_value = "TumorOnly", possible_values = &VarDictMode::VARIANTS)]
+    mode: VarDictMode,
 }
 
 /// Main binary entrypoint.
@@ -56,7 +65,7 @@ fn main() -> Result<(), Error> {
         _ => info!("Output stream: STDOUT"),
     }
 
-    match vartovcf(input, opt.output, &opt.reference, &opt.sample) {
+    match vartovcf(input, opt.output, &opt.reference, &opt.sample, &opt.mode) {
         Ok(exit_code) => process::exit(exit_code),
         Err(except) => panic!("{}", except),
     }
