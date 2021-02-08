@@ -30,11 +30,7 @@ where
     D: serde::Deserializer<'de>,
 {
     let string: &str = Deserialize::deserialize(deserializer)?;
-    match string {
-        "Inf" => Ok(f32::INFINITY),
-        "-Inf" => Ok(f32::NEG_INFINITY),
-        _ => f32::from_str(string).map_err(D::Error::custom),
-    }
+    f32::from_str(string.to_lowercase().as_str()).map_err(D::Error::custom)
 }
 
 /// Deserialize encoded structural variant (SV) info or return a custom error.
