@@ -30,7 +30,7 @@ pub mod record;
 pub const DEFAULT_LOG_LEVEL: &str = "info";
 
 /// The valid structural variation (SV) type values for the `SVTYPE` FORMAT field.
-pub const VALID_SV_TYPES: &'static [&str] = &["BND", "CNV", "DEL", "DUP", "INS", "INV"];
+pub const VALID_SV_TYPES: &[&str] = &["BND", "CNV", "DEL", "DUP", "INS", "INV"];
 
 /// Namespace for path parts and extensions.
 pub mod path {
