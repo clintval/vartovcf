@@ -29,6 +29,9 @@ pub mod record;
 /// The default log level for the `vartovcf` tool.
 pub const DEFAULT_LOG_LEVEL: &str = "info";
 
+/// The valid structural variation (SV) type values for the `SVTYPE` FORMAT field.
+pub const VALID_SV_TYPES: &[&str] = &["BND", "CNV", "DEL", "DUP", "INS", "INV"];
+
 /// Namespace for path parts and extensions.
 pub mod path {
 
@@ -107,52 +110,62 @@ where
         };
 
         let rid = writer.header().name2rid(var.contig.as_bytes()).unwrap();
-        let alleles = &[
+        let genotypes = &[
             GenotypeAllele::UnphasedMissing,
             GenotypeAllele::UnphasedMissing,
         ];
 
         variant.set_rid(Some(rid));
         variant.set_pos(var.start as i64 - 1);
+        variant.set_alleles(&[var.ref_allele.as_bytes(), var.alt_allele.as_bytes()])?;
+        variant.push_genotypes(genotypes).unwrap();
 
-        variant.push_info_float(b"PMEAN", &[var.mean_position_in_read])?;
-        variant.push_info_float(b"PSTD", &[var.stdev_position_in_read])?;
-        variant.push_info_string(b"BIAS", &[var.strand_bias.to_string().as_bytes()])?;
-        // variant.push_info_integer(b"REFBIAS", &[var.])?;
-        // variant.push_info_integer(b"VARBIAS", &[var.])?;
-        variant.push_info_float(b"QUAL", &[var.mean_base_quality])?;
-        variant.push_info_float(b"QSTD", &[var.stdev_base_quality])?;
-        variant.push_info_float(b"SBF", &[var.strand_bias_p_value])?;
-        variant.push_info_float(b"ODDRATIO", &[var.strand_bias_odds_ratio])?;
-        variant.push_info_float(b"MQ", &[var.mean_mapping_quality])?;
-        variant.push_info_integer(b"SN", &[var.signal_to_noise])?;
-        variant.push_info_float(b"HIAF", &[var.af_high_quality_bases])?;
         variant.push_info_float(b"ADJAF", &[var.af_adjusted])?;
-        variant.push_info_integer(b"SHIFT3", &[var.num_bases_3_prime_shift_for_deletions])?;
-        variant.push_info_integer(b"MSI", &[var.microsatellite])?;
-        variant.push_info_integer(b"MSILEN", &[var.microsatellite_length])?;
-        variant.push_info_float(b"NM", &[var.mean_mismatches_in_reads])?;
-        variant.push_info_string(b"LSEQ", &[var.flank_seq_5_prime.as_bytes()])?;
-        variant.push_info_string(b"RSEQ", &[var.flank_seq_3_prime.as_bytes()])?;
-        variant.push_info_integer(b"HICNT", &[var.high_quality_variant_reads])?;
-        variant.push_info_integer(b"HICOV", &[var.high_quality_total_reads])?;
-        if let Some(sv_info) = &var.sv_info {
-            variant.push_info_integer(b"SPLITREAD", &[sv_info.supporting_split_reads])?;
-            variant.push_info_integer(b"SPANPAIR", &[sv_info.supporting_pairs])?;
-            variant.push_info_string(b"SVTYPE", &[var.variant_type.as_bytes()])?;
-            variant.push_info_integer(b"SVLEN", &[var.length()])?;
-        }
+        variant.push_info_string(b"BIAS", &[var.strand_bias.to_string().as_bytes()])?;
         if let Some(duplication_rate) = var.duplication_rate {
             variant.push_info_float(b"DUPRATE", &[duplication_rate])?;
         }
+        variant.push_info_float(b"HIAF", &[var.af_high_quality_bases])?;
+        variant.push_info_integer(b"HICNT", &[var.high_quality_variant_reads])?;
+        variant.push_info_integer(b"HICOV", &[var.high_quality_total_reads])?;
+        variant.push_info_string(b"LSEQ", &[var.flank_seq_5_prime.as_bytes()])?;
+        variant.push_info_float(b"MQ", &[var.mean_mapping_quality])?;
+        variant.push_info_integer(b"MSI", &[var.microsatellite])?;
+        variant.push_info_integer(b"MSILEN", &[var.microsatellite_length])?;
+        variant.push_info_float(b"NM", &[var.mean_mismatches_in_reads])?;
+        variant.push_info_float(b"ODDRATIO", &[var.strand_bias_odds_ratio])?;
+        variant.push_info_float(b"PMEAN", &[var.mean_position_in_read])?;
+        variant.push_info_float(b"PSTD", &[var.stdev_position_in_read])?;
+        variant.push_info_float(b"QSTD", &[var.stdev_base_quality])?;
+        variant.push_info_float(b"QUAL", &[var.mean_base_quality])?;
+        // variant.push_info_integer(b"REFBIAS", &[var.])?;
+        variant.push_info_string(b"RSEQ", &[var.flank_seq_3_prime.as_bytes()])?;
+        variant.push_info_float(b"SBF", &[var.strand_bias_p_value])?;
+        variant.push_info_integer(b"SHIFT3", &[var.num_bases_3_prime_shift_for_deletions])?;
+        variant.push_info_integer(b"SN", &[var.signal_to_noise])?;
+
+        // NB: If you do not explicitly clear the buffers, you'll end up with stale references.
+        if let Some(sv_info) = &var.sv_info {
+            variant.push_info_integer(b"SPLITREAD", &[sv_info.supporting_split_reads])?;
+            variant.push_info_integer(b"SPANPAIR", &[sv_info.supporting_pairs])?;
+        } else {
+            variant.clear_info_integer(b"SPLITREAD")?;
+            variant.clear_info_integer(b"SPANPAIR")?;
+        }
+        if VALID_SV_TYPES.contains(&var.variant_type) {
+            variant.push_info_integer(b"SVLEN", &[var.length()])?;
+            variant.push_info_string(b"SVTYPE", &[var.variant_type.as_bytes()])?;
+        } else {
+            variant.clear_info_integer(b"SVLEN")?;
+            variant.clear_info_integer(b"SVTYPE")?;
+        }
+        // variant.push_info_integer(b"VARBIAS", &[var.])?;
+
         variant.push_format_integer(b"VD", &[var.alt_depth])?;
         variant.push_format_integer(b"DP", &[var.depth])?;
         variant.push_format_string(b"AD", &[var.ad_value().as_bytes()])?;
         variant.push_format_string(b"ALD", &[var.ald_value().as_bytes()])?;
         variant.push_format_string(b"RD", &[var.rd_value().as_bytes()])?;
-
-        variant.push_genotypes(alleles).unwrap();
-        variant.set_alleles(&[var.ref_allele.as_bytes(), var.alt_allele.as_bytes()])?;
 
         writer.write(&variant)?;
         progress.observe()?;
