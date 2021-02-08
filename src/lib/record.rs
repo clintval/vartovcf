@@ -1,5 +1,4 @@
 //! A module for serialization-deserialization friendly VarDict/VarDictJava data types.
-use serde_with::rust::display_fromstr;
 use std::clone::Clone;
 use std::cmp::PartialEq;
 use std::default::Default;
@@ -13,6 +12,7 @@ use anyhow::Result;
 use bio_types::genome::{AbstractInterval, Position};
 use rust_htslib::bcf::Header;
 use serde::{de::Error, Deserialize, Serialize};
+use serde_with::rust::display_fromstr;
 use strum::EnumString;
 
 const CARGO_PKG_NAME: &str = env!("CARGO_PKG_NAME");
