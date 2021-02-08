@@ -39,6 +39,25 @@ where
     }
 }
 
+/// Deserialize encoded structural variant (SV) info or return a custom error.
+///
+/// The following cases are handled:
+///
+/// * `0`: `None`
+/// * `#-#-#`: `Some(SvInfo)`
+fn maybe_sv_info<'de, D>(deserializer: D) -> Result<Option<SvInfo>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s: &str = Deserialize::deserialize(deserializer)
+        .expect("Could not parse an encoded structural variant info.");
+    if s == "0" {
+        Ok(None)
+    } else {
+        Ok(Some(SvInfo::from_str(s).map_err(D::Error::custom)?))
+    }
+}
+
 /// Deserialize VarDict/VarDictJava strand bias status into an enumeration of strand bias. The
 /// incoming value takes the values [0-2];[0-2] (_e.g._ "0;2", "2;1"). The first value refers to
 /// reads that support the reference allele, and the second to reads that support the variant
@@ -56,27 +75,27 @@ where
     PairBias::from_str(s).map_err(D::Error::custom)
 }
 
-impl error::Error for ParsePairBiasError {}
-
-/// An exception for when we cannot parse a string into a `StrandBias`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParseStrandBiasError;
-
-impl fmt::Display for ParseStrandBiasError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "ParseStrandBiasError")
-    }
-}
-
-impl error::Error for ParseStrandBiasError {}
-
 /// An exception for when we cannot parse a string into a `PairBias`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ParsePairBiasError;
 
+impl error::Error for ParsePairBiasError {}
+
 impl fmt::Display for ParsePairBiasError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "ParsePairBiasError")
+    }
+}
+
+/// An exception for when we cannot parse a string into a `SvInfo`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ParseSvInfoError;
+
+impl error::Error for ParseSvInfoError {}
+
+impl fmt::Display for ParseSvInfoError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ParseSvInfoError")
     }
 }
 
@@ -139,6 +158,55 @@ impl FromStr for PairBias {
             (_, _) => return Err(ParsePairBiasError),
         };
         Ok(pair)
+    }
+}
+
+/// A container for structural variant (SV) information.
+#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SvInfo {
+    /// The number of split reads supporting the SV.
+    pub supporting_split_reads: i32,
+    /// The number of read pairs supporting the SV.
+    pub supporting_pairs: i32,
+    /// The number of clusters supporting the SV.
+    pub supporting_clusters: i32,
+}
+
+impl Default for SvInfo {
+    /// The default has all fields set to zero.
+    fn default() -> Self {
+        SvInfo {
+            supporting_split_reads: 0,
+            supporting_pairs: 0,
+            supporting_clusters: 0,
+        }
+    }
+}
+
+impl ToString for SvInfo {
+    fn to_string(&self) -> String {
+        format!(
+            "{}-{}-{}",
+            self.supporting_split_reads, self.supporting_pairs, self.supporting_clusters
+        )
+    }
+}
+
+impl FromStr for SvInfo {
+    type Err = ParseSvInfoError;
+
+    /// Convert a string to a `SvInfo`.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let items: Vec<&str> = s.split('-').collect();
+        let sv_info = match (items.get(0), items.get(1), items.get(2)) {
+            (Some(split_reads), Some(pairs), Some(clusters)) => SvInfo {
+                supporting_split_reads: split_reads.parse().map_err(|_| ParseSvInfoError)?,
+                supporting_pairs: pairs.parse().map_err(|_| ParseSvInfoError)?,
+                supporting_clusters: clusters.parse().map_err(|_| ParseSvInfoError)?,
+            },
+            (_, _, _) => return Err(ParseSvInfoError),
+        };
+        Ok(sv_info)
     }
 }
 
@@ -232,8 +300,8 @@ pub struct TumorOnlyVariant<'a> {
     /// The duplication rate, if this call is a duplication.
     pub duplication_rate: f32,
     /// The details of the structural variant as a 0 or as a triplet of ints separated with "=".
-    // We can deserialize this further into a struct of SV details.
-    pub sv_details: &'a str,
+    #[serde(default, deserialize_with = "maybe_sv_info")]
+    pub sv_details: Option<SvInfo>,
     #[serde(default)]
     /// The distance in reference genome base pairs to the nearest CRISPR-site (CRISPR-mode only).
     pub distance_to_crispr_site: Option<i32>,
@@ -340,10 +408,12 @@ mod tests {
     #[fixture]
     #[rustfmt::skip]
     fn variants() -> Vec<TumorOnlyVariant<'static>> {
+        let sv_info = SvInfo { supporting_split_reads: 1, supporting_pairs: 1, supporting_clusters: 1 };
         vec!(
-            TumorOnlyVariant { sample: "dna00001", interval_name: "NRAS-Q61", contig: "chr1", start: 114713883, end: 114713883, ref_allele: "G", alt_allele: "A", depth: 8104, alt_depth: 1, ref_forward: 2766, ref_reverse: 5280, alt_forward: 1, alt_reverse: 0, gt: "G/A", af: 0.0001, strand_bias: PairBias::from_str("2;0").unwrap(), mean_position_in_read: 13.0, stdev_position_in_read: 0.0, mean_base_quality: 90.0, stdev_base_quality: 0.0, strand_bias_p_value: 0.34385, strand_bias_odds_ratio: 0.0, mean_mapping_quality: 60.0, signal_to_noise: 2, af_high_quality_bases: 0.0001, af_adjusted: 0.0, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 1, microsatellite_length: 1, mean_mismatches_in_reads: 2.0, high_quality_variant_reads: 1, high_quality_total_reads: 8048, flank_seq_5_prime: "TCGCCTGTCCTCATGTATTG", flank_seq_3_prime: "TCTCTCATGGCACTGTACTC", segment: "chr1:114713749-114713988", variant_type: "SNV", duplication_rate: 0.0, sv_details: "0", distance_to_crispr_site: None },
-            TumorOnlyVariant { sample: "dna00001", interval_name: "NRAS-Q61", contig: "chr1", start: 114713883, end: 114713883, ref_allele: "G", alt_allele: "T", depth: 8104, alt_depth: 1, ref_forward: 2766, ref_reverse: 5280, alt_forward: 0, alt_reverse: 1, gt: "G/T", af: 0.0001, strand_bias: PairBias::from_str("2;0").unwrap(), mean_position_in_read: 28.0, stdev_position_in_read: 0.0, mean_base_quality: 90.0, stdev_base_quality: 0.0, strand_bias_p_value: 1.0, strand_bias_odds_ratio: f32::INFINITY, mean_mapping_quality: 60.0, signal_to_noise: 2, af_high_quality_bases: 0.0001, af_adjusted: 0.0, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 1, microsatellite_length: 1, mean_mismatches_in_reads: 1.0, high_quality_variant_reads: 1, high_quality_total_reads: 8048, flank_seq_5_prime: "TCGCCTGTCCTCATGTATTG", flank_seq_3_prime: "TCTCTCATGGCACTGTACTC", segment: "chr1:114713749-114713988", variant_type: "SNV", duplication_rate: 0.0, sv_details: "0", distance_to_crispr_site: None },
-            TumorOnlyVariant { sample: "dna00001", interval_name: "NRAS-Q61", contig: "chr1", start: 114713880, end: 114713880, ref_allele: "T", alt_allele: "A", depth: 8211, alt_depth: 1, ref_forward: 3001, ref_reverse: 5130, alt_forward: 1, alt_reverse: 0, gt: "T/A", af: 0.0001, strand_bias: PairBias::from_str("2;0").unwrap(), mean_position_in_read: 18.0, stdev_position_in_read: 0.0, mean_base_quality: 90.0, stdev_base_quality: 0.0, strand_bias_p_value: 0.36916, strand_bias_odds_ratio: f32::NEG_INFINITY, mean_mapping_quality: 60.0, signal_to_noise: 2, af_high_quality_bases: 0.0001, af_adjusted: 0.0, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 2, microsatellite_length: 1, mean_mismatches_in_reads: 1.0, high_quality_variant_reads: 1, high_quality_total_reads: 8132, flank_seq_5_prime: "CCTTCGCCTGTCCTCATGTA", flank_seq_3_prime: "TGGTCTCTCATGGCACTGTA", segment: "chr1:114713749-114713988", variant_type: "SNV", duplication_rate: 0.0, sv_details: "0", distance_to_crispr_site: None },
+            TumorOnlyVariant { sample: "dna00001", interval_name: "NRAS-Q61", contig: "chr1", start: 114713883, end: 114713883, ref_allele: "G", alt_allele: "A", depth: 8104, alt_depth: 1, ref_forward: 2766, ref_reverse: 5280, alt_forward: 1, alt_reverse: 0, gt: "G/A", af: 0.0001, strand_bias: PairBias::from_str("2;0").unwrap(), mean_position_in_read: 13.0, stdev_position_in_read: 0.0, mean_base_quality: 90.0, stdev_base_quality: 0.0, strand_bias_p_value: 0.34385, strand_bias_odds_ratio: 0.0, mean_mapping_quality: 60.0, signal_to_noise: 2, af_high_quality_bases: 0.0001, af_adjusted: 0.0, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 1, microsatellite_length: 1, mean_mismatches_in_reads: 2.0, high_quality_variant_reads: 1, high_quality_total_reads: 8048, flank_seq_5_prime: "TCGCCTGTCCTCATGTATTG", flank_seq_3_prime: "TCTCTCATGGCACTGTACTC", segment: "chr1:114713749-114713988", variant_type: "SNV", duplication_rate: 0.0, sv_details: None, distance_to_crispr_site: None },
+            TumorOnlyVariant { sample: "dna00001", interval_name: "NRAS-Q61", contig: "chr1", start: 114713883, end: 114713883, ref_allele: "G", alt_allele: "T", depth: 8104, alt_depth: 1, ref_forward: 2766, ref_reverse: 5280, alt_forward: 0, alt_reverse: 1, gt: "G/T", af: 0.0001, strand_bias: PairBias::from_str("2;0").unwrap(), mean_position_in_read: 28.0, stdev_position_in_read: 0.0, mean_base_quality: 90.0, stdev_base_quality: 0.0, strand_bias_p_value: 1.0, strand_bias_odds_ratio: f32::INFINITY, mean_mapping_quality: 60.0, signal_to_noise: 2, af_high_quality_bases: 0.0001, af_adjusted: 0.0, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 1, microsatellite_length: 1, mean_mismatches_in_reads: 1.0, high_quality_variant_reads: 1, high_quality_total_reads: 8048, flank_seq_5_prime: "TCGCCTGTCCTCATGTATTG", flank_seq_3_prime: "TCTCTCATGGCACTGTACTC", segment: "chr1:114713749-114713988", variant_type: "SNV", duplication_rate: 0.0, sv_details: None, distance_to_crispr_site: None },
+            TumorOnlyVariant { sample: "dna00001", interval_name: "NRAS-Q61", contig: "chr1", start: 114713880, end: 114713880, ref_allele: "T", alt_allele: "A", depth: 8211, alt_depth: 1, ref_forward: 3001, ref_reverse: 5130, alt_forward: 1, alt_reverse: 0, gt: "T/A", af: 0.0001, strand_bias: PairBias::from_str("2;0").unwrap(), mean_position_in_read: 18.0, stdev_position_in_read: 0.0, mean_base_quality: 90.0, stdev_base_quality: 0.0, strand_bias_p_value: 0.36916, strand_bias_odds_ratio: f32::NEG_INFINITY, mean_mapping_quality: 60.0, signal_to_noise: 2, af_high_quality_bases: 0.0001, af_adjusted: 0.0, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 2, microsatellite_length: 1, mean_mismatches_in_reads: 1.0, high_quality_variant_reads: 1, high_quality_total_reads: 8132, flank_seq_5_prime: "CCTTCGCCTGTCCTCATGTA", flank_seq_3_prime: "TGGTCTCTCATGGCACTGTA", segment: "chr1:114713749-114713988", variant_type: "SNV", duplication_rate: 0.0, sv_details: None, distance_to_crispr_site: None },
+            TumorOnlyVariant { sample: "dna00001", interval_name: "PTPN11", contig: "chr12", start: 112450447, end: 123513818, ref_allele: "A", alt_allele: "<INV>", depth: 6775, alt_depth: 1, ref_forward: 3991, ref_reverse: 2588, alt_forward: 1, alt_reverse: 0, gt: "A/<INV11063372>", af: 0.0001, strand_bias: PairBias::from_str("2;0").unwrap(), mean_position_in_read: 58.0, stdev_position_in_read: 1.0, mean_base_quality: 90.0, stdev_base_quality: 1.0, strand_bias_p_value: 1.0, strand_bias_odds_ratio: 0.0, mean_mapping_quality: 33.0, signal_to_noise: 2, af_high_quality_bases: 0.0002, af_adjusted: 0.0001, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 0, microsatellite_length: 0, mean_mismatches_in_reads: 0.0, high_quality_variant_reads: 1, high_quality_total_reads: 6582, flank_seq_5_prime: "GAACATCACGGGCAATTAAA", flank_seq_3_prime: "GGGACCTAGATTTTAAGAGA", segment: "chr12:112450168-112450587", variant_type: "INV", duplication_rate: 0.0, sv_details: Some(sv_info), distance_to_crispr_site: None },
         )
     }
 
@@ -367,11 +437,6 @@ mod tests {
         assert_eq!(StrandBias::from_str(int).expect("Parse failed!"), expected);
     }
 
-    #[test]
-    fn test_strand_bias_err_display() {
-        assert_eq!(&format!("{}", ParseStrandBiasError), "ParseStrandBiasError");
-    }
-
     #[rstest(
         left => ["0", "1", "2"],
         right => ["0", "1", "2"]
@@ -381,8 +446,13 @@ mod tests {
     }
 
     #[test]
-    fn test_pair_bias_err_display() {
+    fn test_parse_pair_bias_err_display() {
         assert_eq!(&format!("{}", ParsePairBiasError), "ParsePairBiasError");
+    }
+
+    #[test]
+    fn test_parse_sv_info_err_display() {
+        assert_eq!(&format!("{}", ParseSvInfoError), "ParseSvInfoError");
     }
 
     #[test]
