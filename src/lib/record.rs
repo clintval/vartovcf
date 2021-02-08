@@ -12,6 +12,7 @@ use anyhow::Result;
 use bio_types::genome::{AbstractInterval, Position};
 use rust_htslib::bcf::Header;
 use serde::{de::Error, Deserialize, Serialize};
+use serde_with::rust::display_fromstr;
 use strum::EnumString;
 
 const CARGO_PKG_NAME: &str = env!("CARGO_PKG_NAME");
@@ -28,15 +29,8 @@ fn maybe_infinite_f32<'de, D>(deserializer: D) -> Result<f32, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    let s: &str = Deserialize::deserialize(deserializer)
-        .expect("Could not parse a maybe-infinite (Inf, -Inf) floating point number.");
-    if s == "Inf" {
-        Ok(f32::INFINITY)
-    } else if s == "-Inf" {
-        Ok(f32::NEG_INFINITY)
-    } else {
-        f32::from_str(&s).map_err(D::Error::custom)
-    }
+    let string: &str = Deserialize::deserialize(deserializer)?;
+    f32::from_str(string.to_lowercase().as_str()).map_err(D::Error::custom)
 }
 
 /// Deserialize encoded structural variant (SV) info or return a custom error.
@@ -49,12 +43,10 @@ fn maybe_sv_info<'de, D>(deserializer: D) -> Result<Option<SvInfo>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    let s: &str = Deserialize::deserialize(deserializer)
-        .expect("Could not parse an encoded structural variant info.");
-    if s == "0" {
-        Ok(None)
-    } else {
-        Ok(Some(SvInfo::from_str(s).map_err(D::Error::custom)?))
+    let string: &str = Deserialize::deserialize(deserializer)?;
+    match string {
+        "0" => Ok(None),
+        _ => Ok(Some(SvInfo::from_str(string).map_err(D::Error::custom)?)),
     }
 }
 
@@ -68,30 +60,11 @@ fn maybe_duplication_rate<'de, D>(deserializer: D) -> Result<Option<f32>, D::Err
 where
     D: serde::Deserializer<'de>,
 {
-    let s: &str =
-        Deserialize::deserialize(deserializer).expect("Could not parse a duplication rate.");
-    if s == "0" {
-        Ok(None)
-    } else {
-        Ok(Some(f32::from_str(s).map_err(D::Error::custom)?))
+    let string: &str = Deserialize::deserialize(deserializer)?;
+    match string {
+        "0" => Ok(None),
+        _ => Ok(Some(f32::from_str(string).map_err(D::Error::custom)?)),
     }
-}
-
-/// Deserialize VarDict/VarDictJava strand bias status into an enumeration of strand bias. The
-/// incoming value takes the values [0-2];[0-2] (_e.g._ "0;2", "2;1"). The first value refers to
-/// reads that support the reference allele, and the second to reads that support the variant
-/// allele.
-///
-/// * `0`: there were too few reads to say otherwise (less than 12 for the sum of forward and reverse reads)
-/// * `1`: strand bias was detected
-/// * `2`: no strand bias was detected
-fn to_strand_bias<'de, D>(deserializer: D) -> Result<PairBias, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let s: &str = Deserialize::deserialize(deserializer)
-        .expect("Could not parse the paired strand bias status.");
-    PairBias::from_str(s).map_err(D::Error::custom)
 }
 
 /// An exception for when we cannot parse a string into a `PairBias`.
@@ -102,7 +75,7 @@ impl error::Error for ParsePairBiasError {}
 
 impl fmt::Display for ParsePairBiasError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "ParsePairBiasError")
+        write!(f, "{:?}", self)
     }
 }
 
@@ -114,7 +87,7 @@ impl error::Error for ParseSvInfoError {}
 
 impl fmt::Display for ParseSvInfoError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "ParseSvInfoError")
+        write!(f, "{:?}", self)
     }
 }
 
@@ -157,9 +130,9 @@ impl Default for PairBias {
     }
 }
 
-impl ToString for PairBias {
-    fn to_string(&self) -> String {
-        format!("{}:{}", self.reference, self.alternate)
+impl fmt::Display for PairBias {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", self.reference, self.alternate)
     }
 }
 
@@ -272,7 +245,7 @@ pub struct TumorOnlyVariant<'a> {
     /// * `0`: there were too few reads to say otherwise (less than 12 for the sum of forward and reverse reads)
     /// * `1`: strand bias was detected
     /// * `2`: strand bias was undetected
-    #[serde(deserialize_with = "to_strand_bias")]
+    #[serde(with = "display_fromstr")]
     pub strand_bias: PairBias,
     /// The mean distance to the nearest 5 or 3 prime read end (whichever is closer) in all reads
     /// that support the variant call.
@@ -364,6 +337,7 @@ impl<'a> AbstractInterval for TumorOnlyVariant<'a> {
     fn contig(&self) -> &str {
         &self.contig
     }
+
     fn range(&self) -> Range<Position> {
         Range {
             start: self.start - 1,
