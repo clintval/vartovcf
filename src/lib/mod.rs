@@ -125,7 +125,8 @@ where
 
         if let Some(duplication_rate) = var.duplication_rate {
             variant.push_info_float(b"DUPRATE", &[duplication_rate])?;
-        } else { // NB: Without clearing the fields, you'll end up with stale references.
+        } else {
+            // NB: Without clearing the fields, you'll end up with stale references.
             variant.clear_info_float(b"DUPRATE")?;
         }
 
@@ -151,14 +152,16 @@ where
         if let Some(sv_info) = &var.sv_info {
             variant.push_info_integer(b"SPLITREAD", &[sv_info.supporting_split_reads])?;
             variant.push_info_integer(b"SPANPAIR", &[sv_info.supporting_pairs])?;
-        } else { // NB: Without clearing the fields, you'll end up with stale references.
+        } else {
+            // NB: Without clearing the fields, you'll end up with stale references.
             variant.clear_info_integer(b"SPLITREAD")?;
             variant.clear_info_integer(b"SPANPAIR")?;
         }
         if VALID_SV_TYPES.contains(&var.variant_type) {
             variant.push_info_integer(b"SVLEN", &[var.length()])?;
             variant.push_info_string(b"SVTYPE", &[var.variant_type.as_bytes()])?;
-        } else { // NB: Without clearing the fields, you'll end up with stale references.
+        } else {
+            // NB: Without clearing the fields, you'll end up with stale references.
             variant.clear_info_integer(b"SVLEN")?;
             variant.clear_info_integer(b"SVTYPE")?;
         }
