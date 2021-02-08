@@ -122,11 +122,13 @@ where
 
         variant.push_info_float(b"ADJAF", &[var.af_adjusted])?;
         variant.push_info_string(b"BIAS", &[var.strand_bias.to_string().as_bytes()])?;
+
         if let Some(duplication_rate) = var.duplication_rate {
             variant.push_info_float(b"DUPRATE", &[duplication_rate])?;
-        } else {
+        } else { // NB: Without clearing the fields, you'll end up with stale references.
             variant.clear_info_float(b"DUPRATE")?;
         }
+
         variant.push_info_float(b"HIAF", &[var.af_high_quality_bases])?;
         variant.push_info_integer(b"HICNT", &[var.high_quality_variant_reads])?;
         variant.push_info_integer(b"HICOV", &[var.high_quality_total_reads])?;
@@ -146,18 +148,17 @@ where
         variant.push_info_integer(b"SHIFT3", &[var.num_bases_3_prime_shift_for_deletions])?;
         variant.push_info_integer(b"SN", &[var.signal_to_noise])?;
 
-        // NB: If you do not explicitly clear the buffers, you'll end up with stale references.
         if let Some(sv_info) = &var.sv_info {
             variant.push_info_integer(b"SPLITREAD", &[sv_info.supporting_split_reads])?;
             variant.push_info_integer(b"SPANPAIR", &[sv_info.supporting_pairs])?;
-        } else {
+        } else { // NB: Without clearing the fields, you'll end up with stale references.
             variant.clear_info_integer(b"SPLITREAD")?;
             variant.clear_info_integer(b"SPANPAIR")?;
         }
         if VALID_SV_TYPES.contains(&var.variant_type) {
             variant.push_info_integer(b"SVLEN", &[var.length()])?;
             variant.push_info_string(b"SVTYPE", &[var.variant_type.as_bytes()])?;
-        } else {
+        } else { // NB: Without clearing the fields, you'll end up with stale references.
             variant.clear_info_integer(b"SVLEN")?;
             variant.clear_info_integer(b"SVTYPE")?;
         }
