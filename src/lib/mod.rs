@@ -124,6 +124,8 @@ where
         variant.push_info_string(b"BIAS", &[var.strand_bias.to_string().as_bytes()])?;
         if let Some(duplication_rate) = var.duplication_rate {
             variant.push_info_float(b"DUPRATE", &[duplication_rate])?;
+        } else {
+            variant.clear_info_float(b"DUPRATE")?;
         }
         variant.push_info_float(b"HIAF", &[var.af_high_quality_bases])?;
         variant.push_info_integer(b"HICNT", &[var.high_quality_variant_reads])?;
