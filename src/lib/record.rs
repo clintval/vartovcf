@@ -84,8 +84,8 @@ where
 ///
 /// * `0`: there were too few reads to say otherwise (less than 12 for the sum of forward and reverse reads)
 /// * `1`: strand bias was detected
-/// * `2`: no strand bias was undetected
-fn to_strand_bias_status<'de, D>(deserializer: D) -> Result<PairBias, D::Error>
+/// * `2`: no strand bias was detected
+fn to_strand_bias<'de, D>(deserializer: D) -> Result<PairBias, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -271,8 +271,8 @@ pub struct TumorOnlyVariant<'a> {
     ///
     /// * `0`: there were too few reads to say otherwise (less than 12 for the sum of forward and reverse reads)
     /// * `1`: strand bias was detected
-    /// * `2`: no strand bias was undetected
-    #[serde(deserialize_with = "to_strand_bias_status")]
+    /// * `2`: strand bias was undetected
+    #[serde(deserialize_with = "to_strand_bias")]
     pub strand_bias: PairBias,
     /// The mean distance to the nearest 5 or 3 prime read end (whichever is closer) in all reads
     /// that support the variant call.
