@@ -554,7 +554,7 @@ mod tests {
     fn test_maybe_infinite_f32(
         variants: Vec<TumorOnlyVariant>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let input = PathBuf::from("tests/nras.var");
+        let input = PathBuf::from("tests/calls.var");
 
         let mut reader = ReaderBuilder::new()
             .delimiter(b'\t')

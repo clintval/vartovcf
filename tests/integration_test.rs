@@ -17,11 +17,11 @@ mod tests {
         cmd
             .arg("--reference").arg("tests/reference.fa")
             .arg("--sample").arg("dna00001")
-            .arg("--input").arg("tests/nras.var")
+            .arg("--input").arg("tests/calls.var")
             .arg("--output").arg(&output)
             .unwrap().assert().success();
 
-        assert!(diff(&output, "tests/nras.vcf"));
+        assert!(diff(&output, "tests/calls.vcf"));
         Ok(())
     }
 
@@ -32,9 +32,9 @@ mod tests {
         cmd
             .arg("--reference").arg("tests/reference.fa")
             .arg("--sample").arg("dna00001")
-            .pipe_stdin("tests/nras.var")?
+            .pipe_stdin("tests/calls.var")?
             .assert()
-            .stdout(read_to_string("tests/nras.vcf")?);
+            .stdout(read_to_string("tests/calls.vcf")?);
         Ok(())
     }
 
@@ -47,9 +47,9 @@ mod tests {
             .arg("--sample").arg("dna00001")
             .arg("--input").arg("-")
             .arg("--output").arg("-")
-            .pipe_stdin("tests/nras.var")?
+            .pipe_stdin("tests/calls.var")?
             .assert()
-            .stdout(read_to_string("tests/nras.vcf")?);
+            .stdout(read_to_string("tests/calls.vcf")?);
         Ok(())
     }
 }
