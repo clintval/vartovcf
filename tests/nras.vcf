@@ -24,7 +24,7 @@
 ##INFO=<ID=SPANPAIR,Number=1,Type=Integer,Description="The number of paired-end reads supporting the variant call if this call is a structural variant">
 ##INFO=<ID=SPLITREAD,Number=1,Type=Integer,Description="The number of split reads supporting the variant call if this call is a structural variant">
 ##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="The length of stuctural variant in base pairs of reference genome, if this call is a structural variant">
-##INFO=<ID=SVTYPE,Number=1,Type=String,Description="The structural variant type (DEL DUP FUS INS INV), if this call is a structural variant">
+##INFO=<ID=SVTYPE,Number=1,Type=String,Description="The structural variant type (BND, CNV, DEL, DUP, INS, INV), if this call is a structural variant">
 ##INFO=<ID=VARBIAS,Number=1,Type=String,Description="Strand bias in reads that support the variant call">
 ##FILTER=<ID=Cluster0bp,Description="At least two variant calls are within 0 base pairs from each other in the reference sequence coordinate system">
 ##FILTER=<ID=InGap,Description="The variant call is in a deletion gap, and might be a false positive">
@@ -41,11 +41,16 @@
 ##FORMAT=<ID=AD,Number=R,Type=Integer,Description="The allelic depths for the REF and ALT alleles">
 ##FORMAT=<ID=ALD,Number=2,Type=Integer,Description="The number of variant call forward and reverse reads">
 ##FORMAT=<ID=RD,Number=2,Type=Integer,Description="The number of reference forward and reverse reads">
+##ALT=<ID=CNV,Description="Copy number variable region">
+##ALT=<ID=DEL,Description="Deletion relative to the reference">
+##ALT=<ID=DUP,Description="Region of elevated copy number relative to the reference">
+##ALT=<ID=INS,Description="Insertion of novel sequence relative to the reference">
+##ALT=<ID=INV,Description="Inversion of reference sequence">
 ##contig=<ID=chr1,length=248956422>
 ##contig=<ID=chr12,length=133275309>
 ##reference=tests/reference.fa
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	dna00001
+chr12	112450447	.	A	<INV>	0	.	ADJAF=0.0001;BIAS=UnDetected:TooFewReads;HIAF=0.0002;HICNT=1;HICOV=6582;LSEQ=GAACATCACGGGCAATTAAA;MQ=33;MSI=0;MSILEN=0;NM=0;ODDRATIO=0;PMEAN=58;PSTD=1;QSTD=1;QUAL=90;RSEQ=GGGACCTAGATTTTAAGAGA;SBF=1;SHIFT3=0;SN=2;SPLITREAD=1;SPANPAIR=1;SVLEN=11063371;SVTYPE=INV	GT:VD:DP:AD:ALD:RD	./.:1:6775:6774,1:1,0:3991,2588
 chr1	114713883	.	G	A	0	.	ADJAF=0;BIAS=UnDetected:TooFewReads;HIAF=0.0001;HICNT=1;HICOV=8048;LSEQ=TCGCCTGTCCTCATGTATTG;MQ=60;MSI=1;MSILEN=1;NM=2;ODDRATIO=0;PMEAN=13;PSTD=0;QSTD=0;QUAL=90;RSEQ=TCTCTCATGGCACTGTACTC;SBF=0.34385;SHIFT3=0;SN=2	GT:VD:DP:AD:ALD:RD	./.:1:8104:8103,1:1,0:2766,5280
 chr1	114713883	.	G	T	0	.	ADJAF=0;BIAS=UnDetected:TooFewReads;HIAF=0.0001;HICNT=1;HICOV=8048;LSEQ=TCGCCTGTCCTCATGTATTG;MQ=60;MSI=1;MSILEN=1;NM=1;ODDRATIO=inf;PMEAN=28;PSTD=0;QSTD=0;QUAL=90;RSEQ=TCTCTCATGGCACTGTACTC;SBF=1;SHIFT3=0;SN=2	GT:VD:DP:AD:ALD:RD	./.:1:8104:8103,1:0,1:2766,5280
 chr1	114713880	.	T	A	0	.	ADJAF=0;BIAS=UnDetected:TooFewReads;HIAF=0.0001;HICNT=1;HICOV=8132;LSEQ=CCTTCGCCTGTCCTCATGTA;MQ=60;MSI=2;MSILEN=1;NM=1;ODDRATIO=-inf;PMEAN=18;PSTD=0;QSTD=0;QUAL=90;RSEQ=TGGTCTCTCATGGCACTGTA;SBF=0.36916;SHIFT3=0;SN=2	GT:VD:DP:AD:ALD:RD	./.:1:8211:8210,1:1,0:3001,5130
-chr12	112450447	.	A	<INV>	0	.	ADJAF=0.0001;BIAS=UnDetected:TooFewReads;HIAF=0.0002;HICNT=1;HICOV=6582;LSEQ=GAACATCACGGGCAATTAAA;MQ=33;MSI=0;MSILEN=0;NM=0;ODDRATIO=0;PMEAN=58;PSTD=1;QSTD=1;QUAL=90;RSEQ=GGGACCTAGATTTTAAGAGA;SBF=1;SHIFT3=0;SN=2;SPLITREAD=1;SPANPAIR=1;SVLEN=11063371;SVTYPE=INV	GT:VD:DP:AD:ALD:RD	./.:1:6775:6774,1:1,0:3991,2588

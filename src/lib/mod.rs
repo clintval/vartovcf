@@ -29,6 +29,9 @@ pub mod record;
 /// The default log level for the `vartovcf` tool.
 pub const DEFAULT_LOG_LEVEL: &str = "info";
 
+/// The valid structural variation (SV) type values for the `SVTYPE` FORMAT field.
+pub const VALID_SV_TYPES: &'static [&str] = &["BND", "CNV", "DEL", "DUP", "INS", "INV"];
+
 /// Namespace for path parts and extensions.
 pub mod path {
 
@@ -140,11 +143,21 @@ where
         variant.push_info_float(b"SBF", &[var.strand_bias_p_value])?;
         variant.push_info_integer(b"SHIFT3", &[var.num_bases_3_prime_shift_for_deletions])?;
         variant.push_info_integer(b"SN", &[var.signal_to_noise])?;
+
+        // NB: If you do not explicitly clear the buffers, you'll end up with stale references.
         if let Some(sv_info) = &var.sv_info {
             variant.push_info_integer(b"SPLITREAD", &[sv_info.supporting_split_reads])?;
             variant.push_info_integer(b"SPANPAIR", &[sv_info.supporting_pairs])?;
+        } else {
+            variant.clear_info_integer(b"SPLITREAD")?;
+            variant.clear_info_integer(b"SPANPAIR")?;
+        }
+        if VALID_SV_TYPES.contains(&var.variant_type) {
             variant.push_info_integer(b"SVLEN", &[var.length()])?;
             variant.push_info_string(b"SVTYPE", &[var.variant_type.as_bytes()])?;
+        } else {
+            variant.clear_info_integer(b"SVLEN")?;
+            variant.clear_info_integer(b"SVTYPE")?;
         }
         // variant.push_info_integer(b"VARBIAS", &[var.])?;
 
