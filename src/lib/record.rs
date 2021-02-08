@@ -460,6 +460,11 @@ mod tests {
         assert_eq!(PairBias::from_str("3;0"), Err(ParsePairBiasError));
     }
 
+    #[test]
+    fn test_sv_info_from_str_err() {
+        assert_eq!(SvInfo::from_str("0-0"), Err(ParseSvInfoError));
+    }
+
     #[rstest]
     fn test_tumor_only_variant_ad_value(variants: Vec<TumorOnlyVariant>) {
         let expected = vec!["8103,1", "8103,1", "8210,1"];
