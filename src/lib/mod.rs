@@ -10,14 +10,14 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use csv::ReaderBuilder;
 use log::*;
-use rust_htslib::bcf::record::GenotypeAllele;
 use rust_htslib::bcf::Format;
+use rust_htslib::bcf::record::GenotypeAllele;
 use rust_htslib::bcf::Writer as VcfWriter;
 use strum::{EnumString, EnumVariantNames, ToString as EnumToString};
 
 use crate::fai::{reference_contigs_to_vcf_header, reference_path_to_vcf_header};
 use crate::io::has_gzip_ext;
-use crate::progress_logger::{ProgressLogger, RecordLogger, DEFAULT_LOG_EVERY};
+use crate::progress_logger::{DEFAULT_LOG_EVERY, ProgressLogger, RecordLogger};
 use crate::record::tumor_only_header;
 use crate::record::TumorOnlyVariant;
 
@@ -136,12 +136,15 @@ where
         variant.push_info_string(b"RSEQ", &[var.flank_seq_3_prime.as_bytes()])?;
         variant.push_info_integer(b"HICNT", &[var.high_quality_variant_reads])?;
         variant.push_info_integer(b"HICOV", &[var.high_quality_total_reads])?;
-        // variant.push_info_integer(b"SPLITREAD", &[var.])?;
-        // variant.push_info_integer(b"SPANPAIR", &[var.])?;
-        // variant.push_info_integer(b"SVTYPE", &[var.])?;
-        // variant.push_info_integer(b"SVLEN", &[var.])?; // Ensure is negative for deletion
-        variant.push_info_float(b"DUPRATE", &[var.duplication_rate])?;
-
+        if let Some(sv_info) = &var.sv_info {
+            variant.push_info_integer(b"SPLITREAD", &[sv_info.supporting_split_reads])?;
+            variant.push_info_integer(b"SPANPAIR", &[sv_info.supporting_pairs])?;
+            variant.push_info_string(b"SVTYPE", &[var.variant_type.as_bytes()])?;
+            variant.push_info_integer(b"SVLEN", &[var.length()])?;
+        }
+        if let Some(duplication_rate) = var.duplication_rate {
+            variant.push_info_float(b"DUPRATE", &[duplication_rate])?;
+        }
         variant.push_format_integer(b"VD", &[var.alt_depth])?;
         variant.push_format_integer(b"DP", &[var.depth])?;
         variant.push_format_string(b"AD", &[var.ad_value().as_bytes()])?;
@@ -170,8 +173,8 @@ mod tests {
     use file_diff::diff;
     use tempfile::NamedTempFile;
 
-    use super::VarDictMode::TumorOnly;
     use super::*;
+    use super::VarDictMode::TumorOnly;
 
     #[test]
     fn test_vartovcf_run() -> Result<(), Box<dyn std::error::Error>> {
