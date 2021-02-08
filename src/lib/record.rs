@@ -169,7 +169,9 @@ impl FromStr for PairBias {
     /// Convert a string to a `StrandBias` status.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let items: Vec<&str> = s.split(';').collect();
-        if items.len() != 2 { return Err(ParsePairBiasError) }
+        if items.len() != 2 {
+            return Err(ParsePairBiasError);
+        }
         let pair = match (items.get(0), items.get(1)) {
             (Some(reference), Some(alternate)) => PairBias {
                 reference: StrandBias::from_str(reference).map_err(|_| ParsePairBiasError)?,
@@ -489,7 +491,6 @@ mod tests {
         assert_eq!(&format!("{}", ParsePairBiasError), "ParsePairBiasError");
     }
 
-
     #[test]
     fn test_pair_bias_from_str_err() {
         assert_eq!(PairBias::from_str("1"), Err(ParsePairBiasError));
@@ -512,7 +513,7 @@ mod tests {
         let expected = SvInfo {
             supporting_split_reads: 0,
             supporting_pairs: 0,
-            supporting_clusters: 0
+            supporting_clusters: 0,
         };
         assert_eq!(SvInfo::default(), expected);
     }
@@ -522,7 +523,7 @@ mod tests {
         let sv_info = SvInfo {
             supporting_split_reads: 4,
             supporting_pairs: 5,
-            supporting_clusters: 9
+            supporting_clusters: 9,
         };
         assert_eq!(sv_info.to_string(), "4-5-9");
     }
