@@ -6,7 +6,7 @@
 
 Convert variants from VarDict/VarDictJava into VCF v4.2 format.
 
-![The Pacific Northwest - Fish Lake](docs/cover.jpg)
+![The Pacific Northwest - Fish Lake](.github/img/cover.jpg)
 
 ```bash
 ❯ VarDictJava/build/install/VarDict/bin/VarDict \
