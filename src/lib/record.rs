@@ -348,9 +348,9 @@ impl<'a> TumorOnlyVariant<'a> {
     /// The length of this variant from the perspective of the reference coordinate system.
     pub fn length(&self) -> i32 {
         if self.variant_type == "Deletion" || self.variant_type == "DEL" {
-            -((self.end - self.start) as i32)
+            -((self.end - self.start + 1) as i32)
         } else {
-            (self.end - self.start) as i32
+            (self.end - self.start + 1) as i32
         }
     }
 
