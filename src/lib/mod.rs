@@ -37,7 +37,7 @@ pub mod path {
 }
 
 /// The variant calling modes for VarDict/VarDictJava.
-#[derive(Clone, Copy, Debug, EnumString, EnumToString, EnumVariantNames, PartialOrd, PartialEq)]
+#[derive(Clone, Copy, Debug, EnumString, EnumToString, EnumVariantNames, PartialEq, PartialOrd)]
 pub enum VarDictMode {
     /// The amplicon variant calling mode.
     Amplicon,
@@ -136,12 +136,15 @@ where
         variant.push_info_string(b"RSEQ", &[var.flank_seq_3_prime.as_bytes()])?;
         variant.push_info_integer(b"HICNT", &[var.high_quality_variant_reads])?;
         variant.push_info_integer(b"HICOV", &[var.high_quality_total_reads])?;
-        // variant.push_info_integer(b"SPLITREAD", &[var.])?;
-        // variant.push_info_integer(b"SPANPAIR", &[var.])?;
-        // variant.push_info_integer(b"SVTYPE", &[var.])?;
-        // variant.push_info_integer(b"SVLEN", &[var.])?; // Ensure is negative for deletion
-        variant.push_info_float(b"DUPRATE", &[var.duplication_rate])?;
-
+        if let Some(sv_info) = &var.sv_info {
+            variant.push_info_integer(b"SPLITREAD", &[sv_info.supporting_split_reads])?;
+            variant.push_info_integer(b"SPANPAIR", &[sv_info.supporting_pairs])?;
+            variant.push_info_string(b"SVTYPE", &[var.variant_type.as_bytes()])?;
+            variant.push_info_integer(b"SVLEN", &[var.length()])?;
+        }
+        if let Some(duplication_rate) = var.duplication_rate {
+            variant.push_info_float(b"DUPRATE", &[duplication_rate])?;
+        }
         variant.push_format_integer(b"VD", &[var.alt_depth])?;
         variant.push_format_integer(b"DP", &[var.depth])?;
         variant.push_format_string(b"AD", &[var.ad_value().as_bytes()])?;
