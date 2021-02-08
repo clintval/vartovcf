@@ -29,14 +29,11 @@ fn maybe_infinite_f32<'de, D>(deserializer: D) -> Result<f32, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    let s: &str = Deserialize::deserialize(deserializer)
-        .expect("Could not parse a maybe-infinite (Inf, -Inf) floating point number.");
-    if s == "Inf" {
-        Ok(f32::INFINITY)
-    } else if s == "-Inf" {
-        Ok(f32::NEG_INFINITY)
-    } else {
-        f32::from_str(&s).map_err(D::Error::custom)
+    let string: &str = Deserialize::deserialize(deserializer)?;
+    match string {
+        "Inf" => Ok(f32::INFINITY),
+        "-Inf" => Ok(f32::NEG_INFINITY),
+        _ => f32::from_str(string).map_err(D::Error::custom),
     }
 }
 
@@ -50,12 +47,10 @@ fn maybe_sv_info<'de, D>(deserializer: D) -> Result<Option<SvInfo>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    let s: &str = Deserialize::deserialize(deserializer)
-        .expect("Could not parse an encoded structural variant info.");
-    if s == "0" {
-        Ok(None)
-    } else {
-        Ok(Some(SvInfo::from_str(s).map_err(D::Error::custom)?))
+    let string: &str = Deserialize::deserialize(deserializer)?;
+    match string {
+        "0" => Ok(None),
+        _ => Ok(Some(SvInfo::from_str(string).map_err(D::Error::custom)?)),
     }
 }
 
@@ -69,12 +64,10 @@ fn maybe_duplication_rate<'de, D>(deserializer: D) -> Result<Option<f32>, D::Err
 where
     D: serde::Deserializer<'de>,
 {
-    let s: &str =
-        Deserialize::deserialize(deserializer).expect("Could not parse a duplication rate.");
-    if s == "0" {
-        Ok(None)
-    } else {
-        Ok(Some(f32::from_str(s).map_err(D::Error::custom)?))
+    let string: &str = Deserialize::deserialize(deserializer)?;
+    match string {
+        "0" => Ok(None),
+        _ => Ok(Some(f32::from_str(string).map_err(D::Error::custom)?)),
     }
 }
 
@@ -348,6 +341,7 @@ impl<'a> AbstractInterval for TumorOnlyVariant<'a> {
     fn contig(&self) -> &str {
         &self.contig
     }
+
     fn range(&self) -> Range<Position> {
         Range {
             start: self.start - 1,
