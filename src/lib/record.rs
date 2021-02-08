@@ -1,4 +1,5 @@
 //! A module for serialization-deserialization friendly VarDict/VarDictJava data types.
+use serde_with::rust::display_fromstr;
 use std::clone::Clone;
 use std::cmp::PartialEq;
 use std::default::Default;
@@ -77,23 +78,6 @@ where
     }
 }
 
-/// Deserialize VarDict/VarDictJava strand bias status into an enumeration of strand bias. The
-/// incoming value takes the values [0-2];[0-2] (_e.g._ "0;2", "2;1"). The first value refers to
-/// reads that support the reference allele, and the second to reads that support the variant
-/// allele.
-///
-/// * `0`: there were too few reads to say otherwise (less than 12 for the sum of forward and reverse reads)
-/// * `1`: strand bias was detected
-/// * `2`: no strand bias was detected
-fn to_strand_bias<'de, D>(deserializer: D) -> Result<PairBias, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let s: &str = Deserialize::deserialize(deserializer)
-        .expect("Could not parse the paired strand bias status.");
-    PairBias::from_str(s).map_err(D::Error::custom)
-}
-
 /// An exception for when we cannot parse a string into a `PairBias`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ParsePairBiasError;
@@ -102,7 +86,7 @@ impl error::Error for ParsePairBiasError {}
 
 impl fmt::Display for ParsePairBiasError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "ParsePairBiasError")
+        write!(f, "{:?}", self)
     }
 }
 
@@ -114,7 +98,7 @@ impl error::Error for ParseSvInfoError {}
 
 impl fmt::Display for ParseSvInfoError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "ParseSvInfoError")
+        write!(f, "{:?}", self)
     }
 }
 
@@ -157,9 +141,9 @@ impl Default for PairBias {
     }
 }
 
-impl ToString for PairBias {
-    fn to_string(&self) -> String {
-        format!("{}:{}", self.reference, self.alternate)
+impl fmt::Display for PairBias {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", self.reference, self.alternate)
     }
 }
 
@@ -272,7 +256,7 @@ pub struct TumorOnlyVariant<'a> {
     /// * `0`: there were too few reads to say otherwise (less than 12 for the sum of forward and reverse reads)
     /// * `1`: strand bias was detected
     /// * `2`: strand bias was undetected
-    #[serde(deserialize_with = "to_strand_bias")]
+    #[serde(with = "display_fromstr")]
     pub strand_bias: PairBias,
     /// The mean distance to the nearest 5 or 3 prime read end (whichever is closer) in all reads
     /// that support the variant call.
