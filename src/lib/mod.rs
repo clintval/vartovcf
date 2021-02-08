@@ -198,7 +198,7 @@ mod tests {
     #[test]
     fn test_vartovcf_run() -> Result<(), Box<dyn std::error::Error>> {
         let sample = "dna00001";
-        let input = BufReader::new(File::open("tests/nras.var")?);
+        let input = BufReader::new(File::open("tests/calls.var")?);
         let output = NamedTempFile::new().expect("Cannot create temporary file.");
         let reference = PathBuf::from("tests/reference.fa");
         let exit = vartovcf(
@@ -209,14 +209,14 @@ mod tests {
             &TumorOnly,
         )?;
         assert_eq!(exit, 0);
-        assert!(diff(&output.path().to_str().unwrap(), "tests/nras.vcf"));
+        assert!(diff(&output.path().to_str().unwrap(), "tests/calls.vcf"));
         Ok(())
     }
 
     #[test]
     fn test_when_incorrect_sample() {
         let sample = "XXXXXXXX";
-        let input = BufReader::new(File::open("tests/nras.var").unwrap());
+        let input = BufReader::new(File::open("tests/calls.var").unwrap());
         let output = NamedTempFile::new().expect("Cannot create temporary file.");
         let reference = PathBuf::from("tests/reference.fa");
         let result = vartovcf(
