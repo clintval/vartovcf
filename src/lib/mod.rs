@@ -2,6 +2,7 @@
 #![warn(missing_docs)]
 #![warn(missing_doc_code_examples)]
 
+use std::collections::HashSet;
 use std::error;
 use std::fmt::Debug;
 use std::io::Read;
@@ -10,14 +11,14 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use csv::ReaderBuilder;
 use log::*;
-use rust_htslib::bcf::record::GenotypeAllele;
 use rust_htslib::bcf::Format;
+use rust_htslib::bcf::record::GenotypeAllele;
 use rust_htslib::bcf::Writer as VcfWriter;
 use strum::{EnumString, EnumVariantNames, ToString as EnumToString};
 
-use crate::fai::{reference_contigs_to_vcf_header, reference_path_to_vcf_header};
+use crate::fai::{fasta_contigs_to_vcf_header, fasta_path_to_vcf_header};
 use crate::io::has_gzip_ext;
-use crate::progress_logger::{ProgressLogger, RecordLogger, DEFAULT_LOG_EVERY};
+use crate::progress_logger::{DEFAULT_LOG_EVERY, ProgressLogger, RecordLogger};
 use crate::record::tumor_only_header;
 use crate::record::TumorOnlyVariant;
 
@@ -80,12 +81,11 @@ where
         &VarDictMode::TumorOnly,
         "The only mode currently supported is [TumorOnly]."
     );
-    let mut header = tumor_only_header(&sample);
-    reference_contigs_to_vcf_header(&fasta, &mut header);
-    reference_path_to_vcf_header(&fasta, &mut header)
-        .expect("Could not add the FASTA file path to the VCF header");
 
-    let mut progress = ProgressLogger::new("processed", "variant records", DEFAULT_LOG_EVERY);
+    let mut header = tumor_only_header(&sample);
+
+    fasta_contigs_to_vcf_header(&fasta, &mut header);
+    fasta_path_to_vcf_header(&fasta, &mut header).expect("Adding FASTA path to header failed!");
 
     let mut reader = ReaderBuilder::new()
         .delimiter(b'\t')
@@ -98,11 +98,24 @@ where
     }
     .expect("Could not build a VCF writer.");
 
+    let mut progress = ProgressLogger::new("processed", "variant records", DEFAULT_LOG_EVERY);
+
+    let mut seen: HashSet<String> = HashSet::new();
     let mut carry = csv::StringRecord::new();
     let mut variant = writer.empty_record();
 
     while reader.read_record(&mut carry)? {
         let var: TumorOnlyVariant = carry.deserialize(None)?;
+
+        // NB: If we have observed this particular variant records before, skip writing.
+        let key = format!(
+            "{}-{}-{}-{}",
+            var.contig, var.start, var.ref_allele, var.alt_allele
+        );
+        if seen.replace(key).is_some() {
+            continue;
+        }
+
         if var.sample != sample {
             let message = format!("Expected sample '{}' found '{}'", sample, var.sample);
             progress.emit()?;
@@ -193,8 +206,8 @@ mod tests {
     use pretty_assertions::assert_eq;
     use tempfile::NamedTempFile;
 
-    use super::VarDictMode::TumorOnly;
     use super::*;
+    use super::VarDictMode::TumorOnly;
 
     #[test]
     fn test_vartovcf_run() -> Result<(), Box<dyn std::error::Error>> {
