@@ -74,7 +74,7 @@ where
 }
 
 /// Add the reference contigs from an indexed FASTA file to the VCF header.
-pub fn reference_contigs_to_vcf_header<I>(fasta: I, header: &mut Header)
+pub fn fasta_contigs_to_vcf_header<I>(fasta: I, header: &mut Header)
 where
     I: AsRef<Path> + Debug,
 {
@@ -84,7 +84,7 @@ where
 }
 
 /// Add a VCF header record containing the filepath of the reference FASTA.
-pub fn reference_path_to_vcf_header<I>(
+pub fn fasta_path_to_vcf_header<I>(
     fasta: I,
     header: &mut Header,
 ) -> Result<(), Box<dyn error::Error>>
@@ -211,9 +211,9 @@ mod tests {
     }
 
     #[test]
-    fn reference_path_to_vcf_header_exists() {
+    fn test_fasta_path_to_vcf_header_exists() {
         let mut header = Header::default();
-        reference_path_to_vcf_header(&"/references/hg19.fa", &mut header)
+        fasta_path_to_vcf_header(&"/references/hg19.fa", &mut header)
             .expect("Could not add the FASTA file path to the VCF header");
 
         let file = NamedTempFile::new().expect("Cannot create temporary file.");
