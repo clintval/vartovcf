@@ -18,19 +18,22 @@ use strum::EnumString;
 const CARGO_PKG_NAME: &str = env!("CARGO_PKG_NAME");
 const CARGO_PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Deserialize a possibly infinite float into a <f32> or return a custom error.
+/// Deserialize a possibly infinite float into a <f32> or return a custom error. The floating point
+/// number in VAR files must be expressed as a ratio for them to be true odds ratios.
 ///
-/// The following cases are handled:
+/// Correctly serializes the following cases:
 ///
-/// * `"Inf"`: floating point infinity
-/// * `"-Inf"`: floating point negative infinity
-/// * `<other>`: a non-infinite floating point number
-fn maybe_infinite_f32<'de, D>(deserializer: D) -> Result<f32, D::Error>
+/// * `"Inf"` or `"-Inf"`: floating point infinities with upper-case strings, will return `0`.
+/// * `(0, 1]`: a floating point number in the range 0 to 1, will return `1 / n`
+/// * `0`: a floating point zero, will return `0`
+fn maybe_infinite_f32_odds_ratio<'de, D>(deserializer: D) -> Result<f32, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     let string: &str = Deserialize::deserialize(deserializer)?;
-    f32::from_str(string.to_lowercase().as_str()).map_err(D::Error::custom)
+    f32::from_str(string.to_lowercase().as_str())
+        .map(|x| if x == 0.0 { 0.0 } else { (1.0 / x).abs() })
+        .map_err(D::Error::custom)
 }
 
 /// Deserialize encoded structural variant (SV) info or return a custom error.
@@ -261,7 +264,7 @@ pub struct TumorOnlyVariant<'a> {
     /// The Fisher test p-value for if you should reject the hypothesis that there is no strand
     /// bias. Non-multiple hypothesis test corrected.
     pub strand_bias_p_value: f32,
-    #[serde(deserialize_with = "maybe_infinite_f32")]
+    #[serde(deserialize_with = "maybe_infinite_f32_odds_ratio")]
     /// The odds ratio for strand bias.
     pub strand_bias_odds_ratio: f32,
     /// The mean mapping quality (Phred) of all reads that directly support the variant call.
@@ -377,18 +380,15 @@ pub fn tumor_only_header(sample: &str) -> Header {
     header.push_record(r#"##INFO=<ID=SN,Number=1,Type=Float,Description="The signal to noise ratio for this variant call">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=SPANPAIR,Number=1,Type=Integer,Description="The number of paired-end reads supporting the variant call if this call is a structural variant">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=SPLITREAD,Number=1,Type=Integer,Description="The number of split reads supporting the variant call if this call is a structural variant">"#.as_bytes());
-    header.push_record(r#"##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="The length of stuctural variant in base pairs of reference genome, if this call is a structural variant">"#.as_bytes());
+    header.push_record(r#"##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="The length of structural variant in base pairs of reference genome, if this call is a structural variant">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=SVTYPE,Number=1,Type=String,Description="The structural variant type (BND, CNV, DEL, DUP, INS, INV), if this call is a structural variant">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=VARBIAS,Number=1,Type=String,Description="Strand bias in reads that support the variant call">"#.as_bytes());
-    header.push_record(r#"##FILTER=<ID=Cluster0bp,Description="At least two variant calls are within 0 base pairs from each other in the reference sequence coordinate system">"#.as_bytes());
-    header.push_record(r#"##FILTER=<ID=InGap,Description="The variant call is in a deletion gap, and might be a false positive">"#.as_bytes());
-    header.push_record(r#"##FILTER=<ID=InIns,Description="The variant call was found to be adjacent to an insertion variant">"#.as_bytes());
     header.push_record(r#"##FILTER=<ID=LongMSI,Description="The variant call is flanked by a long A/T stretch (>=14 base pairs)">"#.as_bytes());
     header.push_record(r#"##FILTER=<ID=MSI12,Description="The variant call is in a microsatellite region with 12 non-monomer MSI or 13 monomer MSI">"#.as_bytes());
-    header.push_record(r#"##FILTER=<ID=NM8.0,Description="The mean mismatches in reads that support the variant call is >= 8.0, and might be a false positive or contamination">"#.as_bytes());
+    header.push_record(r#"##FILTER=<ID=NM8.0,Description="The mean mismatches in reads that support the variant call is greater than or equal to 8.0, and might be a false positive or contamination">"#.as_bytes());
     header.push_record(r#"##FILTER=<ID=PASS,Description="The variant call has passed all filters and may be considered for downstream analysis">"#.as_bytes());
-    header.push_record(r#"##FILTER=<ID=Q10,Description="The mean mapping quality (Phred) in reads that suppr 10">"#.as_bytes());
-    header.push_record(r#"##FILTER=<ID=q22.5,Description="The mean base quality (Phred) of all bases that directly support this variant call is below 22.5">"#.as_bytes());
+    header.push_record(r#"##FILTER=<ID=Q10,Description="The mean mapping quality (Phred) in reads that support this variant call is less than 10">"#.as_bytes());
+    header.push_record(r#"##FILTER=<ID=q22.5,Description="The mean base quality (Phred) of all bases that directly support this variant call is less than 22.5">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=GT,Number=1,Type=String,Description="The genotype for this sample for this variant call ">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=VD,Number=1,Type=Integer,Description="The variant allele depth at this location">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=DP,Number=1,Type=Integer,Description="The total allele depth at this location which potentially includes No-calls">"#.as_bytes());
@@ -409,6 +409,7 @@ mod tests {
 
     use anyhow::Result;
     use csv::ReaderBuilder;
+    use pretty_assertions::assert_eq;
     use rstest::*;
     use rust_htslib::bcf::{Format, Read};
     use rust_htslib::bcf::{Reader as VcfReader, Writer as VcfWriter};
@@ -424,11 +425,11 @@ mod tests {
         let del_info = SvInfo { supporting_split_reads: 1, supporting_pairs: 1, supporting_clusters: 1 };
         vec!(
             TumorOnlyVariant { sample: "dna00001", interval_name: "PTPN11", contig: "chr12", start: 112450447, end: 123513818, ref_allele: "A", alt_allele: "<INV>", depth: 6775, alt_depth: 1, ref_forward: 3991, ref_reverse: 2588, alt_forward: 1, alt_reverse: 0, gt: "A/<INV11063372>", af: 0.0001, strand_bias: PairBias::from_str("2;0").unwrap(), mean_position_in_read: 58.0, stdev_position_in_read: 1.0, mean_base_quality: 90.0, stdev_base_quality: 1.0, strand_bias_p_value: 1.0, strand_bias_odds_ratio: 0.0, mean_mapping_quality: 33.0, signal_to_noise: 2, af_high_quality_bases: 0.0002, af_adjusted: 0.0001, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 0, microsatellite_length: 0, mean_mismatches_in_reads: 0.0, high_quality_variant_reads: 1, high_quality_total_reads: 6582, flank_seq_5_prime: "GAACATCACGGGCAATTAAA", flank_seq_3_prime: "GGGACCTAGATTTTAAGAGA", segment: "chr12:112450168-112450587", variant_type: "INV", duplication_rate: None, sv_info: Some(inv_info), distance_to_crispr_site: None },
-            TumorOnlyVariant { sample: "dna00001", interval_name: "PTPN11", contig: "chr12", start: 112450447, end: 123513818, ref_allele: "A", alt_allele: "<DUP>", depth: 6775, alt_depth: 1, ref_forward: 3991, ref_reverse: 2588, alt_forward: 1, alt_reverse: 0, gt: "A/<DUP11063372>", af: 0.0001, strand_bias: PairBias::from_str("2;0").unwrap(), mean_position_in_read: 58.0, stdev_position_in_read: 1.0, mean_base_quality: 90.0, stdev_base_quality: 1.0, strand_bias_p_value: 1.0, strand_bias_odds_ratio: 0.0, mean_mapping_quality: 33.0, signal_to_noise: 2, af_high_quality_bases: 0.0002, af_adjusted: 0.0001, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 0, microsatellite_length: 0, mean_mismatches_in_reads: 0.0, high_quality_variant_reads: 1, high_quality_total_reads: 6582, flank_seq_5_prime: "GAACATCACGGGCAATTAAA", flank_seq_3_prime: "GGGACCTAGATTTTAAGAGA", segment: "chr12:112450168-112450587", variant_type: "DUP", duplication_rate: Some(0.001), sv_info: Some(dup_info), distance_to_crispr_site: None },
-            TumorOnlyVariant { sample: "dna00001", interval_name: "NRAS-Q61", contig: "chr1", start: 114713883, end: 114713883, ref_allele: "G", alt_allele: "A", depth: 8104, alt_depth: 1, ref_forward: 2766, ref_reverse: 5280, alt_forward: 1, alt_reverse: 0, gt: "G/A", af: 0.0001, strand_bias: PairBias::from_str("2;0").unwrap(), mean_position_in_read: 13.0, stdev_position_in_read: 0.0, mean_base_quality: 90.0, stdev_base_quality: 0.0, strand_bias_p_value: 0.34385, strand_bias_odds_ratio: 0.0, mean_mapping_quality: 60.0, signal_to_noise: 2, af_high_quality_bases: 0.0001, af_adjusted: 0.0, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 1, microsatellite_length: 1, mean_mismatches_in_reads: 2.0, high_quality_variant_reads: 1, high_quality_total_reads: 8048, flank_seq_5_prime: "TCGCCTGTCCTCATGTATTG", flank_seq_3_prime: "TCTCTCATGGCACTGTACTC", segment: "chr1:114713749-114713988", variant_type: "SNV", duplication_rate: None, sv_info: None, distance_to_crispr_site: None },
-            TumorOnlyVariant { sample: "dna00001", interval_name: "FLT3", contig: "chr13", start: 24684729, end: 28034141, ref_allele: "G", alt_allele: "<DEL>", depth: 7463, alt_depth: 2, ref_forward: 0, ref_reverse: 0, alt_forward: 0, alt_reverse: 2, gt: "-3349412/-3349412", af: 0.0003, strand_bias: PairBias::from_str("0;0").unwrap(), mean_position_in_read: 60.5, stdev_position_in_read: 1.0, mean_base_quality: 90.0, stdev_base_quality: 1.0, strand_bias_p_value: 1.0, strand_bias_odds_ratio: 0.0, mean_mapping_quality: 60.0, signal_to_noise: 4, af_high_quality_bases: 1.0000, af_adjusted: 0.0003, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 0, microsatellite_length: 0, mean_mismatches_in_reads: 0.0, high_quality_variant_reads: 2, high_quality_total_reads: 2, flank_seq_5_prime: "TGCTGTAGTCTAATGATTCT", flank_seq_3_prime: "CAACGTAGAAGTACTCATTA", segment: "chr13:28033879-28034298", variant_type: "DEL", duplication_rate: None, sv_info: Some(del_info), distance_to_crispr_site: None },
-            TumorOnlyVariant { sample: "dna00001", interval_name: "NRAS-Q61", contig: "chr1", start: 114713883, end: 114713883, ref_allele: "G", alt_allele: "T", depth: 8104, alt_depth: 1, ref_forward: 2766, ref_reverse: 5280, alt_forward: 0, alt_reverse: 1, gt: "G/T", af: 0.0001, strand_bias: PairBias::from_str("2;0").unwrap(), mean_position_in_read: 28.0, stdev_position_in_read: 0.0, mean_base_quality: 90.0, stdev_base_quality: 0.0, strand_bias_p_value: 1.0, strand_bias_odds_ratio: f32::INFINITY, mean_mapping_quality: 60.0, signal_to_noise: 2, af_high_quality_bases: 0.0001, af_adjusted: 0.0, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 1, microsatellite_length: 1, mean_mismatches_in_reads: 1.0, high_quality_variant_reads: 1, high_quality_total_reads: 8048, flank_seq_5_prime: "TCGCCTGTCCTCATGTATTG", flank_seq_3_prime: "TCTCTCATGGCACTGTACTC", segment: "chr1:114713749-114713988", variant_type: "SNV", duplication_rate: None, sv_info: None, distance_to_crispr_site: None },
-            TumorOnlyVariant { sample: "dna00001", interval_name: "NRAS-Q61", contig: "chr1", start: 114713880, end: 114713880, ref_allele: "T", alt_allele: "A", depth: 8211, alt_depth: 1, ref_forward: 3001, ref_reverse: 5130, alt_forward: 1, alt_reverse: 0, gt: "T/A", af: 0.0001, strand_bias: PairBias::from_str("2;0").unwrap(), mean_position_in_read: 18.0, stdev_position_in_read: 0.0, mean_base_quality: 90.0, stdev_base_quality: 0.0, strand_bias_p_value: 0.36916, strand_bias_odds_ratio: f32::NEG_INFINITY, mean_mapping_quality: 60.0, signal_to_noise: 2, af_high_quality_bases: 0.0001, af_adjusted: 0.0, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 2, microsatellite_length: 1, mean_mismatches_in_reads: 1.0, high_quality_variant_reads: 1, high_quality_total_reads: 8132, flank_seq_5_prime: "CCTTCGCCTGTCCTCATGTA", flank_seq_3_prime: "TGGTCTCTCATGGCACTGTA", segment: "chr1:114713749-114713988", variant_type: "SNV", duplication_rate: None, sv_info: None, distance_to_crispr_site: None },
+            TumorOnlyVariant { sample: "dna00001", interval_name: "PTPN11", contig: "chr12", start: 112450447, end: 123513818, ref_allele: "A", alt_allele: "<DUP>", depth: 6775, alt_depth: 1, ref_forward: 3991, ref_reverse: 2588, alt_forward: 1, alt_reverse: 0, gt: "A/<DUP11063372>", af: 0.0001, strand_bias: PairBias::from_str("2;0").unwrap(), mean_position_in_read: 58.0, stdev_position_in_read: 1.0, mean_base_quality: 90.0, stdev_base_quality: 1.0, strand_bias_p_value: 1.0, strand_bias_odds_ratio: 10.0, mean_mapping_quality: 33.0, signal_to_noise: 2, af_high_quality_bases: 0.0002, af_adjusted: 0.0001, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 0, microsatellite_length: 0, mean_mismatches_in_reads: 0.0, high_quality_variant_reads: 1, high_quality_total_reads: 6582, flank_seq_5_prime: "GAACATCACGGGCAATTAAA", flank_seq_3_prime: "GGGACCTAGATTTTAAGAGA", segment: "chr12:112450168-112450587", variant_type: "DUP", duplication_rate: Some(0.001), sv_info: Some(dup_info), distance_to_crispr_site: None },
+            TumorOnlyVariant { sample: "dna00001", interval_name: "NRAS-Q61", contig: "chr1", start: 114713883, end: 114713883, ref_allele: "G", alt_allele: "A", depth: 8104, alt_depth: 1, ref_forward: 2766, ref_reverse: 5280, alt_forward: 1, alt_reverse: 0, gt: "G/A", af: 0.0001, strand_bias: PairBias::from_str("2;0").unwrap(), mean_position_in_read: 13.0, stdev_position_in_read: 0.0, mean_base_quality: 90.0, stdev_base_quality: 0.0, strand_bias_p_value: 0.34385, strand_bias_odds_ratio: 4.0, mean_mapping_quality: 60.0, signal_to_noise: 2, af_high_quality_bases: 0.0001, af_adjusted: 0.0, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 1, microsatellite_length: 1, mean_mismatches_in_reads: 2.0, high_quality_variant_reads: 1, high_quality_total_reads: 8048, flank_seq_5_prime: "TCGCCTGTCCTCATGTATTG", flank_seq_3_prime: "TCTCTCATGGCACTGTACTC", segment: "chr1:114713749-114713988", variant_type: "SNV", duplication_rate: None, sv_info: None, distance_to_crispr_site: None },
+            TumorOnlyVariant { sample: "dna00001", interval_name: "FLT3", contig: "chr13", start: 24684729, end: 28034141, ref_allele: "G", alt_allele: "<DEL>", depth: 7463, alt_depth: 2, ref_forward: 0, ref_reverse: 0, alt_forward: 0, alt_reverse: 2, gt: "-3349412/-3349412", af: 0.0003, strand_bias: PairBias::from_str("0;0").unwrap(), mean_position_in_read: 60.5, stdev_position_in_read: 1.0, mean_base_quality: 90.0, stdev_base_quality: 1.0, strand_bias_p_value: 1.0, strand_bias_odds_ratio: 2.0, mean_mapping_quality: 60.0, signal_to_noise: 4, af_high_quality_bases: 1.0000, af_adjusted: 0.0003, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 0, microsatellite_length: 0, mean_mismatches_in_reads: 0.0, high_quality_variant_reads: 2, high_quality_total_reads: 2, flank_seq_5_prime: "TGCTGTAGTCTAATGATTCT", flank_seq_3_prime: "CAACGTAGAAGTACTCATTA", segment: "chr13:28033879-28034298", variant_type: "DEL", duplication_rate: None, sv_info: Some(del_info), distance_to_crispr_site: None },
+            TumorOnlyVariant { sample: "dna00001", interval_name: "NRAS-Q61", contig: "chr1", start: 114713883, end: 114713883, ref_allele: "G", alt_allele: "T", depth: 8104, alt_depth: 1, ref_forward: 2766, ref_reverse: 5280, alt_forward: 0, alt_reverse: 1, gt: "G/T", af: 0.0001, strand_bias: PairBias::from_str("2;0").unwrap(), mean_position_in_read: 28.0, stdev_position_in_read: 0.0, mean_base_quality: 90.0, stdev_base_quality: 0.0, strand_bias_p_value: 1.0, strand_bias_odds_ratio: 0.0, mean_mapping_quality: 60.0, signal_to_noise: 2, af_high_quality_bases: 0.0001, af_adjusted: 0.0, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 1, microsatellite_length: 1, mean_mismatches_in_reads: 1.0, high_quality_variant_reads: 1, high_quality_total_reads: 8048, flank_seq_5_prime: "TCGCCTGTCCTCATGTATTG", flank_seq_3_prime: "TCTCTCATGGCACTGTACTC", segment: "chr1:114713749-114713988", variant_type: "SNV", duplication_rate: None, sv_info: None, distance_to_crispr_site: None },
+            TumorOnlyVariant { sample: "dna00001", interval_name: "NRAS-Q61", contig: "chr1", start: 114713880, end: 114713880, ref_allele: "T", alt_allele: "A", depth: 8211, alt_depth: 1, ref_forward: 3001, ref_reverse: 5130, alt_forward: 1, alt_reverse: 0, gt: "T/A", af: 0.0001, strand_bias: PairBias::from_str("2;0").unwrap(), mean_position_in_read: 18.0, stdev_position_in_read: 0.0, mean_base_quality: 90.0, stdev_base_quality: 0.0, strand_bias_p_value: 0.36916, strand_bias_odds_ratio: 0.0, mean_mapping_quality: 60.0, signal_to_noise: 2, af_high_quality_bases: 0.0001, af_adjusted: 0.0, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 2, microsatellite_length: 1, mean_mismatches_in_reads: 1.0, high_quality_variant_reads: 1, high_quality_total_reads: 8132, flank_seq_5_prime: "CCTTCGCCTGTCCTCATGTA", flank_seq_3_prime: "TGGTCTCTCATGGCACTGTA", segment: "chr1:114713749-114713988", variant_type: "SNV", duplication_rate: None, sv_info: None, distance_to_crispr_site: None },
         )
     }
 
@@ -551,7 +552,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_maybe_infinite_f32(
+    fn test_maybe_infinite_f32_odds_ratio(
         variants: Vec<TumorOnlyVariant>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let input = PathBuf::from("tests/calls.var");
@@ -587,7 +588,7 @@ mod tests {
         let reader = VcfReader::from_path(&file.path()).expect("Error opening tempfile.");
         let records = reader.header().header_records();
         let samples = reader.header().samples();
-        assert_eq!(records.len(), 48);
+        assert_eq!(records.len(), 45);
         assert_eq!(samples.len(), 1);
         assert!(samples.iter().all(|&s| s == "dna00001".as_bytes()));
     }

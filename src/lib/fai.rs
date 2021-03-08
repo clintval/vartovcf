@@ -103,6 +103,7 @@ mod tests {
     use std::io::Write;
 
     use anyhow::Result;
+    use pretty_assertions::assert_eq;
     use rstest::*;
     use rust_htslib::bcf::{Format, HeaderRecord, Read};
     use rust_htslib::bcf::{Reader as VcfReader, Writer as VcfWriter};
