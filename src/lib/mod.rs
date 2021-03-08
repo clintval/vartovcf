@@ -190,6 +190,7 @@ mod tests {
 
     use anyhow::Result;
     use file_diff::diff;
+    use pretty_assertions::assert_eq;
     use tempfile::NamedTempFile;
 
     use super::VarDictMode::TumorOnly;

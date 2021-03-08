@@ -41,5 +41,6 @@ strum = { version = "0.20", features = ["derive"] }
 assert_cmd = "1.0.2"
 env_logger = "0.8"
 file_diff = "1.0.0"
+pretty_assertions = "0.6.1"
 rstest = "0.6"
 tempfile = "3"
