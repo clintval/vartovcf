@@ -23,7 +23,7 @@ const CARGO_PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 ///
 /// Correctly serializes the following cases:
 ///
-/// * `"Inf"` or `"-Inf"`: floating point infinities with upper-case strings, will return `0`.
+/// * `"Inf"` or `"-Inf"`: floating point infinities with title-case strings, will return `0`.
 /// * `(0, 1]`: a floating point number in the range 0 to 1, will return `1 / n`
 /// * `0`: a floating point zero, will return `0`
 fn maybe_infinite_f32_odds_ratio<'de, D>(deserializer: D) -> Result<f32, D::Error>
