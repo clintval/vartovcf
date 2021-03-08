@@ -11,14 +11,14 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use csv::ReaderBuilder;
 use log::*;
-use rust_htslib::bcf::Format;
 use rust_htslib::bcf::record::GenotypeAllele;
+use rust_htslib::bcf::Format;
 use rust_htslib::bcf::Writer as VcfWriter;
 use strum::{EnumString, EnumVariantNames, ToString as EnumToString};
 
 use crate::fai::{fasta_contigs_to_vcf_header, fasta_path_to_vcf_header};
 use crate::io::has_gzip_ext;
-use crate::progress_logger::{DEFAULT_LOG_EVERY, ProgressLogger, RecordLogger};
+use crate::progress_logger::{ProgressLogger, RecordLogger, DEFAULT_LOG_EVERY};
 use crate::record::tumor_only_header;
 use crate::record::TumorOnlyVariant;
 
@@ -206,8 +206,8 @@ mod tests {
     use pretty_assertions::assert_eq;
     use tempfile::NamedTempFile;
 
-    use super::*;
     use super::VarDictMode::TumorOnly;
+    use super::*;
 
     #[test]
     fn test_vartovcf_run() -> Result<(), Box<dyn std::error::Error>> {
