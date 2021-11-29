@@ -2,7 +2,6 @@
 #![warn(missing_docs)]
 #![warn(missing_doc_code_examples)]
 
-use std::collections::HashSet;
 use std::error;
 use std::fmt::Debug;
 use std::io::Read;
@@ -82,7 +81,7 @@ where
         "The only mode currently supported is [TumorOnly]."
     );
 
-    let mut header = tumor_only_header(&sample);
+    let mut header = tumor_only_header(sample);
 
     fasta_contigs_to_vcf_header(&fasta, &mut header);
     fasta_path_to_vcf_header(&fasta, &mut header).expect("Adding FASTA path to header failed!");
@@ -99,22 +98,11 @@ where
     .expect("Could not build a VCF writer.");
 
     let mut progress = ProgressLogger::new("processed", "variant records", DEFAULT_LOG_EVERY);
-
-    let mut seen: HashSet<String> = HashSet::new();
     let mut carry = csv::StringRecord::new();
     let mut variant = writer.empty_record();
 
     while reader.read_record(&mut carry)? {
         let var: TumorOnlyVariant = carry.deserialize(None)?;
-
-        // NB: If we have observed this particular variant records before, skip writing.
-        let key = format!(
-            "{}-{}-{}-{}",
-            var.contig, var.start, var.ref_allele, var.alt_allele
-        );
-        if seen.replace(key).is_some() {
-            continue;
-        }
 
         if var.sample != sample {
             let message = format!("Expected sample '{}' found '{}'", sample, var.sample);
