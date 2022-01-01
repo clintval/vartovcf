@@ -10,7 +10,6 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use csv::ReaderBuilder;
 use log::*;
-use rust_htslib::bcf::record::GenotypeAllele;
 use rust_htslib::bcf::Format;
 use rust_htslib::bcf::Writer as VcfWriter;
 use strum::{EnumString, EnumVariantNames, ToString as EnumToString};
@@ -111,18 +110,25 @@ where
         };
 
         let rid = writer.header().name2rid(var.contig.as_bytes()).unwrap();
-        let genotypes = &[
-            GenotypeAllele::UnphasedMissing,
-            GenotypeAllele::UnphasedMissing,
-        ];
 
         variant.set_rid(Some(rid));
         variant.set_pos(var.start as i64 - 1);
-        variant.set_alleles(&[var.ref_allele.as_bytes(), var.alt_allele.as_bytes()])?;
-        variant.push_genotypes(genotypes).unwrap();
+        variant.set_alleles(&[
+            var.ref_allele.as_bytes(),
+            var.alt_allele_for_vcf().as_bytes(),
+        ])?;
+
+        if var.alt_depth == 0 {
+            variant.set_qual(0.0)
+        } else {
+            let qual = (var.alt_depth as f32).ln() / 2.0_f32.ln() * var.mean_base_quality;
+            variant.set_qual(qual)
+        }
 
         variant.push_info_float(b"ADJAF", &[var.af_adjusted])?;
         variant.push_info_string(b"BIAS", &[var.strand_bias.to_string().as_bytes()])?;
+        variant.push_info_integer(b"BIASALT", &[var.alt_forward, var.alt_reverse])?;
+        variant.push_info_integer(b"BIASREF", &[var.ref_forward, var.ref_reverse])?;
 
         if let Some(duplication_rate) = var.duplication_rate {
             variant.push_info_float(b"DUPRATE", &[duplication_rate])?;
@@ -144,7 +150,6 @@ where
         variant.push_info_float(b"PSTD", &[var.stdev_position_in_read])?;
         variant.push_info_float(b"QSTD", &[var.stdev_base_quality])?;
         variant.push_info_float(b"QUAL", &[var.mean_base_quality])?;
-        // variant.push_info_integer(b"REFBIAS", &[var.])?;
         variant.push_info_string(b"RSEQ", &[var.flank_seq_3_prime.as_bytes()])?;
         variant.push_info_float(b"SBF", &[var.strand_bias_p_value])?;
         variant.push_info_integer(b"SHIFT3", &[var.num_bases_3_prime_shift_for_deletions])?;
@@ -166,13 +171,11 @@ where
             variant.clear_info_integer(b"SVLEN")?;
             variant.clear_info_integer(b"SVTYPE")?;
         }
-        // variant.push_info_integer(b"VARBIAS", &[var.])?;
 
+        variant.push_genotypes(var.gt_value(0.25))?;
         variant.push_format_integer(b"VD", &[var.alt_depth])?;
         variant.push_format_integer(b"DP", &[var.depth])?;
-        variant.push_format_string(b"AD", &[var.ad_value().as_bytes()])?;
-        variant.push_format_string(b"ALD", &[var.ald_value().as_bytes()])?;
-        variant.push_format_string(b"RD", &[var.rd_value().as_bytes()])?;
+        variant.push_format_integer(b"AD", &var.ad_value())?;
 
         writer.write(&variant)?;
         progress.observe()?;

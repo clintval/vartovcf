@@ -17,7 +17,9 @@ Convert variants from VarDict/VarDictJava into VCF v4.2 format.
     --fisher \
     calling-intervals.bed \
   | vartovcf -r /references/hg38.fa -s dna00001 \
-  | bcftools sort -Oz > variants.vcf.gz
+  | bcftools sort -Ou \
+  | bcftools norm -Ou --remove-duplicates \
+  | bgzip -dc > variants.vcf.gz
 ```
 
 #### Features
