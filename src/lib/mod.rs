@@ -2,15 +2,17 @@
 #![warn(missing_docs)]
 #![warn(missing_doc_code_examples)]
 
+use std::collections::HashSet;
+use std::error;
+use std::fmt::Debug;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+
 use anyhow::Result;
 use csv::ReaderBuilder;
 use log::*;
 use rust_htslib::bcf::Format;
 use rust_htslib::bcf::Writer as VcfWriter;
-use std::error;
-use std::fmt::Debug;
-use std::io::Read;
-use std::path::{Path, PathBuf};
 use strum::{EnumString, EnumVariantNames, ToString as EnumToString};
 
 use crate::fai::{fasta_contigs_to_vcf_header, fasta_path_to_vcf_header};
@@ -101,14 +103,24 @@ where
     let mut progress = ProgressLogger::new("processed", "variant records", DEFAULT_LOG_EVERY);
     let mut carry = csv::StringRecord::new();
     let mut variant = writer.empty_record();
+    let mut seen: HashSet<String> = HashSet::new();
 
     while reader.read_record(&mut carry)? {
         if carry.iter().collect::<Vec<&str>>()[5].is_empty() {
-            continue; // If the 5th field is empty, it's a record we need to skip.
+            continue; // If the 5th field is empty, it's a record we need to avoid deserializing.
         }
+
         let var: TumorOnlyVariant = carry
             .deserialize(None)
             .expect("Could not deserialize record!");
+
+        let key = format!(
+            "{}-{}-{}-{}",
+            var.contig, var.start, var.ref_allele, var.alt_allele
+        );
+        if !seen.insert(key) {
+            continue; // Skip this record if we have seen this variant before.
+        }
 
         if var.sample != sample {
             let message = format!("Expected sample '{}' found '{}'!", sample, var.sample);
@@ -128,11 +140,13 @@ where
         if var.alt_depth == 0 {
             variant.set_qual(0.0)
         } else {
-            let qual = (var.alt_depth as f32).ln() / 2.0_f32.ln() * var.mean_base_quality;
+            let qual = (var.alt_depth as f32).ln() / 2.0_f32.ln() * var.base_quality_mean;
             variant.set_qual(qual)
         }
 
         variant.push_info_float(b"ADJAF", &[var.af_adjusted])?;
+        variant.push_info_float(b"BASEQUALMEAN", &[var.base_quality_mean])?;
+        variant.push_info_float(b"BASEQUALSTDEV", &[var.stdev_base_stdev])?;
         variant.push_info_string(b"BIAS", &[var.strand_bias.to_string().as_bytes()])?;
         variant.push_info_integer(b"BIASALT", &[var.alt_forward, var.alt_reverse])?;
         variant.push_info_integer(b"BIASREF", &[var.ref_forward, var.ref_reverse])?;
@@ -144,21 +158,16 @@ where
             variant.clear_info_float(b"DUPRATE")?;
         }
 
+        variant.push_info_integer(b"END", &[var.end as i32])?;
         variant.push_info_float(b"HIAF", &[var.af_high_quality_bases])?;
         variant.push_info_integer(b"HICNT", &[var.high_quality_variant_reads])?;
         variant.push_info_integer(b"HICOV", &[var.high_quality_total_reads])?;
-        variant.push_info_string(b"LSEQ", &[var.flank_seq_5_prime.as_bytes()])?;
-        variant.push_info_float(b"MQ", &[var.mean_mapping_quality])?;
+        variant.push_info_float(b"MEANMAPQ", &[var.mean_mapping_quality])?;
         variant.push_info_integer(b"MSI", &[var.microsatellite])?;
         variant.push_info_integer(b"MSILEN", &[var.microsatellite_length])?;
         variant.push_info_float(b"NM", &[var.mean_mismatches_in_reads])?;
-        variant.push_info_float(b"ODDRATIO", &[var.strand_bias_odds_ratio])?;
-        variant.push_info_float(b"PMEAN", &[var.mean_position_in_read])?;
-        variant.push_info_float(b"PSTD", &[var.stdev_position_in_read])?;
-        variant.push_info_float(b"QSTD", &[var.stdev_base_quality])?;
-        variant.push_info_float(b"QUAL", &[var.mean_base_quality])?;
-        variant.push_info_string(b"RSEQ", &[var.flank_seq_3_prime.as_bytes()])?;
-        variant.push_info_float(b"SBF", &[var.strand_bias_p_value])?;
+        variant.push_info_float(b"POSMEAN", &[var.mean_position_in_read])?;
+        variant.push_info_float(b"POSSTDEV", &[var.stdev_position_in_read])?;
         variant.push_info_integer(b"SHIFT3", &[var.num_bases_3_prime_shift_for_deletions])?;
         variant.push_info_integer(b"SN", &[var.signal_to_noise])?;
 
@@ -170,6 +179,10 @@ where
             variant.clear_info_integer(b"SPLITREAD")?;
             variant.clear_info_integer(b"SPANPAIR")?;
         }
+
+        variant.push_info_float(b"STRANDBIASODDRATIO", &[var.strand_bias_odds_ratio])?;
+        variant.push_info_float(b"STRANDBIASPVALUE", &[var.strand_bias_p_value])?;
+
         if VALID_SV_TYPES.contains(&var.variant_type) {
             variant.push_info_integer(b"SVLEN", &[var.length()])?;
             variant.push_info_string(b"SVTYPE", &[var.variant_type.as_bytes()])?;
@@ -180,9 +193,9 @@ where
         }
 
         variant.push_genotypes(var.gt_value(0.25))?;
-        variant.push_format_integer(b"VD", &[var.alt_depth])?;
-        variant.push_format_integer(b"DP", &[var.depth])?;
         variant.push_format_integer(b"AD", &var.ad_value())?;
+        variant.push_format_integer(b"DP", &[var.depth])?;
+        variant.push_format_integer(b"VD", &[var.alt_depth])?;
 
         writer.write(&variant)?;
         progress.observe()?;
@@ -195,12 +208,13 @@ where
 
 #[cfg(test)]
 mod tests {
-    use anyhow::Result;
-    use file_diff::diff;
-    use pretty_assertions::assert_eq;
     use std::fs::File;
     use std::io::BufReader;
     use std::path::PathBuf;
+
+    use anyhow::Result;
+    use file_diff::diff;
+    use pretty_assertions::assert_eq;
     use tempfile::NamedTempFile;
 
     use super::VarDictMode::TumorOnly;
