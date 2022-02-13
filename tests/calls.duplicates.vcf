@@ -13,7 +13,6 @@
 ##INFO=<ID=MSI,Number=1,Type=Float,Description="Whether the variant call is in a microsatellite (MSI) or not. Greater than 1 indicates MSI.">
 ##INFO=<ID=MSILEN,Number=1,Type=Float,Description="The length, in base pairs, of the microsatellite this variant call is in.">
 ##INFO=<ID=NM,Number=1,Type=Float,Description="The mean mismatches within all reads that directly support the variant call.">
-##INFO=<ID=ODDRATIO,Number=1,Type=Float,Description="The odds ratio for strand bias for this variant call.">
 ##INFO=<ID=POSMEAN,Number=1,Type=Float,Description="The mean distance to the nearest 5 or 3 prime read end (whichever is closer) in all reads that support the variant call.">
 ##INFO=<ID=POSSTDEV,Number=1,Type=Float,Description="The standard deviation of the distance to the nearest 5 or 3 prime read end (whichever is closer) in all reads that support the variant call.">
 ##INFO=<ID=BASEQUALMEAN,Number=1,Type=Float,Description="The mean base quality (Phred) of all bases that directly support the variant call.">
@@ -23,6 +22,7 @@
 ##INFO=<ID=SPANPAIR,Number=1,Type=Integer,Description="The number of paired-end reads supporting the variant call if this call is a structural variant.">
 ##INFO=<ID=SPLITREAD,Number=1,Type=Integer,Description="The number of split reads supporting the variant call if this call is a structural variant.">
 ##INFO=<ID=STRANDBIASPVALUE,Number=1,Type=Float,Description="The Fisher test p-value for if you should reject the hypothesis that there is no strand bias. Not multiple hypothesis test corrected.">
+##INFO=<ID=STRANDBIASODDRATIO,Number=1,Type=Float,Description="The odds ratio for strand bias for this variant call.">
 ##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="The length of structural variant in base pairs of reference genome, if this call is a structural variant.">
 ##INFO=<ID=SVTYPE,Number=1,Type=String,Description="The structural variant type (BND, CNV, DEL, DUP, INS, INV), if this call is a structural variant.">
 ##FORMAT=<ID=GT,Number=1,Type=String,Description="The genotype for this sample.">
@@ -40,6 +40,6 @@
 ##contig=<ID=chr13,length=114364328>
 ##reference=tests/reference.fa
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	dna00001
-chr1	114713883	.	G	A	0	.	ADJAF=0;BASEQUALMEAN=90;BASEQUALSTDEV=0;BIAS=UnDetected:TooFewReads;BIASALT=1,0;BIASREF=2766,5280;END=114713883;HIAF=0.0001;HICNT=1;HICOV=8048;MEANMAPQ=60;MSI=1;MSILEN=1;NM=2;ODDRATIO=4;POSMEAN=13;POSSTDEV=0;SHIFT3=0;SN=2;STRANDBIASPVALUE=0.34385	GT:VD:DP:AD	0/0:1:8104:8046,1
-chr12	112450447	.	A	<INV>	0	.	ADJAF=0.0001;BASEQUALMEAN=90;BASEQUALSTDEV=1;BIAS=UnDetected:TooFewReads;BIASALT=1,0;BIASREF=3991,2588;END=123513818;HIAF=0.0002;HICNT=1;HICOV=6582;MEANMAPQ=33;MSI=0;MSILEN=0;NM=0;ODDRATIO=0;POSMEAN=58;POSSTDEV=1;SHIFT3=0;SN=2;STRANDBIASPVALUE=1;SPLITREAD=1;SPANPAIR=1;SVLEN=11063372;SVTYPE=INV	GT:VD:DP:AD	0/0:1:6775:6579,1
-chr13	24684729	.	G	<DEL>	90	.	ADJAF=0.0003;BASEQUALMEAN=90;BASEQUALSTDEV=1;BIAS=TooFewReads:TooFewReads;BIASALT=0,2;BIASREF=0,0;END=28034141;HIAF=1;HICNT=2;HICOV=2;MEANMAPQ=60;MSI=0;MSILEN=0;NM=0;ODDRATIO=2;POSMEAN=60.5;POSSTDEV=1;SHIFT3=0;SN=4;STRANDBIASPVALUE=1;SPLITREAD=1;SPANPAIR=1;SVLEN=-3349413;SVTYPE=DEL	GT:VD:DP:AD	0/1:2:7463:0,2
+chr1	114713883	.	G	A	0	.	ADJAF=0;BASEQUALMEAN=90;BASEQUALSTDEV=0;BIAS=UnDetected:TooFewReads;BIASALT=1,0;BIASREF=2766,5280;END=114713883;HIAF=0.0001;HICNT=1;HICOV=8048;MEANMAPQ=60;MSI=1;MSILEN=1;NM=2;POSMEAN=13;POSSTDEV=0;SHIFT3=0;SN=2;STRANDBIASODDRATIO=4;STRANDBIASPVALUE=0.34385	GT:VD:DP:AD	0/0:1:8104:8046,1
+chr12	112450447	.	A	<INV>	0	.	ADJAF=0.0001;BASEQUALMEAN=90;BASEQUALSTDEV=1;BIAS=UnDetected:TooFewReads;BIASALT=1,0;BIASREF=3991,2588;END=123513818;HIAF=0.0002;HICNT=1;HICOV=6582;MEANMAPQ=33;MSI=0;MSILEN=0;NM=0;POSMEAN=58;POSSTDEV=1;SHIFT3=0;SN=2;STRANDBIASODDRATIO=0;STRANDBIASPVALUE=1;SPLITREAD=1;SPANPAIR=1;SVLEN=11063372;SVTYPE=INV	GT:VD:DP:AD	0/0:1:6775:6579,1
+chr13	24684729	.	G	<DEL>	90	.	ADJAF=0.0003;BASEQUALMEAN=90;BASEQUALSTDEV=1;BIAS=TooFewReads:TooFewReads;BIASALT=0,2;BIASREF=0,0;END=28034141;HIAF=1;HICNT=2;HICOV=2;MEANMAPQ=60;MSI=0;MSILEN=0;NM=0;POSMEAN=60.5;POSSTDEV=1;SHIFT3=0;SN=4;STRANDBIASODDRATIO=2;STRANDBIASPVALUE=1;SPLITREAD=1;SPANPAIR=1;SVLEN=-3349413;SVTYPE=DEL	GT:VD:DP:AD	0/1:2:7463:0,2

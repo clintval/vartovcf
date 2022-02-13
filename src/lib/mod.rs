@@ -166,7 +166,6 @@ where
         variant.push_info_integer(b"MSI", &[var.microsatellite])?;
         variant.push_info_integer(b"MSILEN", &[var.microsatellite_length])?;
         variant.push_info_float(b"NM", &[var.mean_mismatches_in_reads])?;
-        variant.push_info_float(b"ODDRATIO", &[var.strand_bias_odds_ratio])?;
         variant.push_info_float(b"POSMEAN", &[var.mean_position_in_read])?;
         variant.push_info_float(b"POSSTDEV", &[var.stdev_position_in_read])?;
         variant.push_info_integer(b"SHIFT3", &[var.num_bases_3_prime_shift_for_deletions])?;
@@ -181,6 +180,7 @@ where
             variant.clear_info_integer(b"SPANPAIR")?;
         }
 
+        variant.push_info_float(b"STRANDBIASODDRATIO", &[var.strand_bias_odds_ratio])?;
         variant.push_info_float(b"STRANDBIASPVALUE", &[var.strand_bias_p_value])?;
 
         if VALID_SV_TYPES.contains(&var.variant_type) {

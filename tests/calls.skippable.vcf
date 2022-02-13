@@ -13,7 +13,6 @@
 ##INFO=<ID=MSI,Number=1,Type=Float,Description="Whether the variant call is in a microsatellite (MSI) or not. Greater than 1 indicates MSI.">
 ##INFO=<ID=MSILEN,Number=1,Type=Float,Description="The length, in base pairs, of the microsatellite this variant call is in.">
 ##INFO=<ID=NM,Number=1,Type=Float,Description="The mean mismatches within all reads that directly support the variant call.">
-##INFO=<ID=ODDRATIO,Number=1,Type=Float,Description="The odds ratio for strand bias for this variant call.">
 ##INFO=<ID=POSMEAN,Number=1,Type=Float,Description="The mean distance to the nearest 5 or 3 prime read end (whichever is closer) in all reads that support the variant call.">
 ##INFO=<ID=POSSTDEV,Number=1,Type=Float,Description="The standard deviation of the distance to the nearest 5 or 3 prime read end (whichever is closer) in all reads that support the variant call.">
 ##INFO=<ID=BASEQUALMEAN,Number=1,Type=Float,Description="The mean base quality (Phred) of all bases that directly support the variant call.">
@@ -23,6 +22,7 @@
 ##INFO=<ID=SPANPAIR,Number=1,Type=Integer,Description="The number of paired-end reads supporting the variant call if this call is a structural variant.">
 ##INFO=<ID=SPLITREAD,Number=1,Type=Integer,Description="The number of split reads supporting the variant call if this call is a structural variant.">
 ##INFO=<ID=STRANDBIASPVALUE,Number=1,Type=Float,Description="The Fisher test p-value for if you should reject the hypothesis that there is no strand bias. Not multiple hypothesis test corrected.">
+##INFO=<ID=STRANDBIASODDRATIO,Number=1,Type=Float,Description="The odds ratio for strand bias for this variant call.">
 ##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="The length of structural variant in base pairs of reference genome, if this call is a structural variant.">
 ##INFO=<ID=SVTYPE,Number=1,Type=String,Description="The structural variant type (BND, CNV, DEL, DUP, INS, INV), if this call is a structural variant.">
 ##FORMAT=<ID=GT,Number=1,Type=String,Description="The genotype for this sample.">

@@ -384,7 +384,6 @@ pub fn tumor_only_header(sample: &str) -> Header {
     header.push_record(r#"##INFO=<ID=MSI,Number=1,Type=Float,Description="Whether the variant call is in a microsatellite (MSI) or not. Greater than 1 indicates MSI.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=MSILEN,Number=1,Type=Float,Description="The length, in base pairs, of the microsatellite this variant call is in.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=NM,Number=1,Type=Float,Description="The mean mismatches within all reads that directly support the variant call.">"#.as_bytes());
-    header.push_record(r#"##INFO=<ID=ODDRATIO,Number=1,Type=Float,Description="The odds ratio for strand bias for this variant call.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=POSMEAN,Number=1,Type=Float,Description="The mean distance to the nearest 5 or 3 prime read end (whichever is closer) in all reads that support the variant call.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=POSSTDEV,Number=1,Type=Float,Description="The standard deviation of the distance to the nearest 5 or 3 prime read end (whichever is closer) in all reads that support the variant call.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=BASEQUALMEAN,Number=1,Type=Float,Description="The mean base quality (Phred) of all bases that directly support the variant call.">"#.as_bytes());
@@ -395,6 +394,7 @@ pub fn tumor_only_header(sample: &str) -> Header {
     header.push_record(r#"##INFO=<ID=SPANPAIR,Number=1,Type=Integer,Description="The number of paired-end reads supporting the variant call if this call is a structural variant.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=SPLITREAD,Number=1,Type=Integer,Description="The number of split reads supporting the variant call if this call is a structural variant.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=STRANDBIASPVALUE,Number=1,Type=Float,Description="The Fisher test p-value for if you should reject the hypothesis that there is no strand bias. Not multiple hypothesis test corrected.">"#.as_bytes());
+    header.push_record(r#"##INFO=<ID=STRANDBIASODDRATIO,Number=1,Type=Float,Description="The odds ratio for strand bias for this variant call.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="The length of structural variant in base pairs of reference genome, if this call is a structural variant.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=SVTYPE,Number=1,Type=String,Description="The structural variant type (BND, CNV, DEL, DUP, INS, INV), if this call is a structural variant.">"#.as_bytes());
     // header.push_record(r#"##FILTER=<ID=LongMSI,Description="The variant call is flanked by a long A/T stretch (>=14 base pairs).">"#.as_bytes());
