@@ -160,7 +160,7 @@ where
         variant.push_info_float(b"HIAF", &[var.af_high_quality_bases])?;
         variant.push_info_integer(b"HICNT", &[var.high_quality_variant_reads])?;
         variant.push_info_integer(b"HICOV", &[var.high_quality_total_reads])?;
-        variant.push_info_float(b"MQ", &[var.mean_mapping_quality])?;
+        variant.push_info_float(b"MEANMAPQ", &[var.mean_mapping_quality])?;
         variant.push_info_integer(b"MSI", &[var.microsatellite])?;
         variant.push_info_integer(b"MSILEN", &[var.microsatellite_length])?;
         variant.push_info_float(b"NM", &[var.mean_mismatches_in_reads])?;
