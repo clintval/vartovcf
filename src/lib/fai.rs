@@ -62,11 +62,11 @@ where
 
     while reader
         .read_record(&mut carry)
-        .expect("Failed to read the FAI record.")
+        .expect("Failed to read the FAI record!")
     {
         let rec: FaiRecord = carry
             .deserialize(None)
-            .expect("Failed to deserialize the FAI record.");
+            .expect("Failed to deserialize the FAI record!");
         records.push(rec.to_vcf_contig_record());
     }
 
@@ -79,7 +79,7 @@ where
     I: AsRef<Path> + Debug,
 {
     let fai = fai_file(&fasta);
-    let contigs = vcf_contig_header_records(fai).expect("Could not read the FAI index records.");
+    let contigs = vcf_contig_header_records(fai).expect("Could not read the FAI index records!");
     contigs_to_vcf_header(&contigs, header);
 }
 
@@ -140,12 +140,12 @@ mod tests {
 
     #[fixture]
     fn fai() -> NamedTempFile {
-        let file = NamedTempFile::new().expect("Cannot create temporary file.");
-        writeln!(&file, "chr1\t248956422\t112\t70\t71").expect("Could not write bytes.");
-        writeln!(&file, "chr2\t242193529\t252513167\t70\t71").expect("Could not write bytes.");
-        writeln!(&file, "chr3\t198295559\t498166716\t70\t71").expect("Could not write bytes.");
-        writeln!(&file, "chr4\t190214555\t699295181\t70\t71").expect("Could not write bytes.");
-        writeln!(&file, "chr5\t181538259\t892227221\t70\t71").expect("Could not write bytes.");
+        let file = NamedTempFile::new().expect("Cannot create temporary file!");
+        writeln!(&file, "chr1\t248956422\t112\t70\t71").expect("Could not write bytes!");
+        writeln!(&file, "chr2\t242193529\t252513167\t70\t71").expect("Could not write bytes!");
+        writeln!(&file, "chr3\t198295559\t498166716\t70\t71").expect("Could not write bytes!");
+        writeln!(&file, "chr4\t190214555\t699295181\t70\t71").expect("Could not write bytes!");
+        writeln!(&file, "chr5\t181538259\t892227221\t70\t71").expect("Could not write bytes!");
         file
     }
 
@@ -166,7 +166,7 @@ mod tests {
         contig_header_lines: Vec<String>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let actual = vcf_contig_header_records(&fai.path())
-            .expect("Could not parse contig header records from file.");
+            .expect("Could not parse contig header records from file!");
         for (left, right) in actual.iter().zip(contig_header_lines.iter()) {
             assert_eq!(&left, &right)
         }
@@ -179,14 +179,14 @@ mod tests {
         contig_header_lines: Vec<String>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let actual = vcf_contig_header_records(&fai.path())
-            .expect("Could not parse contig header records from file.");
+            .expect("Could not parse contig header records from file!");
 
         let mut header = Header::default();
         contigs_to_vcf_header(&actual, &mut header);
 
-        let file = NamedTempFile::new().expect("Cannot create temporary file.");
+        let file = NamedTempFile::new().expect("Cannot create temporary file!");
         let _ = VcfWriter::from_path(&file.path(), &mut header, true, Format::VCF).unwrap();
-        let reader = VcfReader::from_path(&file.path()).expect("Error opening tempfile.");
+        let reader = VcfReader::from_path(&file.path()).expect("Error opening tempfile!");
         let records = reader.header().header_records();
 
         fn header_record_matches_contig(record: &HeaderRecord, line: &str) -> bool {
@@ -214,11 +214,11 @@ mod tests {
     fn test_fasta_path_to_vcf_header_exists() {
         let mut header = Header::default();
         fasta_path_to_vcf_header(&"/references/hg19.fa", &mut header)
-            .expect("Could not add the FASTA file path to the VCF header");
+            .expect("Could not add the FASTA file path to the VCF header!");
 
-        let file = NamedTempFile::new().expect("Cannot create temporary file.");
+        let file = NamedTempFile::new().expect("Cannot create temporary file!");
         let _ = VcfWriter::from_path(&file.path(), &mut header, true, Format::VCF).unwrap();
-        let reader = VcfReader::from_path(&file.path()).expect("Error opening tempfile.");
+        let reader = VcfReader::from_path(&file.path()).expect("Error opening tempfile!");
         let records = reader.header().header_records();
 
         let test = records.iter().any(|rec| match rec {

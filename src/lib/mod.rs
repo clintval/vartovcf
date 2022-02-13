@@ -2,16 +2,15 @@
 #![warn(missing_docs)]
 #![warn(missing_doc_code_examples)]
 
-use std::error;
-use std::fmt::Debug;
-use std::io::Read;
-use std::path::{Path, PathBuf};
-
 use anyhow::Result;
 use csv::ReaderBuilder;
 use log::*;
 use rust_htslib::bcf::Format;
 use rust_htslib::bcf::Writer as VcfWriter;
+use std::error;
+use std::fmt::Debug;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 use strum::{EnumString, EnumVariantNames, ToString as EnumToString};
 
 use crate::fai::{fasta_contigs_to_vcf_header, fasta_path_to_vcf_header};
@@ -97,17 +96,22 @@ where
         Some(output) => VcfWriter::from_path(&output, &header, !has_gzip_ext(&output), Format::VCF),
         None => VcfWriter::from_stdout(&header, true, Format::VCF),
     }
-    .expect("Could not build a VCF writer.");
+    .expect("Could not build a VCF writer!");
 
     let mut progress = ProgressLogger::new("processed", "variant records", DEFAULT_LOG_EVERY);
     let mut carry = csv::StringRecord::new();
     let mut variant = writer.empty_record();
 
     while reader.read_record(&mut carry)? {
-        let var: TumorOnlyVariant = carry.deserialize(None)?;
+        if carry.iter().collect::<Vec<&str>>()[5].is_empty() {
+            continue; // If the 5th field is empty, it's a record we need to skip.
+        }
+        let var: TumorOnlyVariant = carry
+            .deserialize(None)
+            .expect("Could not deserialize record!");
 
         if var.sample != sample {
-            let message = format!("Expected sample '{}' found '{}'", sample, var.sample);
+            let message = format!("Expected sample '{}' found '{}'!", sample, var.sample);
             progress.emit()?;
             return Err(message.into());
         };
@@ -191,13 +195,12 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::fs::File;
-    use std::io::BufReader;
-    use std::path::PathBuf;
-
     use anyhow::Result;
     use file_diff::diff;
     use pretty_assertions::assert_eq;
+    use std::fs::File;
+    use std::io::BufReader;
+    use std::path::PathBuf;
     use tempfile::NamedTempFile;
 
     use super::VarDictMode::TumorOnly;
@@ -207,7 +210,7 @@ mod tests {
     fn test_vartovcf_run() -> Result<(), Box<dyn std::error::Error>> {
         let sample = "dna00001";
         let input = BufReader::new(File::open("tests/calls.var")?);
-        let output = NamedTempFile::new().expect("Cannot create temporary file.");
+        let output = NamedTempFile::new().expect("Cannot create temporary file!");
         let reference = PathBuf::from("tests/reference.fa");
         let exit = vartovcf(
             input,
@@ -225,7 +228,7 @@ mod tests {
     fn test_when_incorrect_sample() {
         let sample = "XXXXXXXX";
         let input = BufReader::new(File::open("tests/calls.var").unwrap());
-        let output = NamedTempFile::new().expect("Cannot create temporary file.");
+        let output = NamedTempFile::new().expect("Cannot create temporary file!");
         let reference = PathBuf::from("tests/reference.fa");
         let result = vartovcf(
             input,
