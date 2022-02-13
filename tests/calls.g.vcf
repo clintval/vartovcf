@@ -4,12 +4,11 @@
 ##INFO=<ID=BIAS,Number=1,Type=String,Description="Strand bias flags (UnDetected, Detected, TooFewReads) in the format `reference`:`alternate`.">
 ##INFO=<ID=BIASALT,Number=2,Type=Integer,Description="The number of variant call forward and reverse reads in the format `forward`:`reverse`.">
 ##INFO=<ID=BIASREF,Number=2,Type=Integer,Description="The number of reference forward and reverse reads in the format `forward`:`reverse`.">
-##INFO=<ID=END,Number=1,Type=Integer,Description="The end location of this variant event.">
+##INFO=<ID=END,Number=1,Type=Integer,Description="The end location of this variant call.">
 ##INFO=<ID=DUPRATE,Number=1,Type=Float,Description="The duplication rate, if this call is a duplication.">
 ##INFO=<ID=HIAF,Number=1,Type=Float,Description="Allele frequency calculated using only high quality bases. Lossy due to rounding.">
 ##INFO=<ID=HICNT,Number=1,Type=Integer,Description="The number of high quality reads supporting the variant call.">
 ##INFO=<ID=HICOV,Number=1,Type=Integer,Description="The number of high quality reads at the locus of the variant call.">
-##INFO=<ID=LSEQ,Number=1,Type=String,Description="5-prime reference flanking sequence.">
 ##INFO=<ID=MQ,Number=1,Type=Float,Description="The mean mapping quality (Phred) of all reads that directly support the variant call.">
 ##INFO=<ID=MSI,Number=1,Type=Float,Description="Whether the variant call is in a microsatellite (MSI) or not. Greater than 1 indicates MSI.">
 ##INFO=<ID=MSILEN,Number=1,Type=Float,Description="The length of the microsatellite in base pairs of reference genome.">
@@ -19,7 +18,6 @@
 ##INFO=<ID=PSTD,Number=1,Type=Float,Description="The standard deviation of the distance to the nearest 5 or 3 prime read end (whichever is closer) in all reads that support the variant call.">
 ##INFO=<ID=QSTD,Number=1,Type=Float,Description="The standard deviation of the base quality (Phred)) of all bases that directly support the variant call.">
 ##INFO=<ID=QUAL,Number=1,Type=Float,Description="The mean base quality (Phred) of all bases that directly support the variant call.">
-##INFO=<ID=RSEQ,Number=1,Type=String,Description="3-prime reference flanking sequence.">
 ##INFO=<ID=SBF,Number=1,Type=Float,Description="The Fisher test p-value for if you should reject the hypothesis that there is no strand bias. Not multiple hypothesis test corrected.">
 ##INFO=<ID=SHIFT3,Number=1,Type=Integer,Description="The number of bases to be shifted 3-prime for deletions due to alternative alignment(s).">
 ##INFO=<ID=SN,Number=1,Type=Float,Description="The signal to noise ratio for this variant call.">
@@ -27,12 +25,6 @@
 ##INFO=<ID=SPLITREAD,Number=1,Type=Integer,Description="The number of split reads supporting the variant call if this call is a structural variant.">
 ##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="The length of structural variant in base pairs of reference genome, if this call is a structural variant.">
 ##INFO=<ID=SVTYPE,Number=1,Type=String,Description="The structural variant type (BND, CNV, DEL, DUP, INS, INV), if this call is a structural variant.">
-##FILTER=<ID=LongMSI,Description="The variant call is flanked by a long A/T stretch (>=14 base pairs).">
-##FILTER=<ID=MSI12,Description="The variant call is in a microsatellite region with 12 non-monomer MSI or 13 monomer MSI.">
-##FILTER=<ID=NM8.0,Description="The mean mismatches in reads that support the variant call is greater than or equal to 8.0, and might be a false positive or contamination.">
-##FILTER=<ID=PASS,Description="The variant call has passed all filters and may be considered for downstream analysis.">
-##FILTER=<ID=Q10,Description="The mean mapping quality (Phred) in reads that support this variant call is less than 10.">
-##FILTER=<ID=q22.5,Description="The mean base quality (Phred) of all bases that directly support this variant call is less than 22.5.">
 ##FORMAT=<ID=GT,Number=1,Type=String,Description="The genotype for this sample.">
 ##FORMAT=<ID=VD,Number=1,Type=Integer,Description="The variant allele depth at this location.">
 ##FORMAT=<ID=DP,Number=1,Type=Integer,Description="The total allele depth at this location which potentially includes No-calls.">
@@ -48,12 +40,12 @@
 ##contig=<ID=chr13,length=114364328>
 ##reference=tests/reference.fa
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	dna00001
-chr1	190098264	.	C	A	0	.	ADJAF=0;BIAS=UnDetected:TooFewReads;BIASALT=0,1;BIASREF=5775,8169;END=190098264;HIAF=0.0001;HICNT=1;HICOV=13945;LSEQ=GTATAGGGGTAGTCCAGCTG;MQ=60;MSI=4;MSILEN=1;NM=1;ODDRATIO=0;PMEAN=29;PSTD=0;QSTD=0;QUAL=90;RSEQ=AAAATCAGGTCCCGAATTGC;SBF=1;SHIFT3=0;SN=2	GT:VD:DP:AD	0/0:1:14082:13944,1
-chr1	190098265	.	A	.	0	.	ADJAF=0;BIAS=UnDetected:TooFewReads;BIASALT=0,0;BIASREF=5753,8310;END=190098265;HIAF=1;HICNT=14063;HICOV=14063;LSEQ=0;MQ=60;MSI=0;MSILEN=0;NM=0.7;ODDRATIO=0;PMEAN=19.9;PSTD=1;QSTD=0;QUAL=90;RSEQ=0;SBF=1;SHIFT3=0;SN=28126	GT:VD:DP:AD	0/0:0:14117:14063
-chr1	190098266	.	A	.	0	.	ADJAF=0;BIAS=UnDetected:TooFewReads;BIASALT=0,0;BIASREF=5679,8382;END=190098266;HIAF=1;HICNT=14061;HICOV=14061;LSEQ=0;MQ=60;MSI=0;MSILEN=0;NM=0.7;ODDRATIO=0;PMEAN=20;PSTD=1;QSTD=0;QUAL=90;RSEQ=0;SBF=1;SHIFT3=0;SN=28122	GT:VD:DP:AD	0/0:0:14142:14061
-chr1	190098267	.	A	.	0	.	ADJAF=0;BIAS=UnDetected:TooFewReads;BIASALT=0,0;BIASREF=5638,8344;END=190098267;HIAF=1;HICNT=13982;HICOV=13982;LSEQ=0;MQ=60;MSI=0;MSILEN=0;NM=0.7;ODDRATIO=0;PMEAN=20.1;PSTD=1;QSTD=0;QUAL=90;RSEQ=0;SBF=1;SHIFT3=0;SN=27964	GT:VD:DP:AD	0/0:0:14093:13982
-chr1	190098268	.	A	.	0	.	ADJAF=0;BIAS=UnDetected:TooFewReads;BIASALT=0,0;BIASREF=5596,8270;END=190098268;HIAF=1;HICNT=13866;HICOV=13866;LSEQ=0;MQ=60;MSI=0;MSILEN=0;NM=0.7;ODDRATIO=0;PMEAN=20.3;PSTD=1;QSTD=0;QUAL=90;RSEQ=0;SBF=1;SHIFT3=0;SN=27732	GT:VD:DP:AD	0/0:0:13961:13866
-chr1	190098269	.	T	.	0	.	ADJAF=0;BIAS=UnDetected:TooFewReads;BIASALT=0,0;BIASREF=5525,8301;END=190098269;HIAF=1;HICNT=13826;HICOV=13826;LSEQ=0;MQ=60;MSI=0;MSILEN=0;NM=0.7;ODDRATIO=0;PMEAN=20.4;PSTD=1;QSTD=0;QUAL=90;RSEQ=0;SBF=1;SHIFT3=0;SN=27652	GT:VD:DP:AD	0/0:0:13916:13826
-chr1	190098270	.	C	A	90	.	ADJAF=0;BIAS=UnDetected:TooFewReads;BIASALT=0,2;BIASREF=5501,8285;END=190098270;HIAF=0.0001;HICNT=2;HICOV=13788;LSEQ=GGGTAGTCCAGCTGCAAAAT;MQ=60;MSI=1;MSILEN=1;NM=2;ODDRATIO=0;PMEAN=13;PSTD=1;QSTD=0;QUAL=90;RSEQ=AGGTCCCGAATTGCTTCAGG;SBF=0.52038;SHIFT3=0;SN=4	GT:VD:DP:AD	1/1:2:13885:13786,2
-chr1	190098270	.	CA	C	0	.	ADJAF=0;BIAS=UnDetected:TooFewReads;BIASALT=1,0;BIASREF=5374,8217;END=190098271;HIAF=0.0001;HICNT=1;HICOV=13593;LSEQ=GGGTAGTCCAGCTGCAAAAT;MQ=60;MSI=1;MSILEN=1;NM=0;ODDRATIO=0;PMEAN=31;PSTD=0;QSTD=0;QUAL=90;RSEQ=GGTCCCGAATTGCTTCAGGG;SBF=0.39545;SHIFT3=0;SN=2	GT:VD:DP:AD	0/1:1:13806:13591,1
-chr1	190098271	.	A	G	0	.	ADJAF=0;BIAS=UnDetected:TooFewReads;BIASALT=1,0;BIASREF=5374,8217;END=190098271;HIAF=0.0001;HICNT=1;HICOV=13593;LSEQ=GGTAGTCCAGCTGCAAAATC;MQ=60;MSI=2;MSILEN=1;NM=1;ODDRATIO=0;PMEAN=23;PSTD=0;QSTD=0;QUAL=90;RSEQ=GGTCCCGAATTGCTTCAGGG;SBF=0.39545;SHIFT3=0;SN=2	GT:VD:DP:AD	0/0:1:13806:13591,1
+chr1	190098264	.	C	A	0	.	ADJAF=0;BIAS=UnDetected:TooFewReads;BIASALT=0,1;BIASREF=5775,8169;END=190098264;HIAF=0.0001;HICNT=1;HICOV=13945;MQ=60;MSI=4;MSILEN=1;NM=1;ODDRATIO=0;PMEAN=29;PSTD=0;QSTD=0;QUAL=90;SBF=1;SHIFT3=0;SN=2	GT:VD:DP:AD	0/0:1:14082:13944,1
+chr1	190098265	.	A	.	0	.	ADJAF=0;BIAS=UnDetected:TooFewReads;BIASALT=0,0;BIASREF=5753,8310;END=190098265;HIAF=1;HICNT=14063;HICOV=14063;MQ=60;MSI=0;MSILEN=0;NM=0.7;ODDRATIO=0;PMEAN=19.9;PSTD=1;QSTD=0;QUAL=90;SBF=1;SHIFT3=0;SN=28126	GT:VD:DP:AD	0/0:0:14117:14063
+chr1	190098266	.	A	.	0	.	ADJAF=0;BIAS=UnDetected:TooFewReads;BIASALT=0,0;BIASREF=5679,8382;END=190098266;HIAF=1;HICNT=14061;HICOV=14061;MQ=60;MSI=0;MSILEN=0;NM=0.7;ODDRATIO=0;PMEAN=20;PSTD=1;QSTD=0;QUAL=90;SBF=1;SHIFT3=0;SN=28122	GT:VD:DP:AD	0/0:0:14142:14061
+chr1	190098267	.	A	.	0	.	ADJAF=0;BIAS=UnDetected:TooFewReads;BIASALT=0,0;BIASREF=5638,8344;END=190098267;HIAF=1;HICNT=13982;HICOV=13982;MQ=60;MSI=0;MSILEN=0;NM=0.7;ODDRATIO=0;PMEAN=20.1;PSTD=1;QSTD=0;QUAL=90;SBF=1;SHIFT3=0;SN=27964	GT:VD:DP:AD	0/0:0:14093:13982
+chr1	190098268	.	A	.	0	.	ADJAF=0;BIAS=UnDetected:TooFewReads;BIASALT=0,0;BIASREF=5596,8270;END=190098268;HIAF=1;HICNT=13866;HICOV=13866;MQ=60;MSI=0;MSILEN=0;NM=0.7;ODDRATIO=0;PMEAN=20.3;PSTD=1;QSTD=0;QUAL=90;SBF=1;SHIFT3=0;SN=27732	GT:VD:DP:AD	0/0:0:13961:13866
+chr1	190098269	.	T	.	0	.	ADJAF=0;BIAS=UnDetected:TooFewReads;BIASALT=0,0;BIASREF=5525,8301;END=190098269;HIAF=1;HICNT=13826;HICOV=13826;MQ=60;MSI=0;MSILEN=0;NM=0.7;ODDRATIO=0;PMEAN=20.4;PSTD=1;QSTD=0;QUAL=90;SBF=1;SHIFT3=0;SN=27652	GT:VD:DP:AD	0/0:0:13916:13826
+chr1	190098270	.	C	A	90	.	ADJAF=0;BIAS=UnDetected:TooFewReads;BIASALT=0,2;BIASREF=5501,8285;END=190098270;HIAF=0.0001;HICNT=2;HICOV=13788;MQ=60;MSI=1;MSILEN=1;NM=2;ODDRATIO=0;PMEAN=13;PSTD=1;QSTD=0;QUAL=90;SBF=0.52038;SHIFT3=0;SN=4	GT:VD:DP:AD	1/1:2:13885:13786,2
+chr1	190098270	.	CA	C	0	.	ADJAF=0;BIAS=UnDetected:TooFewReads;BIASALT=1,0;BIASREF=5374,8217;END=190098271;HIAF=0.0001;HICNT=1;HICOV=13593;MQ=60;MSI=1;MSILEN=1;NM=0;ODDRATIO=0;PMEAN=31;PSTD=0;QSTD=0;QUAL=90;SBF=0.39545;SHIFT3=0;SN=2	GT:VD:DP:AD	0/1:1:13806:13591,1
+chr1	190098271	.	A	G	0	.	ADJAF=0;BIAS=UnDetected:TooFewReads;BIASALT=1,0;BIASREF=5374,8217;END=190098271;HIAF=0.0001;HICNT=1;HICOV=13593;MQ=60;MSI=2;MSILEN=1;NM=1;ODDRATIO=0;PMEAN=23;PSTD=0;QSTD=0;QUAL=90;SBF=0.39545;SHIFT3=0;SN=2	GT:VD:DP:AD	0/0:1:13806:13591,1

@@ -379,7 +379,7 @@ pub fn tumor_only_header(sample: &str) -> Header {
     header.push_record(r#"##INFO=<ID=HIAF,Number=1,Type=Float,Description="Allele frequency calculated using only high quality bases. Lossy due to rounding.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=HICNT,Number=1,Type=Integer,Description="The number of high quality reads supporting the variant call.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=HICOV,Number=1,Type=Integer,Description="The number of high quality reads at the locus of the variant call.">"#.as_bytes());
-    header.push_record(r#"##INFO=<ID=LSEQ,Number=1,Type=String,Description="5-prime reference flanking sequence.">"#.as_bytes());
+    //header.push_record(r#"##INFO=<ID=LSEQ,Number=1,Type=String,Description="5-prime reference flanking sequence.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=MQ,Number=1,Type=Float,Description="The mean mapping quality (Phred) of all reads that directly support the variant call.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=MSI,Number=1,Type=Float,Description="Whether the variant call is in a microsatellite (MSI) or not. Greater than 1 indicates MSI.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=MSILEN,Number=1,Type=Float,Description="The length of the microsatellite in base pairs of reference genome.">"#.as_bytes());
@@ -389,7 +389,7 @@ pub fn tumor_only_header(sample: &str) -> Header {
     header.push_record(r#"##INFO=<ID=PSTD,Number=1,Type=Float,Description="The standard deviation of the distance to the nearest 5 or 3 prime read end (whichever is closer) in all reads that support the variant call.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=QSTD,Number=1,Type=Float,Description="The standard deviation of the base quality (Phred)) of all bases that directly support the variant call.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=QUAL,Number=1,Type=Float,Description="The mean base quality (Phred) of all bases that directly support the variant call.">"#.as_bytes());
-    header.push_record(r#"##INFO=<ID=RSEQ,Number=1,Type=String,Description="3-prime reference flanking sequence.">"#.as_bytes());
+    //header.push_record(r#"##INFO=<ID=RSEQ,Number=1,Type=String,Description="3-prime reference flanking sequence.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=SBF,Number=1,Type=Float,Description="The Fisher test p-value for if you should reject the hypothesis that there is no strand bias. Not multiple hypothesis test corrected.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=SHIFT3,Number=1,Type=Integer,Description="The number of bases to be shifted 3-prime for deletions due to alternative alignment(s).">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=SN,Number=1,Type=Float,Description="The signal to noise ratio for this variant call.">"#.as_bytes());
@@ -397,12 +397,12 @@ pub fn tumor_only_header(sample: &str) -> Header {
     header.push_record(r#"##INFO=<ID=SPLITREAD,Number=1,Type=Integer,Description="The number of split reads supporting the variant call if this call is a structural variant.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="The length of structural variant in base pairs of reference genome, if this call is a structural variant.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=SVTYPE,Number=1,Type=String,Description="The structural variant type (BND, CNV, DEL, DUP, INS, INV), if this call is a structural variant.">"#.as_bytes());
-    header.push_record(r#"##FILTER=<ID=LongMSI,Description="The variant call is flanked by a long A/T stretch (>=14 base pairs).">"#.as_bytes());
-    header.push_record(r#"##FILTER=<ID=MSI12,Description="The variant call is in a microsatellite region with 12 non-monomer MSI or 13 monomer MSI.">"#.as_bytes());
-    header.push_record(r#"##FILTER=<ID=NM8.0,Description="The mean mismatches in reads that support the variant call is greater than or equal to 8.0, and might be a false positive or contamination.">"#.as_bytes());
-    header.push_record(r#"##FILTER=<ID=PASS,Description="The variant call has passed all filters and may be considered for downstream analysis.">"#.as_bytes());
-    header.push_record(r#"##FILTER=<ID=Q10,Description="The mean mapping quality (Phred) in reads that support this variant call is less than 10.">"#.as_bytes());
-    header.push_record(r#"##FILTER=<ID=q22.5,Description="The mean base quality (Phred) of all bases that directly support this variant call is less than 22.5.">"#.as_bytes());
+    // header.push_record(r#"##FILTER=<ID=LongMSI,Description="The variant call is flanked by a long A/T stretch (>=14 base pairs).">"#.as_bytes());
+    // header.push_record(r#"##FILTER=<ID=MSI12,Description="The variant call is in a microsatellite region with 12 non-monomer MSI or 13 monomer MSI.">"#.as_bytes());
+    // header.push_record(r#"##FILTER=<ID=NM8.0,Description="The mean mismatches in reads that support the variant call is greater than or equal to 8.0, and might be a false positive or contamination.">"#.as_bytes());
+    // header.push_record(r#"##FILTER=<ID=PASS,Description="The variant call has passed all filters and may be considered for downstream analysis.">"#.as_bytes());
+    // header.push_record(r#"##FILTER=<ID=Q10,Description="The mean mapping quality (Phred) in reads that support this variant call is less than 10.">"#.as_bytes());
+    // header.push_record(r#"##FILTER=<ID=q22.5,Description="The mean base quality (Phred) of all bases that directly support this variant call is less than 22.5.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=GT,Number=1,Type=String,Description="The genotype for this sample.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=VD,Number=1,Type=Integer,Description="The variant allele depth at this location.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=DP,Number=1,Type=Integer,Description="The total allele depth at this location which potentially includes No-calls.">"#.as_bytes());
@@ -561,7 +561,7 @@ mod tests {
         let reader = VcfReader::from_path(&file.path()).expect("Error opening tempfile!");
         let records = reader.header().header_records();
         let samples = reader.header().samples();
-        assert_eq!(records.len(), 45);
+        assert_eq!(records.len(), 38);
         assert_eq!(samples.len(), 1);
         assert!(samples.iter().all(|&s| s == "dna00001".as_bytes()));
     }

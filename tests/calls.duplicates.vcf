@@ -4,12 +4,11 @@
 ##INFO=<ID=BIAS,Number=1,Type=String,Description="Strand bias flags (UnDetected, Detected, TooFewReads) in the format `reference`:`alternate`.">
 ##INFO=<ID=BIASALT,Number=2,Type=Integer,Description="The number of variant call forward and reverse reads in the format `forward`:`reverse`.">
 ##INFO=<ID=BIASREF,Number=2,Type=Integer,Description="The number of reference forward and reverse reads in the format `forward`:`reverse`.">
-##INFO=<ID=END,Number=1,Type=Integer,Description="The end location of this variant event.">
+##INFO=<ID=END,Number=1,Type=Integer,Description="The end location of this variant call.">
 ##INFO=<ID=DUPRATE,Number=1,Type=Float,Description="The duplication rate, if this call is a duplication.">
 ##INFO=<ID=HIAF,Number=1,Type=Float,Description="Allele frequency calculated using only high quality bases. Lossy due to rounding.">
 ##INFO=<ID=HICNT,Number=1,Type=Integer,Description="The number of high quality reads supporting the variant call.">
 ##INFO=<ID=HICOV,Number=1,Type=Integer,Description="The number of high quality reads at the locus of the variant call.">
-##INFO=<ID=LSEQ,Number=1,Type=String,Description="5-prime reference flanking sequence.">
 ##INFO=<ID=MQ,Number=1,Type=Float,Description="The mean mapping quality (Phred) of all reads that directly support the variant call.">
 ##INFO=<ID=MSI,Number=1,Type=Float,Description="Whether the variant call is in a microsatellite (MSI) or not. Greater than 1 indicates MSI.">
 ##INFO=<ID=MSILEN,Number=1,Type=Float,Description="The length of the microsatellite in base pairs of reference genome.">
@@ -19,7 +18,6 @@
 ##INFO=<ID=PSTD,Number=1,Type=Float,Description="The standard deviation of the distance to the nearest 5 or 3 prime read end (whichever is closer) in all reads that support the variant call.">
 ##INFO=<ID=QSTD,Number=1,Type=Float,Description="The standard deviation of the base quality (Phred)) of all bases that directly support the variant call.">
 ##INFO=<ID=QUAL,Number=1,Type=Float,Description="The mean base quality (Phred) of all bases that directly support the variant call.">
-##INFO=<ID=RSEQ,Number=1,Type=String,Description="3-prime reference flanking sequence.">
 ##INFO=<ID=SBF,Number=1,Type=Float,Description="The Fisher test p-value for if you should reject the hypothesis that there is no strand bias. Not multiple hypothesis test corrected.">
 ##INFO=<ID=SHIFT3,Number=1,Type=Integer,Description="The number of bases to be shifted 3-prime for deletions due to alternative alignment(s).">
 ##INFO=<ID=SN,Number=1,Type=Float,Description="The signal to noise ratio for this variant call.">
@@ -27,12 +25,6 @@
 ##INFO=<ID=SPLITREAD,Number=1,Type=Integer,Description="The number of split reads supporting the variant call if this call is a structural variant.">
 ##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="The length of structural variant in base pairs of reference genome, if this call is a structural variant.">
 ##INFO=<ID=SVTYPE,Number=1,Type=String,Description="The structural variant type (BND, CNV, DEL, DUP, INS, INV), if this call is a structural variant.">
-##FILTER=<ID=LongMSI,Description="The variant call is flanked by a long A/T stretch (>=14 base pairs).">
-##FILTER=<ID=MSI12,Description="The variant call is in a microsatellite region with 12 non-monomer MSI or 13 monomer MSI.">
-##FILTER=<ID=NM8.0,Description="The mean mismatches in reads that support the variant call is greater than or equal to 8.0, and might be a false positive or contamination.">
-##FILTER=<ID=PASS,Description="The variant call has passed all filters and may be considered for downstream analysis.">
-##FILTER=<ID=Q10,Description="The mean mapping quality (Phred) in reads that support this variant call is less than 10.">
-##FILTER=<ID=q22.5,Description="The mean base quality (Phred) of all bases that directly support this variant call is less than 22.5.">
 ##FORMAT=<ID=GT,Number=1,Type=String,Description="The genotype for this sample.">
 ##FORMAT=<ID=VD,Number=1,Type=Integer,Description="The variant allele depth at this location.">
 ##FORMAT=<ID=DP,Number=1,Type=Integer,Description="The total allele depth at this location which potentially includes No-calls.">
@@ -48,6 +40,6 @@
 ##contig=<ID=chr13,length=114364328>
 ##reference=tests/reference.fa
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	dna00001
-chr1	114713883	.	G	A	0	.	ADJAF=0;BIAS=UnDetected:TooFewReads;BIASALT=1,0;BIASREF=2766,5280;END=114713883;HIAF=0.0001;HICNT=1;HICOV=8048;LSEQ=TCGCCTGTCCTCATGTATTG;MQ=60;MSI=1;MSILEN=1;NM=2;ODDRATIO=4;PMEAN=13;PSTD=0;QSTD=0;QUAL=90;RSEQ=TCTCTCATGGCACTGTACTC;SBF=0.34385;SHIFT3=0;SN=2	GT:VD:DP:AD	0/0:1:8104:8046,1
-chr12	112450447	.	A	<INV>	0	.	ADJAF=0.0001;BIAS=UnDetected:TooFewReads;BIASALT=1,0;BIASREF=3991,2588;END=123513818;HIAF=0.0002;HICNT=1;HICOV=6582;LSEQ=GAACATCACGGGCAATTAAA;MQ=33;MSI=0;MSILEN=0;NM=0;ODDRATIO=0;PMEAN=58;PSTD=1;QSTD=1;QUAL=90;RSEQ=GGGACCTAGATTTTAAGAGA;SBF=1;SHIFT3=0;SN=2;SPLITREAD=1;SPANPAIR=1;SVLEN=11063372;SVTYPE=INV	GT:VD:DP:AD	0/0:1:6775:6579,1
-chr13	24684729	.	G	<DEL>	90	.	ADJAF=0.0003;BIAS=TooFewReads:TooFewReads;BIASALT=0,2;BIASREF=0,0;END=28034141;HIAF=1;HICNT=2;HICOV=2;LSEQ=TGCTGTAGTCTAATGATTCT;MQ=60;MSI=0;MSILEN=0;NM=0;ODDRATIO=2;PMEAN=60.5;PSTD=1;QSTD=1;QUAL=90;RSEQ=CAACGTAGAAGTACTCATTA;SBF=1;SHIFT3=0;SN=4;SPLITREAD=1;SPANPAIR=1;SVLEN=-3349413;SVTYPE=DEL	GT:VD:DP:AD	0/1:2:7463:0,2
+chr1	114713883	.	G	A	0	.	ADJAF=0;BIAS=UnDetected:TooFewReads;BIASALT=1,0;BIASREF=2766,5280;END=114713883;HIAF=0.0001;HICNT=1;HICOV=8048;MQ=60;MSI=1;MSILEN=1;NM=2;ODDRATIO=4;PMEAN=13;PSTD=0;QSTD=0;QUAL=90;SBF=0.34385;SHIFT3=0;SN=2	GT:VD:DP:AD	0/0:1:8104:8046,1
+chr12	112450447	.	A	<INV>	0	.	ADJAF=0.0001;BIAS=UnDetected:TooFewReads;BIASALT=1,0;BIASREF=3991,2588;END=123513818;HIAF=0.0002;HICNT=1;HICOV=6582;MQ=33;MSI=0;MSILEN=0;NM=0;ODDRATIO=0;PMEAN=58;PSTD=1;QSTD=1;QUAL=90;SBF=1;SHIFT3=0;SN=2;SPLITREAD=1;SPANPAIR=1;SVLEN=11063372;SVTYPE=INV	GT:VD:DP:AD	0/0:1:6775:6579,1
+chr13	24684729	.	G	<DEL>	90	.	ADJAF=0.0003;BIAS=TooFewReads:TooFewReads;BIASALT=0,2;BIASREF=0,0;END=28034141;HIAF=1;HICNT=2;HICOV=2;MQ=60;MSI=0;MSILEN=0;NM=0;ODDRATIO=2;PMEAN=60.5;PSTD=1;QSTD=1;QUAL=90;SBF=1;SHIFT3=0;SN=4;SPLITREAD=1;SPANPAIR=1;SVLEN=-3349413;SVTYPE=DEL	GT:VD:DP:AD	0/1:2:7463:0,2

@@ -160,7 +160,6 @@ where
         variant.push_info_float(b"HIAF", &[var.af_high_quality_bases])?;
         variant.push_info_integer(b"HICNT", &[var.high_quality_variant_reads])?;
         variant.push_info_integer(b"HICOV", &[var.high_quality_total_reads])?;
-        variant.push_info_string(b"LSEQ", &[var.flank_seq_5_prime.as_bytes()])?;
         variant.push_info_float(b"MQ", &[var.mean_mapping_quality])?;
         variant.push_info_integer(b"MSI", &[var.microsatellite])?;
         variant.push_info_integer(b"MSILEN", &[var.microsatellite_length])?;
@@ -170,7 +169,6 @@ where
         variant.push_info_float(b"PSTD", &[var.stdev_position_in_read])?;
         variant.push_info_float(b"QSTD", &[var.stdev_base_quality])?;
         variant.push_info_float(b"QUAL", &[var.mean_base_quality])?;
-        variant.push_info_string(b"RSEQ", &[var.flank_seq_3_prime.as_bytes()])?;
         variant.push_info_float(b"SBF", &[var.strand_bias_p_value])?;
         variant.push_info_integer(b"SHIFT3", &[var.num_bases_3_prime_shift_for_deletions])?;
         variant.push_info_integer(b"SN", &[var.signal_to_noise])?;
