@@ -22,6 +22,7 @@ pub trait RecordLogger {
     fn observe(&mut self) -> Result<(), SystemTimeError>;
 }
 
+// TODO: It would be good to allow a user to override the module name from where the log was called.
 /// A progress logger that emits status every "n" records that it is tracking.
 #[derive(Clone, PartialEq, Debug)]
 pub struct ProgressLogger<'a> {

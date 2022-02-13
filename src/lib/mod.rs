@@ -38,6 +38,7 @@ pub mod path {
     pub const GZIP_EXTENSION: &str = "gz";
 }
 
+// TODO: This could become unnecessary if we can dynamically determine the mode based on input.
 /// The variant calling modes for VarDict/VarDictJava.
 #[derive(Clone, Copy, Debug, EnumString, EnumToString, EnumVariantNames, PartialEq, PartialOrd)]
 pub enum VarDictMode {
@@ -74,12 +75,14 @@ where
     I: Read,
     R: AsRef<Path> + Debug,
 {
+    // TODO: Support paired tumor-normal input from VarDictJava.
     assert_eq!(
         mode,
         &VarDictMode::TumorOnly,
         "The only mode currently supported is [TumorOnly]."
     );
 
+    // TODO: Implement a way to peek forward so we can parameterize the header based on the input.
     let mut header = tumor_only_header(sample);
 
     fasta_contigs_to_vcf_header(&fasta, &mut header);
