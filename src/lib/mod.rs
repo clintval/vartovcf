@@ -193,9 +193,9 @@ where
         }
 
         variant.push_genotypes(var.gt_value(0.25))?;
-        variant.push_format_integer(b"VD", &[var.alt_depth])?;
-        variant.push_format_integer(b"DP", &[var.depth])?;
         variant.push_format_integer(b"AD", &var.ad_value())?;
+        variant.push_format_integer(b"DP", &[var.depth])?;
+        variant.push_format_integer(b"VD", &[var.alt_depth])?;
 
         writer.write(&variant)?;
         progress.observe()?;

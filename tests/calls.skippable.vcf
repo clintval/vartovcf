@@ -25,10 +25,11 @@
 ##INFO=<ID=STRANDBIASODDRATIO,Number=1,Type=Float,Description="The odds ratio for strand bias for this variant call.">
 ##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="The length of structural variant in base pairs of reference genome, if this call is a structural variant.">
 ##INFO=<ID=SVTYPE,Number=1,Type=String,Description="The structural variant type (BND, CNV, DEL, DUP, INS, INV), if this call is a structural variant.">
+##FILTER=<ID=PASS,Description="The variant call has passed all filters and may be considered for downstream analysis.">
 ##FORMAT=<ID=GT,Number=1,Type=String,Description="The genotype for this sample.">
-##FORMAT=<ID=VD,Number=1,Type=Integer,Description="The variant allele depth at this location.">
-##FORMAT=<ID=DP,Number=1,Type=Integer,Description="The total allele depth at this location which potentially includes No-calls.">
 ##FORMAT=<ID=AD,Number=R,Type=Integer,Description="The allelic depths for the REF and ALT alleles.">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="The total allele depth at this location which potentially includes No-calls.">
+##FORMAT=<ID=VD,Number=1,Type=Integer,Description="The variant allele depth at this location.">
 ##ALT=<ID=BND,Description="Region with an identified unambiguous single breakend.">
 ##ALT=<ID=CNV,Description="Copy number variable region.">
 ##ALT=<ID=DEL,Description="Deletion relative to the reference.">

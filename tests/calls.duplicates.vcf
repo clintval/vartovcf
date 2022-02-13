@@ -25,10 +25,11 @@
 ##INFO=<ID=STRANDBIASODDRATIO,Number=1,Type=Float,Description="The odds ratio for strand bias for this variant call.">
 ##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="The length of structural variant in base pairs of reference genome, if this call is a structural variant.">
 ##INFO=<ID=SVTYPE,Number=1,Type=String,Description="The structural variant type (BND, CNV, DEL, DUP, INS, INV), if this call is a structural variant.">
+##FILTER=<ID=PASS,Description="The variant call has passed all filters and may be considered for downstream analysis.">
 ##FORMAT=<ID=GT,Number=1,Type=String,Description="The genotype for this sample.">
-##FORMAT=<ID=VD,Number=1,Type=Integer,Description="The variant allele depth at this location.">
-##FORMAT=<ID=DP,Number=1,Type=Integer,Description="The total allele depth at this location which potentially includes No-calls.">
 ##FORMAT=<ID=AD,Number=R,Type=Integer,Description="The allelic depths for the REF and ALT alleles.">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="The total allele depth at this location which potentially includes No-calls.">
+##FORMAT=<ID=VD,Number=1,Type=Integer,Description="The variant allele depth at this location.">
 ##ALT=<ID=BND,Description="Region with an identified unambiguous single breakend.">
 ##ALT=<ID=CNV,Description="Copy number variable region.">
 ##ALT=<ID=DEL,Description="Deletion relative to the reference.">
@@ -40,6 +41,6 @@
 ##contig=<ID=chr13,length=114364328>
 ##reference=tests/reference.fa
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	dna00001
-chr1	114713883	.	G	A	0	.	ADJAF=0;BASEQUALMEAN=90;BASEQUALSTDEV=0;BIAS=UnDetected:TooFewReads;BIASALT=1,0;BIASREF=2766,5280;END=114713883;HIAF=0.0001;HICNT=1;HICOV=8048;MEANMAPQ=60;MSI=1;MSILEN=1;NM=2;POSMEAN=13;POSSTDEV=0;SHIFT3=0;SN=2;STRANDBIASODDRATIO=4;STRANDBIASPVALUE=0.34385	GT:VD:DP:AD	0/0:1:8104:8046,1
-chr12	112450447	.	A	<INV>	0	.	ADJAF=0.0001;BASEQUALMEAN=90;BASEQUALSTDEV=1;BIAS=UnDetected:TooFewReads;BIASALT=1,0;BIASREF=3991,2588;END=123513818;HIAF=0.0002;HICNT=1;HICOV=6582;MEANMAPQ=33;MSI=0;MSILEN=0;NM=0;POSMEAN=58;POSSTDEV=1;SHIFT3=0;SN=2;STRANDBIASODDRATIO=0;STRANDBIASPVALUE=1;SPLITREAD=1;SPANPAIR=1;SVLEN=11063372;SVTYPE=INV	GT:VD:DP:AD	0/0:1:6775:6579,1
-chr13	24684729	.	G	<DEL>	90	.	ADJAF=0.0003;BASEQUALMEAN=90;BASEQUALSTDEV=1;BIAS=TooFewReads:TooFewReads;BIASALT=0,2;BIASREF=0,0;END=28034141;HIAF=1;HICNT=2;HICOV=2;MEANMAPQ=60;MSI=0;MSILEN=0;NM=0;POSMEAN=60.5;POSSTDEV=1;SHIFT3=0;SN=4;STRANDBIASODDRATIO=2;STRANDBIASPVALUE=1;SPLITREAD=1;SPANPAIR=1;SVLEN=-3349413;SVTYPE=DEL	GT:VD:DP:AD	0/1:2:7463:0,2
+chr1	114713883	.	G	A	0	.	ADJAF=0;BASEQUALMEAN=90;BASEQUALSTDEV=0;BIAS=UnDetected:TooFewReads;BIASALT=1,0;BIASREF=2766,5280;END=114713883;HIAF=0.0001;HICNT=1;HICOV=8048;MEANMAPQ=60;MSI=1;MSILEN=1;NM=2;POSMEAN=13;POSSTDEV=0;SHIFT3=0;SN=2;STRANDBIASODDRATIO=4;STRANDBIASPVALUE=0.34385	GT:AD:DP:VD	0/0:8046,1:8104:1
+chr12	112450447	.	A	<INV>	0	.	ADJAF=0.0001;BASEQUALMEAN=90;BASEQUALSTDEV=1;BIAS=UnDetected:TooFewReads;BIASALT=1,0;BIASREF=3991,2588;END=123513818;HIAF=0.0002;HICNT=1;HICOV=6582;MEANMAPQ=33;MSI=0;MSILEN=0;NM=0;POSMEAN=58;POSSTDEV=1;SHIFT3=0;SN=2;STRANDBIASODDRATIO=0;STRANDBIASPVALUE=1;SPLITREAD=1;SPANPAIR=1;SVLEN=11063372;SVTYPE=INV	GT:AD:DP:VD	0/0:6579,1:6775:1
+chr13	24684729	.	G	<DEL>	90	.	ADJAF=0.0003;BASEQUALMEAN=90;BASEQUALSTDEV=1;BIAS=TooFewReads:TooFewReads;BIASALT=0,2;BIASREF=0,0;END=28034141;HIAF=1;HICNT=2;HICOV=2;MEANMAPQ=60;MSI=0;MSILEN=0;NM=0;POSMEAN=60.5;POSSTDEV=1;SHIFT3=0;SN=4;STRANDBIASODDRATIO=2;STRANDBIASPVALUE=1;SPLITREAD=1;SPANPAIR=1;SVLEN=-3349413;SVTYPE=DEL	GT:AD:DP:VD	0/1:0,2:7463:2
