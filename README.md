@@ -25,9 +25,11 @@ Convert variants from VarDict/VarDictJava into VCF v4.2 format.
 #### Features
 
 - Unlike the Perl script bundled with VarDict, this tool streams record-by-record
-- Only the conversion of variant records generated with tumor-only mode is supported
-- Output VCF records are unsorted and a call to `bcftools sort` is advised
+- This tool is kept lean on purpose and is solely responsible for fast format conversion 
 - The output is compliant with the VCF v4.2 and v4.3 specifications
+- Output VCF records are unsorted and a call to `bcftools sort` is advised
+- Output VCF records may also have duplicates so a call to `bcftools norm -D` is advised
+- At this time, only tumor-only mode (`var2vcf_valid.pl`) is supported
 
 #### Benchmarks
 
