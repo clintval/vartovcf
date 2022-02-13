@@ -389,7 +389,7 @@ pub fn tumor_only_header(sample: &str) -> Header {
     header.push_record(r#"##INFO=<ID=QSTD,Number=1,Type=Float,Description="The standard deviation of the base quality (Phred)) of all bases that directly support the variant call.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=QUAL,Number=1,Type=Float,Description="The mean base quality (Phred) of all bases that directly support the variant call.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=RSEQ,Number=1,Type=String,Description="3-prime reference flanking sequence.">"#.as_bytes());
-    header.push_record(r#"##INFO=<ID=SBF,Number=1,Type=Float,Description="The Fisher test p-value for if you should reject the hypothesis that there is no strand bias. Not multiple hypothesis test corrected,">"#.as_bytes());
+    header.push_record(r#"##INFO=<ID=SBF,Number=1,Type=Float,Description="The Fisher test p-value for if you should reject the hypothesis that there is no strand bias. Not multiple hypothesis test corrected.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=SHIFT3,Number=1,Type=Integer,Description="The number of bases to be shifted 3-prime for deletions due to alternative alignment(s).">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=SN,Number=1,Type=Float,Description="The signal to noise ratio for this variant call.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=SPANPAIR,Number=1,Type=Integer,Description="The number of paired-end reads supporting the variant call if this call is a structural variant.">"#.as_bytes());
@@ -555,9 +555,9 @@ mod tests {
     #[test]
     fn test_tumor_only_header() {
         let header = tumor_only_header("dna00001");
-        let file = NamedTempFile::new().expect("Cannot create temporary file.");
+        let file = NamedTempFile::new().expect("Cannot create temporary file!");
         let _ = VcfWriter::from_path(&file.path(), &header, true, Format::VCF).unwrap();
-        let reader = VcfReader::from_path(&file.path()).expect("Error opening tempfile.");
+        let reader = VcfReader::from_path(&file.path()).expect("Error opening tempfile!");
         let records = reader.header().header_records();
         let samples = reader.header().samples();
         assert_eq!(records.len(), 44);
