@@ -4,6 +4,7 @@
 ##INFO=<ID=BIAS,Number=1,Type=String,Description="Strand bias flags (UnDetected, Detected, TooFewReads) in the format `reference`:`alternate`.">
 ##INFO=<ID=BIASALT,Number=2,Type=Integer,Description="The number of variant call forward and reverse reads in the format `forward`:`reverse`.">
 ##INFO=<ID=BIASREF,Number=2,Type=Integer,Description="The number of reference forward and reverse reads in the format `forward`:`reverse`.">
+##INFO=<ID=END,Number=1,Type=Integer,Description="The end location of this variant event.">
 ##INFO=<ID=DUPRATE,Number=1,Type=Float,Description="The duplication rate, if this call is a duplication.">
 ##INFO=<ID=HIAF,Number=1,Type=Float,Description="Allele frequency calculated using only high quality bases. Lossy due to rounding.">
 ##INFO=<ID=HICNT,Number=1,Type=Integer,Description="The number of high quality reads supporting the variant call.">
@@ -19,7 +20,7 @@
 ##INFO=<ID=QSTD,Number=1,Type=Float,Description="The standard deviation of the base quality (Phred)) of all bases that directly support the variant call.">
 ##INFO=<ID=QUAL,Number=1,Type=Float,Description="The mean base quality (Phred) of all bases that directly support the variant call.">
 ##INFO=<ID=RSEQ,Number=1,Type=String,Description="3-prime reference flanking sequence.">
-##INFO=<ID=SBF,Number=1,Type=Float,Description="The Fisher test p-value for if you should reject the hypothesis that there is no strand bias. Not multiple hypothesis test corrected,">
+##INFO=<ID=SBF,Number=1,Type=Float,Description="The Fisher test p-value for if you should reject the hypothesis that there is no strand bias. Not multiple hypothesis test corrected.">
 ##INFO=<ID=SHIFT3,Number=1,Type=Integer,Description="The number of bases to be shifted 3-prime for deletions due to alternative alignment(s).">
 ##INFO=<ID=SN,Number=1,Type=Float,Description="The signal to noise ratio for this variant call.">
 ##INFO=<ID=SPANPAIR,Number=1,Type=Integer,Description="The number of paired-end reads supporting the variant call if this call is a structural variant.">

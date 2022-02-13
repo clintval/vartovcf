@@ -17,9 +17,7 @@ Convert variants from VarDict/VarDictJava into VCF v4.2 format.
     --fisher \
     calling-intervals.bed \
   | vartovcf -r /references/hg38.fa -s dna00001 \
-  | bcftools sort \
-  | bcftools norm --rm-dup exact \
-  | bgzip -dc > variants.vcf.gz
+  | bcftools sort -Oz > variants.vcf.gz
 ```
 
 #### Features
@@ -27,8 +25,7 @@ Convert variants from VarDict/VarDictJava into VCF v4.2 format.
 - Unlike the Perl script bundled with VarDict, this tool streams record-by-record
 - This tool is kept lean on purpose and is solely responsible for fast format conversion 
 - The output is compliant with the VCF v4.2 and v4.3 specifications
-- Output VCF records are unsorted and a call to `bcftools sort` is advised
-- Output VCF records may also have duplicates so a call to `bcftools norm --rm-dup` is advised
+- Output VCF records are unsorted and a call to `bcftools sort` is recommended
 - At this time, only tumor-only mode (`var2vcf_valid.pl`) is supported
 
 #### Benchmarks

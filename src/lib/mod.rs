@@ -2,15 +2,17 @@
 #![warn(missing_docs)]
 #![warn(missing_doc_code_examples)]
 
+use std::collections::HashSet;
+use std::error;
+use std::fmt::Debug;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+
 use anyhow::Result;
 use csv::ReaderBuilder;
 use log::*;
 use rust_htslib::bcf::Format;
 use rust_htslib::bcf::Writer as VcfWriter;
-use std::error;
-use std::fmt::Debug;
-use std::io::Read;
-use std::path::{Path, PathBuf};
 use strum::{EnumString, EnumVariantNames, ToString as EnumToString};
 
 use crate::fai::{fasta_contigs_to_vcf_header, fasta_path_to_vcf_header};
@@ -101,14 +103,24 @@ where
     let mut progress = ProgressLogger::new("processed", "variant records", DEFAULT_LOG_EVERY);
     let mut carry = csv::StringRecord::new();
     let mut variant = writer.empty_record();
+    let mut seen: HashSet<String> = HashSet::new();
 
     while reader.read_record(&mut carry)? {
         if carry.iter().collect::<Vec<&str>>()[5].is_empty() {
-            continue; // If the 5th field is empty, it's a record we need to skip.
+            continue; // If the 5th field is empty, it's a record we need to avoid deserializing.
         }
+
         let var: TumorOnlyVariant = carry
             .deserialize(None)
             .expect("Could not deserialize record!");
+
+        let key = format!(
+            "{}-{}-{}-{}",
+            var.contig, var.start, var.ref_allele, var.alt_allele
+        );
+        if !seen.insert(key) {
+            continue; // Skip this record if we have seen this variant before.
+        }
 
         if var.sample != sample {
             let message = format!("Expected sample '{}' found '{}'!", sample, var.sample);
@@ -144,6 +156,7 @@ where
             variant.clear_info_float(b"DUPRATE")?;
         }
 
+        variant.push_info_integer(b"END", &[var.end as i32])?;
         variant.push_info_float(b"HIAF", &[var.af_high_quality_bases])?;
         variant.push_info_integer(b"HICNT", &[var.high_quality_variant_reads])?;
         variant.push_info_integer(b"HICOV", &[var.high_quality_total_reads])?;
@@ -195,12 +208,13 @@ where
 
 #[cfg(test)]
 mod tests {
-    use anyhow::Result;
-    use file_diff::diff;
-    use pretty_assertions::assert_eq;
     use std::fs::File;
     use std::io::BufReader;
     use std::path::PathBuf;
+
+    use anyhow::Result;
+    use file_diff::diff;
+    use pretty_assertions::assert_eq;
     use tempfile::NamedTempFile;
 
     use super::VarDictMode::TumorOnly;

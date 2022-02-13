@@ -374,6 +374,7 @@ pub fn tumor_only_header(sample: &str) -> Header {
     header.push_record(r#"##INFO=<ID=BIAS,Number=1,Type=String,Description="Strand bias flags (UnDetected, Detected, TooFewReads) in the format `reference`:`alternate`.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=BIASALT,Number=2,Type=Integer,Description="The number of variant call forward and reverse reads in the format `forward`:`reverse`.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=BIASREF,Number=2,Type=Integer,Description="The number of reference forward and reverse reads in the format `forward`:`reverse`.">"#.as_bytes());
+    header.push_record(r#"##INFO=<ID=END,Number=1,Type=Integer,Description="The end location of this variant call.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=DUPRATE,Number=1,Type=Float,Description="The duplication rate, if this call is a duplication.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=HIAF,Number=1,Type=Float,Description="Allele frequency calculated using only high quality bases. Lossy due to rounding.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=HICNT,Number=1,Type=Integer,Description="The number of high quality reads supporting the variant call.">"#.as_bytes());
@@ -560,7 +561,7 @@ mod tests {
         let reader = VcfReader::from_path(&file.path()).expect("Error opening tempfile!");
         let records = reader.header().header_records();
         let samples = reader.header().samples();
-        assert_eq!(records.len(), 44);
+        assert_eq!(records.len(), 45);
         assert_eq!(samples.len(), 1);
         assert!(samples.iter().all(|&s| s == "dna00001".as_bytes()));
     }
