@@ -6,14 +6,14 @@ use std::error;
 use std::fmt;
 use std::ops::Range;
 use std::str::FromStr;
-use std::string::ToString;
 
 use anyhow::Result;
 use bio_types::genome::{AbstractInterval, Position};
 use rust_htslib::bcf::record::GenotypeAllele;
 use rust_htslib::bcf::Header;
 use serde::{de::Error, Deserialize, Serialize};
-use serde_with::rust::display_fromstr;
+use serde_with::serde_as;
+use serde_with::DisplayFromStr;
 use strum::EnumString;
 
 const CARGO_PKG_NAME: &str = env!("CARGO_PKG_NAME");
@@ -149,7 +149,7 @@ impl FromStr for PairBias {
         if items.len() != 2 {
             return Err(ParsePairBiasError);
         }
-        let pair = match (items.get(0), items.get(1)) {
+        let pair = match (items.first(), items.get(1)) {
             (Some(reference), Some(alternate)) => PairBias {
                 reference: StrandBias::from_str(reference).map_err(|_| ParsePairBiasError)?,
                 alternate: StrandBias::from_str(alternate).map_err(|_| ParsePairBiasError)?,
@@ -182,9 +182,10 @@ impl Default for SvInfo {
     }
 }
 
-impl ToString for SvInfo {
-    fn to_string(&self) -> String {
-        format!(
+impl fmt::Display for SvInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
             "{}-{}-{}",
             self.supporting_split_reads, self.supporting_pairs, self.supporting_clusters
         )
@@ -197,7 +198,7 @@ impl FromStr for SvInfo {
     /// Convert a string to a `SvInfo`.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let items: Vec<&str> = s.split('-').collect();
-        let sv_info = match (items.get(0), items.get(1), items.get(2)) {
+        let sv_info = match (items.first(), items.get(1), items.get(2)) {
             (Some(split_reads), Some(pairs), Some(clusters)) => SvInfo {
                 supporting_split_reads: split_reads.parse().map_err(|_| ParseSvInfoError)?,
                 supporting_pairs: pairs.parse().map_err(|_| ParseSvInfoError)?,
@@ -210,6 +211,7 @@ impl FromStr for SvInfo {
 }
 
 /// A record of output from VarDict/VarDictJava run in tumor-only mode.
+#[serde_as]
 #[derive(Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct TumorOnlyVariant<'a> {
     /// Sample name (with whitespace translated to underscores).
@@ -249,7 +251,7 @@ pub struct TumorOnlyVariant<'a> {
     /// * `0`: there were too few reads to say otherwise (less than 12 for the sum of forward and reverse reads)
     /// * `1`: strand bias was detected
     /// * `2`: strand bias was undetected
-    #[serde(with = "display_fromstr")]
+    #[serde_as(as = "DisplayFromStr")]
     pub strand_bias: PairBias,
     /// The mean distance to the nearest 5 or 3 prime read end (whichever is closer) in all reads
     /// that support the variant call.
@@ -379,7 +381,6 @@ pub fn tumor_only_header(sample: &str) -> Header {
     header.push_record(r#"##INFO=<ID=HIAF,Number=1,Type=Float,Description="Allele frequency calculated using only high quality bases. Lossy due to rounding.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=HICNT,Number=1,Type=Integer,Description="The number of high quality reads supporting the variant call.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=HICOV,Number=1,Type=Integer,Description="The number of high quality reads at the locus of the variant call.">"#.as_bytes());
-    // header.push_record(r#"##INFO=<ID=LSEQ,Number=1,Type=String,Description="5-prime reference flanking sequence.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=MEANMAPQ,Number=1,Type=Float,Description="The mean mapping quality (Phred) of all reads that directly support the variant call.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=MSI,Number=1,Type=Float,Description="Whether the variant call is in a microsatellite (MSI) or not. Greater than 1 indicates MSI.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=MSILEN,Number=1,Type=Float,Description="The length, in base pairs, of the microsatellite this variant call is in.">"#.as_bytes());
@@ -388,7 +389,6 @@ pub fn tumor_only_header(sample: &str) -> Header {
     header.push_record(r#"##INFO=<ID=POSSTDEV,Number=1,Type=Float,Description="The standard deviation of the distance to the nearest 5 or 3 prime read end (whichever is closer) in all reads that support the variant call.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=BASEQUALMEAN,Number=1,Type=Float,Description="The mean base quality (Phred) of all bases that directly support the variant call.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=BASEQUALSTDEV,Number=1,Type=Float,Description="The standard deviation of the base quality (Phred)) of all bases that directly support the variant call.">"#.as_bytes());
-    // header.push_record(r#"##INFO=<ID=RSEQ,Number=1,Type=String,Description="3-prime reference flanking sequence.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=SHIFT3,Number=1,Type=Integer,Description="The number of bases to be shifted 3-prime for deletions due to alternative alignment(s).">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=SN,Number=1,Type=Float,Description="The signal to noise ratio for this variant call.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=SPANPAIR,Number=1,Type=Integer,Description="The number of paired-end reads supporting the variant call if this call is a structural variant.">"#.as_bytes());
@@ -397,12 +397,7 @@ pub fn tumor_only_header(sample: &str) -> Header {
     header.push_record(r#"##INFO=<ID=STRANDBIASODDRATIO,Number=1,Type=Float,Description="The odds ratio for strand bias for this variant call.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="The length of structural variant in base pairs of reference genome, if this call is a structural variant.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=SVTYPE,Number=1,Type=String,Description="The structural variant type (BND, CNV, DEL, DUP, INS, INV), if this call is a structural variant.">"#.as_bytes());
-    // header.push_record(r#"##FILTER=<ID=LongMSI,Description="The variant call is flanked by a long A/T stretch (>=14 base pairs).">"#.as_bytes());
-    // header.push_record(r#"##FILTER=<ID=MSI12,Description="The variant call is in a microsatellite region with 12 non-monomer MSI or 13 monomer MSI.">"#.as_bytes());
-    // header.push_record(r#"##FILTER=<ID=NM8.0,Description="The mean mismatches in reads that support the variant call is greater than or equal to 8.0, and might be a false positive or contamination.">"#.as_bytes());
     header.push_record(r#"##FILTER=<ID=PASS,Description="The variant call has passed all filters and may be considered for downstream analysis.">"#.as_bytes());
-    // header.push_record(r#"##FILTER=<ID=Q10,Description="The mean mapping quality (Phred) in reads that support this variant call is less than 10.">"#.as_bytes());
-    // header.push_record(r#"##FILTER=<ID=q22.5,Description="The mean base quality (Phred) of all bases that directly support this variant call is less than 22.5.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=GT,Number=1,Type=String,Description="The genotype for this sample.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=AD,Number=R,Type=Integer,Description="The allelic depths for the REF and ALT alleles.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=DP,Number=1,Type=Integer,Description="The total allele depth at this location which potentially includes No-calls.">"#.as_bytes());
@@ -557,7 +552,7 @@ mod tests {
     fn test_tumor_only_header() {
         let header = tumor_only_header("dna00001");
         let file = NamedTempFile::new().expect("Cannot create temporary file!");
-        let _ = VcfWriter::from_path(&file.path(), &header, true, Format::VCF).unwrap();
+        let _ = VcfWriter::from_path(&file.path(), &header, true, Format::Vcf).unwrap();
         let reader = VcfReader::from_path(&file.path()).expect("Error opening tempfile!");
         let records = reader.header().header_records();
         let samples = reader.header().samples();

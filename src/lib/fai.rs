@@ -185,7 +185,7 @@ mod tests {
         contigs_to_vcf_header(&actual, &mut header);
 
         let file = NamedTempFile::new().expect("Cannot create temporary file!");
-        let _ = VcfWriter::from_path(&file.path(), &mut header, true, Format::VCF).unwrap();
+        let _ = VcfWriter::from_path(&file.path(), &mut header, true, Format::Vcf).unwrap();
         let reader = VcfReader::from_path(&file.path()).expect("Error opening tempfile!");
         let records = reader.header().header_records();
 
@@ -217,7 +217,7 @@ mod tests {
             .expect("Could not add the FASTA file path to the VCF header!");
 
         let file = NamedTempFile::new().expect("Cannot create temporary file!");
-        let _ = VcfWriter::from_path(&file.path(), &mut header, true, Format::VCF).unwrap();
+        let _ = VcfWriter::from_path(&file.path(), &mut header, true, Format::Vcf).unwrap();
         let reader = VcfReader::from_path(&file.path()).expect("Error opening tempfile!");
         let records = reader.header().header_records();
 

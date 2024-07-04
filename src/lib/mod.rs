@@ -1,19 +1,18 @@
 //! A library for working with VarDict/VarDictJava output.
 #![warn(missing_docs)]
-#![warn(missing_doc_code_examples)]
-
-use std::collections::HashSet;
-use std::error;
-use std::fmt::Debug;
-use std::io::Read;
-use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use csv::ReaderBuilder;
 use log::*;
 use rust_htslib::bcf::Format;
 use rust_htslib::bcf::Writer as VcfWriter;
-use strum::{EnumString, EnumVariantNames, ToString as EnumToString};
+use std::collections::HashSet;
+use std::error;
+use std::fmt::Debug;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use strum::Display;
+use strum::{EnumString, VariantNames};
 
 use crate::fai::{fasta_contigs_to_vcf_header, fasta_path_to_vcf_header};
 use crate::io::has_gzip_ext;
@@ -41,12 +40,12 @@ pub mod path {
 
 // TODO: This could become unnecessary if we can dynamically determine the mode based on input.
 /// The variant calling modes for VarDict/VarDictJava.
-#[derive(Clone, Copy, Debug, EnumString, EnumToString, EnumVariantNames, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Display, EnumString, VariantNames, PartialEq, PartialOrd)]
 pub enum VarDictMode {
     /// The amplicon variant calling mode.
-    Amplicon,
+    //Amplicon,
     /// The tumor-normal variant calling mode.
-    TumorNormal,
+    //TumorNormal,
     /// The tumor-only variant calling mode.
     TumorOnly,
 }
@@ -95,8 +94,8 @@ where
         .from_reader(input);
 
     let mut writer = match output {
-        Some(output) => VcfWriter::from_path(&output, &header, !has_gzip_ext(&output), Format::VCF),
-        None => VcfWriter::from_stdout(&header, true, Format::VCF),
+        Some(output) => VcfWriter::from_path(&output, &header, !has_gzip_ext(&output), Format::Vcf),
+        None => VcfWriter::from_stdout(&header, true, Format::Vcf),
     }
     .expect("Could not build a VCF writer!");
 
