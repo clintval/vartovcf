@@ -2,7 +2,7 @@
 name = "vartovcf"
 version = "0.1.0"
 authors = ["Clint Valentine <valentine.clint@gmail.com>"]
-edition = "2018"
+edition = "2021"
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/clintval/vartovcf"
@@ -24,23 +24,24 @@ name = "vartovcf"
 path = "src/main.rs"
 
 [dependencies]
-anyhow = "1.0"
-bio-types = "0.10"
+anyhow = "1.0.86"
+bio-types = "1.0.1"
 case = "1.0.0"
-chrono = "0.4"
-csv = "1.1"
-env_logger = "0.8"
-log = "0.4"
-rust-htslib = "0.36"
-serde = { version = "1.0", features = ["derive"] }
-serde_with = { version = "1.3.1" }
-structopt = "0.3"
-strum = { version = "0.20", features = ["derive"] }
+chrono = "0.4.38"
+csv = "1.3.0"
+env_logger = "0.11.3"
+log = "0.4.22"
+proglog = "0.3.0"
+rust-htslib = "0.47.0"
+serde = { version = "1.0.203", features = ["derive"] }
+serde_with = { version = "3.8.3" }
+structopt = "0.3.26"
+strum = { version = "0.26.3", features = ["derive"] }
 
 [dev-dependencies]
-assert_cmd = "1.0.2"
-env_logger = "0.8"
+assert_cmd = "2.0.14"
+env_logger = "0.11.3"
 file_diff = "1.0.0"
-pretty_assertions = "0.6.1"
-rstest = "0.6"
-tempfile = "3"
+pretty_assertions = "1.4.0"
+rstest = "0.21.0"
+tempfile = "3.10.1"

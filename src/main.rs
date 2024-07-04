@@ -36,7 +36,7 @@ struct Opt {
     #[structopt(short = "o", long = "--output", parse(from_os_str))]
     output: Option<PathBuf>,
 
-    /// The variant calling mode, only TumorOnly is supported.
+    /// Variant calling mode.
     #[structopt(short = "m", long = "--mode", default_value = "TumorOnly", possible_values = &VarDictMode::VARIANTS)]
     mode: VarDictMode,
 }
