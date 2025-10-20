@@ -10,7 +10,7 @@ use log::*;
 use structopt::StructOpt;
 use strum::VariantNames;
 
-use vartovcflib::{vartovcf, VarDictMode};
+use vartovcflib::{VarDictMode, vartovcf};
 
 #[derive(Clone, Debug, StructOpt)]
 #[structopt(
@@ -44,14 +44,14 @@ struct Opt {
 /// Main binary entrypoint.
 #[cfg(not(tarpaulin_include))]
 fn main() -> Result<(), Error> {
-    let env = Env::default().default_filter_or(vartovcflib::DEFAULT_LOG_LEVEL);
+    let env = Env::default().default_filter_or("info");
     let opt = Opt::from_args();
 
     env_logger::Builder::from_env(env).init();
 
     let input: Box<dyn Read> = match &opt.input {
         Some(path) if path.to_str().unwrap() != "-" => {
-            info!("Input file: {:?}", path);
+            info!("Input file: {path:?}");
             Box::new(BufReader::new(File::open(path)?))
         }
         _ => {
@@ -61,7 +61,7 @@ fn main() -> Result<(), Error> {
     };
 
     match &opt.output {
-        Some(output) if output.to_str().unwrap() != "-" => info!("Output file: {:?}", output),
+        Some(output) if output.to_str().unwrap() != "-" => info!("Output file: {output:?}"),
         _ => info!("Output stream: STDOUT"),
     }
 
