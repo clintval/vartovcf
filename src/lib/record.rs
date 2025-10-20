@@ -9,11 +9,11 @@ use std::str::FromStr;
 
 use anyhow::Result;
 use bio_types::genome::{AbstractInterval, Position};
-use rust_htslib::bcf::record::GenotypeAllele;
 use rust_htslib::bcf::Header;
-use serde::{de::Error, Deserialize, Serialize};
-use serde_with::serde_as;
+use rust_htslib::bcf::record::GenotypeAllele;
+use serde::{Deserialize, Serialize, de::Error};
 use serde_with::DisplayFromStr;
+use serde_with::serde_as;
 use strum::EnumString;
 
 const CARGO_PKG_NAME: &str = env!("CARGO_PKG_NAME");

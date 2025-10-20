@@ -10,7 +10,7 @@ use log::*;
 use structopt::StructOpt;
 use strum::VariantNames;
 
-use vartovcflib::{vartovcf, VarDictMode};
+use vartovcflib::{VarDictMode, vartovcf};
 
 #[derive(Clone, Debug, StructOpt)]
 #[structopt(

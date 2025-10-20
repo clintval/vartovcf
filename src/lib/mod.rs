@@ -4,6 +4,7 @@
 use anyhow::Result;
 use csv::ReaderBuilder;
 use log::*;
+use proglog::ProgLogBuilder;
 use rust_htslib::bcf::Format;
 use rust_htslib::bcf::Writer as VcfWriter;
 use std::collections::HashSet;
@@ -13,12 +14,11 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use strum::Display;
 use strum::{EnumString, VariantNames};
-use proglog::ProgLogBuilder;
 
 use crate::fai::{fasta_contigs_to_vcf_header, fasta_path_to_vcf_header};
 use crate::io::has_gzip_ext;
-use crate::record::tumor_only_header;
 use crate::record::TumorOnlyVariant;
+use crate::record::tumor_only_header;
 
 pub mod fai;
 pub mod io;
