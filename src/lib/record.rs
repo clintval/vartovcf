@@ -79,7 +79,7 @@ impl error::Error for ParsePairBiasError {}
 
 impl fmt::Display for ParsePairBiasError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self)
+        write!(f, "{self:?}")
     }
 }
 
@@ -91,7 +91,7 @@ impl error::Error for ParseSvInfoError {}
 
 impl fmt::Display for ParseSvInfoError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self)
+        write!(f, "{self:?}")
     }
 }
 
@@ -111,7 +111,7 @@ pub enum StrandBias {
 
 impl fmt::Display for StrandBias {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self)
+        write!(f, "{self:?}")
     }
 }
 
@@ -371,7 +371,7 @@ pub fn tumor_only_header(sample: &str) -> Header {
     let mut header = Header::default();
     header.push_sample(sample.as_bytes());
     header.remove_filter(b"PASS");
-    header.push_record(format!("##source={}", source).as_bytes());
+    header.push_record(format!("##source={source}").as_bytes());
     header.push_record(r#"##INFO=<ID=ADJAF,Number=1,Type=Float,Description="Adjusted allele frequency for indels due to local realignment. Lossy due to rounding.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=BIAS,Number=1,Type=String,Description="Strand bias flags (UnDetected, Detected, TooFewReads) in the format `reference`:`alternate`.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=BIASALT,Number=2,Type=Integer,Description="The number of variant call forward and reverse reads in the format `forward`:`reverse`.">"#.as_bytes());

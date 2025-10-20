@@ -13,20 +13,16 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use strum::Display;
 use strum::{EnumString, VariantNames};
+use proglog::ProgLogBuilder;
 
 use crate::fai::{fasta_contigs_to_vcf_header, fasta_path_to_vcf_header};
 use crate::io::has_gzip_ext;
-use crate::progress_logger::{ProgressLogger, RecordLogger, DEFAULT_LOG_EVERY};
 use crate::record::tumor_only_header;
 use crate::record::TumorOnlyVariant;
 
 pub mod fai;
 pub mod io;
-pub mod progress_logger;
 pub mod record;
-
-/// The default log level for the `vartovcf` tool.
-pub const DEFAULT_LOG_LEVEL: &str = "info";
 
 /// The valid structural variation (SV) type values for the `SVTYPE` FORMAT field.
 pub const VALID_SV_TYPES: &[&str] = &["BND", "CNV", "DEL", "DUP", "INS", "INV"];
@@ -99,7 +95,13 @@ where
     }
     .expect("Could not build a VCF writer!");
 
-    let mut progress = ProgressLogger::new("processed", "variant records", DEFAULT_LOG_EVERY);
+    let progress = ProgLogBuilder::new()
+        .name("main")
+        .verb("Processed")
+        .noun("variant records")
+        .unit(10_000)
+        .build();
+
     let mut carry = csv::StringRecord::new();
     let mut variant = writer.empty_record();
     let mut seen: HashSet<String> = HashSet::new();
@@ -123,7 +125,6 @@ where
 
         if var.sample != sample {
             let message = format!("Expected sample '{}' found '{}'!", sample, var.sample);
-            progress.emit()?;
             return Err(message.into());
         };
 
@@ -197,10 +198,8 @@ where
         variant.push_format_integer(b"VD", &[var.alt_depth])?;
 
         writer.write(&variant)?;
-        progress.observe()?;
+        progress.record();
     }
-
-    progress.emit()?;
 
     Ok(0)
 }

@@ -92,7 +92,7 @@ where
     I: AsRef<Path> + Debug,
 {
     match fasta.as_ref().to_str() {
-        Some(path) => header.push_record(format!("##reference={}", path).as_bytes()),
+        Some(path) => header.push_record(format!("##reference={path}").as_bytes()),
         None => return Err("Could not create a string out of the FASTA path".into()),
     };
     Ok(())
