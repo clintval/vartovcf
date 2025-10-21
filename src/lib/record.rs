@@ -417,7 +417,6 @@ pub fn tumor_only_header(sample: &str) -> Header {
 
 #[cfg(test)]
 mod tests {
-    use anyhow::Result;
     use pretty_assertions::assert_eq;
     use rstest::*;
     use rust_htslib::bcf::{Format, Read};
@@ -545,11 +544,34 @@ mod tests {
     }
 
     #[rstest]
-    fn test_maybe_infinite_f32_odds_ratio(
-        _variants: Vec<TumorOnlyVariant>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        // TODO: Implement this test using serde-test helpers.
-        Ok(())
+    #[case("Inf", 0.0)]
+    #[case("inf", 0.0)]
+    #[case("0.5", 2.0)]
+    #[case("0.25", 4.0)]
+    #[case("0.1", 10.0)]
+    #[case("10.0", 10.0)]
+    #[case("2.0", 2.0)]
+    #[case("1.0", 1.0)]
+    #[case("0.0", 0.0)]
+    fn test_maybe_infinite_f32_odds_ratio(#[case] input: &'static str, #[case] expected: f32) {
+        use serde::Deserialize;
+        use serde_test::{assert_de_tokens, Token};
+
+        #[derive(Debug, Deserialize, PartialEq)]
+        struct TestStruct {
+            #[serde(deserialize_with = "maybe_infinite_f32_odds_ratio")]
+            value: f32,
+        }
+
+        assert_de_tokens(
+            &TestStruct { value: expected },
+            &[
+                Token::Struct { name: "TestStruct", len: 1 },
+                Token::BorrowedStr("value"),
+                Token::BorrowedStr(input),
+                Token::StructEnd,
+            ],
+        );
     }
 
     #[test]

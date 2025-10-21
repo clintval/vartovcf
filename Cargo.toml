@@ -43,6 +43,7 @@ env_logger = "0.11.8"
 file_diff = "1.0.0"
 pretty_assertions = "1.4.1"
 rstest = "0.26.1"
+serde_test = "1.0.177"
 tempfile = "3.23.0"
 
 [lints.rust]
