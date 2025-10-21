@@ -1,28 +1,6 @@
 ##fileformat=VCFv4.2
 ##source=vartovcf-0.1.0
-##INFO=<ID=ADJAF,Number=1,Type=Float,Description="Adjusted allele frequency for indels due to local realignment. Lossy due to rounding.">
-##INFO=<ID=BIAS,Number=1,Type=String,Description="Strand bias flags (UnDetected, Detected, TooFewReads) in the format `reference`:`alternate`.">
-##INFO=<ID=BIASALT,Number=2,Type=Integer,Description="The number of variant call forward and reverse reads in the format `forward`:`reverse`.">
-##INFO=<ID=BIASREF,Number=2,Type=Integer,Description="The number of reference forward and reverse reads in the format `forward`:`reverse`.">
 ##INFO=<ID=END,Number=1,Type=Integer,Description="The end location of this variant call.">
-##INFO=<ID=DUPRATE,Number=1,Type=Float,Description="The duplication rate, if this call is a duplication.">
-##INFO=<ID=HIAF,Number=1,Type=Float,Description="Allele frequency calculated using only high quality bases. Lossy due to rounding.">
-##INFO=<ID=HICNT,Number=1,Type=Integer,Description="The number of high quality reads supporting the variant call.">
-##INFO=<ID=HICOV,Number=1,Type=Integer,Description="The number of high quality reads at the locus of the variant call.">
-##INFO=<ID=MEANMAPQ,Number=1,Type=Float,Description="The mean mapping quality (Phred) of all reads that directly support the variant call.">
-##INFO=<ID=MSI,Number=1,Type=Float,Description="Whether the variant call is in a microsatellite (MSI) or not. Greater than 1 indicates MSI.">
-##INFO=<ID=MSILEN,Number=1,Type=Float,Description="The length, in base pairs, of the microsatellite this variant call is in.">
-##INFO=<ID=NM,Number=1,Type=Float,Description="The mean mismatches within all reads that directly support the variant call.">
-##INFO=<ID=POSMEAN,Number=1,Type=Float,Description="The mean distance to the nearest 5 or 3 prime read end (whichever is closer) in all reads that support the variant call.">
-##INFO=<ID=POSSTDEV,Number=1,Type=Float,Description="The standard deviation of the distance to the nearest 5 or 3 prime read end (whichever is closer) in all reads that support the variant call.">
-##INFO=<ID=BASEQUALMEAN,Number=1,Type=Float,Description="The mean base quality (Phred) of all bases that directly support the variant call.">
-##INFO=<ID=BASEQUALSTDEV,Number=1,Type=Float,Description="The standard deviation of the base quality (Phred)) of all bases that directly support the variant call.">
-##INFO=<ID=SHIFT3,Number=1,Type=Integer,Description="The number of bases to be shifted 3-prime for deletions due to alternative alignment(s).">
-##INFO=<ID=SN,Number=1,Type=Float,Description="The signal to noise ratio for this variant call.">
-##INFO=<ID=SPANPAIR,Number=1,Type=Integer,Description="The number of paired-end reads supporting the variant call if this call is a structural variant.">
-##INFO=<ID=SPLITREAD,Number=1,Type=Integer,Description="The number of split reads supporting the variant call if this call is a structural variant.">
-##INFO=<ID=STRANDBIASPVALUE,Number=1,Type=Float,Description="The Fisher test p-value for if you should reject the hypothesis that there is no strand bias. Not multiple hypothesis test corrected.">
-##INFO=<ID=STRANDBIASODDRATIO,Number=1,Type=Float,Description="The odds ratio for strand bias for this variant call.">
 ##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="The length of structural variant in base pairs of reference genome, if this call is a structural variant.">
 ##INFO=<ID=SVTYPE,Number=1,Type=String,Description="The structural variant type (BND, CNV, DEL, DUP, INS, INV), if this call is a structural variant.">
 ##FILTER=<ID=PASS,Description="The variant call has passed all filters and may be considered for downstream analysis.">
@@ -41,6 +19,6 @@
 ##contig=<ID=chr13,length=114364328>
 ##reference=tests/reference.fa
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	dna00001
-chr1	114713883	.	G	A	0	.	ADJAF=0;BASEQUALMEAN=90;BASEQUALSTDEV=0;BIAS=UnDetected:TooFewReads;BIASALT=1,0;BIASREF=2766,5280;END=114713883;HIAF=0.0001;HICNT=1;HICOV=8048;MEANMAPQ=60;MSI=1;MSILEN=1;NM=2;POSMEAN=13;POSSTDEV=0;SHIFT3=0;SN=2;STRANDBIASODDRATIO=4;STRANDBIASPVALUE=0.34385	GT:AD:DP:VD	0/0:8046,1:8104:1
-chr12	112450447	.	A	<INV>	0	.	ADJAF=0.0001;BASEQUALMEAN=90;BASEQUALSTDEV=1;BIAS=UnDetected:TooFewReads;BIASALT=1,0;BIASREF=3991,2588;END=123513818;HIAF=0.0002;HICNT=1;HICOV=6582;MEANMAPQ=33;MSI=0;MSILEN=0;NM=0;POSMEAN=58;POSSTDEV=1;SHIFT3=0;SN=2;STRANDBIASODDRATIO=0;STRANDBIASPVALUE=1;SPLITREAD=1;SPANPAIR=1;SVLEN=11063372;SVTYPE=INV	GT:AD:DP:VD	0/0:6579,1:6775:1
-chr13	24684729	.	G	<DEL>	90	.	ADJAF=0.0003;BASEQUALMEAN=90;BASEQUALSTDEV=1;BIAS=TooFewReads:TooFewReads;BIASALT=0,2;BIASREF=0,0;END=28034141;HIAF=1;HICNT=2;HICOV=2;MEANMAPQ=60;MSI=0;MSILEN=0;NM=0;POSMEAN=60.5;POSSTDEV=1;SHIFT3=0;SN=4;STRANDBIASODDRATIO=2;STRANDBIASPVALUE=1;SPLITREAD=1;SPANPAIR=1;SVLEN=-3349413;SVTYPE=DEL	GT:AD:DP:VD	0/1:0,2:7463:2
+chr1	114713883	.	G	A	0	.	END=114713883	GT:AD:DP:VD	0/0:8046,1:8104:1
+chr12	112450447	.	A	<INV>	0	.	END=123513818;SVLEN=11063372;SVTYPE=INV	GT:AD:DP:VD	0/0:6579,1:6775:1
+chr13	24684729	.	G	<DEL>	90	.	END=28034141;SVLEN=-3349413;SVTYPE=DEL	GT:AD:DP:VD	0/1:0,2:7463:2

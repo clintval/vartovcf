@@ -24,16 +24,24 @@ const CARGO_PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 ///
 /// Correctly serializes the following cases:
 ///
-/// * `"Inf"` or `"-Inf"`: floating point infinities with title-case strings, will return `0`.
-/// * `(0, 1]`: a floating point number in the range 0 to 1, will return `1 / n`
-/// * `0`: a floating point zero, will return `0`
+/// * `"Inf"`: floating point infinity with title-case string, will return `0`.
+/// * `(0, 1)`: a floating point number in the range 0 to 1 (exclusive), will return `1 / n`
+/// * All other values (including 0, 1, and values > 1): returned as-is
 fn maybe_infinite_f32_odds_ratio<'de, D>(deserializer: D) -> Result<f32, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     let string: &str = Deserialize::deserialize(deserializer)?;
     f32::from_str(string.to_lowercase().as_str())
-        .map(|x| if x == 0.0 { 0.0 } else { (1.0 / x).abs() })
+        .map(|x| {
+            if x.is_infinite() && x.is_sign_positive() {
+                0.0
+            } else if x > 0.0 && x < 1.0 {
+                1.0 / x
+            } else {
+                x
+            }
+        })
         .map_err(D::Error::custom)
 }
 
@@ -332,7 +340,7 @@ impl<'a> TumorOnlyVariant<'a> {
     pub fn gt_value(&self, cutoff: f32) -> &[GenotypeAllele] {
         if self.ref_allele == self.alt_allele {
             &[GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(0)]
-        } else if self.af > 1.0 - cutoff {
+        } else if self.af > (1.0 - cutoff) {
             &[GenotypeAllele::Unphased(1), GenotypeAllele::Unphased(1)]
         } else if self.af > cutoff {
             &[GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(1)]
@@ -372,29 +380,25 @@ pub fn tumor_only_header(sample: &str) -> Header {
     header.push_sample(sample.as_bytes());
     header.remove_filter(b"PASS");
     header.push_record(format!("##source={source}").as_bytes());
-    header.push_record(r#"##INFO=<ID=ADJAF,Number=1,Type=Float,Description="Adjusted allele frequency for indels due to local realignment. Lossy due to rounding.">"#.as_bytes());
-    header.push_record(r#"##INFO=<ID=BIAS,Number=1,Type=String,Description="Strand bias flags (UnDetected, Detected, TooFewReads) in the format `reference`:`alternate`.">"#.as_bytes());
-    header.push_record(r#"##INFO=<ID=BIASALT,Number=2,Type=Integer,Description="The number of variant call forward and reverse reads in the format `forward`:`reverse`.">"#.as_bytes());
-    header.push_record(r#"##INFO=<ID=BIASREF,Number=2,Type=Integer,Description="The number of reference forward and reverse reads in the format `forward`:`reverse`.">"#.as_bytes());
+    // header.push_record(r#"##INFO=<ID=BaseQualMean,Number=1,Type=Float,Description="The mean base quality (Phred) of all bases that directly support the variant call.">"#.as_bytes());
+    // header.push_record(r#"##INFO=<ID=BaseQualStDev,Number=1,Type=Float,Description="The standard deviation of the base quality (Phred)) of all bases that directly support the variant call.">"#.as_bytes());
+    // header.push_record(r#"##INFO=<ID=DelShift3,Number=1,Type=Integer,Description="The number of bases to be shifted 3-prime for deletions due to alternative alignment(s).">"#.as_bytes());
+    // header.push_record(r#"##INFO=<ID=DistanceReadEndMean,Number=1,Type=Float,Description="The mean distance to the nearest 5 or 3 prime read end (whichever is closer) in all reads that support the variant call.">"#.as_bytes());
+    // header.push_record(r#"##INFO=<ID=DistanceReadEndMeanStDev,Number=1,Type=Float,Description="The standard deviation of the distance to the nearest 5 or 3 prime read end (whichever is closer) in all reads that support the variant call.">"#.as_bytes());
+    // header.push_record(r#"##INFO=<ID=DupRate,Number=1,Type=Float,Description="The duplication rate, if this call is a duplication.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=END,Number=1,Type=Integer,Description="The end location of this variant call.">"#.as_bytes());
-    header.push_record(r#"##INFO=<ID=DUPRATE,Number=1,Type=Float,Description="The duplication rate, if this call is a duplication.">"#.as_bytes());
-    header.push_record(r#"##INFO=<ID=HIAF,Number=1,Type=Float,Description="Allele frequency calculated using only high quality bases. Lossy due to rounding.">"#.as_bytes());
-    header.push_record(r#"##INFO=<ID=HICNT,Number=1,Type=Integer,Description="The number of high quality reads supporting the variant call.">"#.as_bytes());
-    header.push_record(r#"##INFO=<ID=HICOV,Number=1,Type=Integer,Description="The number of high quality reads at the locus of the variant call.">"#.as_bytes());
-    header.push_record(r#"##INFO=<ID=MEANMAPQ,Number=1,Type=Float,Description="The mean mapping quality (Phred) of all reads that directly support the variant call.">"#.as_bytes());
-    header.push_record(r#"##INFO=<ID=MSI,Number=1,Type=Float,Description="Whether the variant call is in a microsatellite (MSI) or not. Greater than 1 indicates MSI.">"#.as_bytes());
-    header.push_record(r#"##INFO=<ID=MSILEN,Number=1,Type=Float,Description="The length, in base pairs, of the microsatellite this variant call is in.">"#.as_bytes());
-    header.push_record(r#"##INFO=<ID=NM,Number=1,Type=Float,Description="The mean mismatches within all reads that directly support the variant call.">"#.as_bytes());
-    header.push_record(r#"##INFO=<ID=POSMEAN,Number=1,Type=Float,Description="The mean distance to the nearest 5 or 3 prime read end (whichever is closer) in all reads that support the variant call.">"#.as_bytes());
-    header.push_record(r#"##INFO=<ID=POSSTDEV,Number=1,Type=Float,Description="The standard deviation of the distance to the nearest 5 or 3 prime read end (whichever is closer) in all reads that support the variant call.">"#.as_bytes());
-    header.push_record(r#"##INFO=<ID=BASEQUALMEAN,Number=1,Type=Float,Description="The mean base quality (Phred) of all bases that directly support the variant call.">"#.as_bytes());
-    header.push_record(r#"##INFO=<ID=BASEQUALSTDEV,Number=1,Type=Float,Description="The standard deviation of the base quality (Phred)) of all bases that directly support the variant call.">"#.as_bytes());
-    header.push_record(r#"##INFO=<ID=SHIFT3,Number=1,Type=Integer,Description="The number of bases to be shifted 3-prime for deletions due to alternative alignment(s).">"#.as_bytes());
-    header.push_record(r#"##INFO=<ID=SN,Number=1,Type=Float,Description="The signal to noise ratio for this variant call.">"#.as_bytes());
-    header.push_record(r#"##INFO=<ID=SPANPAIR,Number=1,Type=Integer,Description="The number of paired-end reads supporting the variant call if this call is a structural variant.">"#.as_bytes());
-    header.push_record(r#"##INFO=<ID=SPLITREAD,Number=1,Type=Integer,Description="The number of split reads supporting the variant call if this call is a structural variant.">"#.as_bytes());
-    header.push_record(r#"##INFO=<ID=STRANDBIASPVALUE,Number=1,Type=Float,Description="The Fisher test p-value for if you should reject the hypothesis that there is no strand bias. Not multiple hypothesis test corrected.">"#.as_bytes());
-    header.push_record(r#"##INFO=<ID=STRANDBIASODDRATIO,Number=1,Type=Float,Description="The odds ratio for strand bias for this variant call.">"#.as_bytes());
+    // header.push_record(r#"##INFO=<ID=MapQMean,Number=1,Type=Float,Description="The mean mapping quality (Phred) of all reads that directly support the variant call.">"#.as_bytes());
+    // header.push_record(r#"##INFO=<ID=MismatchesMean,Number=1,Type=Float,Description="The mean mismatches within all reads that directly support the variant call.">"#.as_bytes());
+    // header.push_record(r#"##INFO=<ID=MSI,Number=1,Type=Float,Description="Whether the variant call is in a microsatellite (MSI) or not. Greater than 1 indicates MSI.">"#.as_bytes());
+    // header.push_record(r#"##INFO=<ID=MSILen,Number=1,Type=Float,Description="The length, in base pairs, of the microsatellite this variant call is in.">"#.as_bytes());
+    // header.push_record(r#"##INFO=<ID=SignalToNoise,Number=1,Type=Float,Description="The signal to noise ratio for this variant call.">"#.as_bytes());
+    // header.push_record(r#"##INFO=<ID=SpanPair,Number=1,Type=Integer,Description="The number of paired-end reads supporting the variant call if this call is a structural variant.">"#.as_bytes());
+    // header.push_record(r#"##INFO=<ID=SplitRead,Number=1,Type=Integer,Description="The number of split reads supporting the variant call if this call is a structural variant.">"#.as_bytes());
+    // header.push_record(r#"##INFO=<ID=StrandBias,Number=1,Type=String,Description="Strand bias flags (UnDetected, Detected, TooFewReads) in the format `reference`:`alternate`.">"#.as_bytes());
+    // header.push_record(r#"##INFO=<ID=StrandBiasAlt,Number=2,Type=Integer,Description="The number of variant call forward and reverse reads in the format `forward`:`reverse`.">"#.as_bytes());
+    // header.push_record(r#"##INFO=<ID=StrandBiasOddRatio,Number=1,Type=Float,Description="The odds ratio for strand bias for this variant call.">"#.as_bytes());
+    // header.push_record(r#"##INFO=<ID=StrandBiasPValue,Number=1,Type=Float,Description="The Fisher test p-value for if you should reject the hypothesis that there is no strand bias. Not multiple hypothesis test corrected.">"#.as_bytes());
+    // header.push_record(r#"##INFO=<ID=StrandBiasRef,Number=2,Type=Integer,Description="The number of reference forward and reverse reads in the format `forward`:`reverse`.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="The length of structural variant in base pairs of reference genome, if this call is a structural variant.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=SVTYPE,Number=1,Type=String,Description="The structural variant type (BND, CNV, DEL, DUP, INS, INV), if this call is a structural variant.">"#.as_bytes());
     header.push_record(r#"##FILTER=<ID=PASS,Description="The variant call has passed all filters and may be considered for downstream analysis.">"#.as_bytes());
@@ -413,7 +417,6 @@ pub fn tumor_only_header(sample: &str) -> Header {
 
 #[cfg(test)]
 mod tests {
-    use anyhow::Result;
     use pretty_assertions::assert_eq;
     use rstest::*;
     use rust_htslib::bcf::{Format, Read};
@@ -541,11 +544,37 @@ mod tests {
     }
 
     #[rstest]
-    fn test_maybe_infinite_f32_odds_ratio(
-        _variants: Vec<TumorOnlyVariant>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        // TODO: Implement this test using serde-test helpers.
-        Ok(())
+    #[case("Inf", 0.0)]
+    #[case("inf", 0.0)]
+    #[case("0.5", 2.0)]
+    #[case("0.25", 4.0)]
+    #[case("0.1", 10.0)]
+    #[case("10.0", 10.0)]
+    #[case("2.0", 2.0)]
+    #[case("1.0", 1.0)]
+    #[case("0.0", 0.0)]
+    fn test_maybe_infinite_f32_odds_ratio(#[case] input: &'static str, #[case] expected: f32) {
+        use serde::Deserialize;
+        use serde_test::{Token, assert_de_tokens};
+
+        #[derive(Debug, Deserialize, PartialEq)]
+        struct TestStruct {
+            #[serde(deserialize_with = "maybe_infinite_f32_odds_ratio")]
+            value: f32,
+        }
+
+        assert_de_tokens(
+            &TestStruct { value: expected },
+            &[
+                Token::Struct {
+                    name: "TestStruct",
+                    len: 1,
+                },
+                Token::BorrowedStr("value"),
+                Token::BorrowedStr(input),
+                Token::StructEnd,
+            ],
+        );
     }
 
     #[test]
@@ -556,7 +585,7 @@ mod tests {
         let reader = VcfReader::from_path(&file.path()).expect("Error opening tempfile!");
         let records = reader.header().header_records();
         let samples = reader.header().samples();
-        assert_eq!(records.len(), 38);
+        assert_eq!(records.len(), 16);
         assert_eq!(samples.len(), 1);
         assert!(samples.iter().all(|&s| s == "dna00001".as_bytes()));
     }
