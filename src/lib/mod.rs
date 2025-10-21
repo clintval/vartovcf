@@ -96,7 +96,7 @@ where
         .name("main")
         .verb("Processed")
         .noun("variant records")
-        .unit(10_000)
+        .unit(100_000)
         .build();
 
     let mut carry = csv::StringRecord::new();
