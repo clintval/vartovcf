@@ -78,7 +78,6 @@ where
         "The only mode currently supported is [TumorOnly]."
     );
 
-    // TODO: Implement a way to peek forward so we can parameterize the header based on the input.
     let mut header = tumor_only_header(sample);
 
     fasta_contigs_to_vcf_header(&fasta, &mut header);
@@ -144,52 +143,48 @@ where
             variant.set_qual(qual)
         }
 
-        variant.push_info_float(b"ADJAF", &[var.af_adjusted])?;
-        variant.push_info_float(b"BASEQUALMEAN", &[var.base_quality_mean])?;
-        variant.push_info_float(b"BASEQUALSTDEV", &[var.stdev_base_stdev])?;
-        variant.push_info_string(b"BIAS", &[var.strand_bias.to_string().as_bytes()])?;
-        variant.push_info_integer(b"BIASALT", &[var.alt_forward, var.alt_reverse])?;
-        variant.push_info_integer(b"BIASREF", &[var.ref_forward, var.ref_reverse])?;
+        variant.push_info_float(b"BaseQualMean", &[var.base_quality_mean])?;
+        variant.push_info_float(b"BaseQualStDev", &[var.stdev_base_stdev])?;
+        variant.push_info_integer(b"DelShift3", &[var.num_bases_3_prime_shift_for_deletions])?;
+        variant.push_info_float(b"DistanceReadEndMean", &[var.mean_position_in_read])?;
+        variant.push_info_float(b"DistanceReadEndMeanStDev", &[var.stdev_position_in_read])?;
 
         if let Some(duplication_rate) = var.duplication_rate {
-            variant.push_info_float(b"DUPRATE", &[duplication_rate])?;
+            variant.push_info_float(b"DupRate", &[duplication_rate])?;
         } else {
             // NB: Without clearing the fields, you'll end up with stale references.
-            variant.clear_info_float(b"DUPRATE")?;
+            variant.clear_info_float(b"DupRate")?;
         }
 
         variant.push_info_integer(b"END", &[var.end as i32])?;
-        variant.push_info_float(b"HIAF", &[var.af_high_quality_bases])?;
-        variant.push_info_integer(b"HICNT", &[var.high_quality_variant_reads])?;
-        variant.push_info_integer(b"HICOV", &[var.high_quality_total_reads])?;
-        variant.push_info_float(b"MEANMAPQ", &[var.mean_mapping_quality])?;
+        variant.push_info_float(b"MapQMean", &[var.mean_mapping_quality])?;
+        variant.push_info_float(b"MismatchesMean", &[var.mean_mismatches_in_reads])?;
         variant.push_info_integer(b"MSI", &[var.microsatellite])?;
-        variant.push_info_integer(b"MSILEN", &[var.microsatellite_length])?;
-        variant.push_info_float(b"NM", &[var.mean_mismatches_in_reads])?;
-        variant.push_info_float(b"POSMEAN", &[var.mean_position_in_read])?;
-        variant.push_info_float(b"POSSTDEV", &[var.stdev_position_in_read])?;
-        variant.push_info_integer(b"SHIFT3", &[var.num_bases_3_prime_shift_for_deletions])?;
-        variant.push_info_integer(b"SN", &[var.signal_to_noise])?;
+        variant.push_info_integer(b"MSILen", &[var.microsatellite_length])?;
+        variant.push_info_integer(b"SignalToNoise", &[var.signal_to_noise])?;
 
         if let Some(sv_info) = &var.sv_info {
-            variant.push_info_integer(b"SPLITREAD", &[sv_info.supporting_split_reads])?;
-            variant.push_info_integer(b"SPANPAIR", &[sv_info.supporting_pairs])?;
+            variant.push_info_integer(b"SpanPair", &[sv_info.supporting_pairs])?;
+            variant.push_info_integer(b"SplitRead", &[sv_info.supporting_split_reads])?;
         } else {
             // NB: Without clearing the fields, you'll end up with stale references.
-            variant.clear_info_integer(b"SPLITREAD")?;
-            variant.clear_info_integer(b"SPANPAIR")?;
+            variant.clear_info_integer(b"SpanPair")?;
+            variant.clear_info_integer(b"SplitRead")?;
         }
 
-        variant.push_info_float(b"STRANDBIASODDRATIO", &[var.strand_bias_odds_ratio])?;
-        variant.push_info_float(b"STRANDBIASPVALUE", &[var.strand_bias_p_value])?;
+        variant.push_info_string(b"StrandBias", &[var.strand_bias.to_string().as_bytes()])?;
+        variant.push_info_integer(b"StrandBiasAlt", &[var.alt_forward, var.alt_reverse])?;
+        variant.push_info_float(b"StrandBiasOddRatio", &[var.strand_bias_odds_ratio])?;
+        variant.push_info_float(b"StrandBiasPValue", &[var.strand_bias_p_value])?;
+        variant.push_info_integer(b"StrandBiasRef", &[var.ref_forward, var.ref_reverse])?;
 
         if VALID_SV_TYPES.contains(&var.variant_type) {
-            variant.push_info_integer(b"SVLEN", &[var.length()])?;
-            variant.push_info_string(b"SVTYPE", &[var.variant_type.as_bytes()])?;
+            variant.push_info_integer(b"SVLen", &[var.length()])?;
+            variant.push_info_string(b"SVType", &[var.variant_type.as_bytes()])?;
         } else {
             // NB: Without clearing the fields, you'll end up with stale references.
-            variant.clear_info_integer(b"SVLEN")?;
-            variant.clear_info_integer(b"SVTYPE")?;
+            variant.clear_info_integer(b"SVLen")?;
+            variant.clear_info_integer(b"SVType")?;
         }
 
         variant.push_genotypes(var.gt_value(0.25))?;
