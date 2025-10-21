@@ -399,8 +399,8 @@ pub fn tumor_only_header(sample: &str) -> Header {
     header.push_record(r#"##INFO=<ID=StrandBiasOddRatio,Number=1,Type=Float,Description="The odds ratio for strand bias for this variant call.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=StrandBiasPValue,Number=1,Type=Float,Description="The Fisher test p-value for if you should reject the hypothesis that there is no strand bias. Not multiple hypothesis test corrected.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=StrandBiasRef,Number=2,Type=Integer,Description="The number of reference forward and reverse reads in the format `forward`:`reverse`.">"#.as_bytes());
-    header.push_record(r#"##INFO=<ID=SVLen,Number=1,Type=Integer,Description="The length of structural variant in base pairs of reference genome, if this call is a structural variant.">"#.as_bytes());
-    header.push_record(r#"##INFO=<ID=SVType,Number=1,Type=String,Description="The structural variant type (BND, CNV, DEL, DUP, INS, INV), if this call is a structural variant.">"#.as_bytes());
+    header.push_record(r#"##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="The length of structural variant in base pairs of reference genome, if this call is a structural variant.">"#.as_bytes());
+    header.push_record(r#"##INFO=<ID=SVTYPE,Number=1,Type=String,Description="The structural variant type (BND, CNV, DEL, DUP, INS, INV), if this call is a structural variant.">"#.as_bytes());
     header.push_record(r#"##FILTER=<ID=PASS,Description="The variant call has passed all filters and may be considered for downstream analysis.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=GT,Number=1,Type=String,Description="The genotype for this sample.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=AD,Number=R,Type=Integer,Description="The allelic depths for the REF and ALT alleles.">"#.as_bytes());
@@ -555,7 +555,7 @@ mod tests {
     #[case("0.0", 0.0)]
     fn test_maybe_infinite_f32_odds_ratio(#[case] input: &'static str, #[case] expected: f32) {
         use serde::Deserialize;
-        use serde_test::{assert_de_tokens, Token};
+        use serde_test::{Token, assert_de_tokens};
 
         #[derive(Debug, Deserialize, PartialEq)]
         struct TestStruct {
@@ -566,7 +566,10 @@ mod tests {
         assert_de_tokens(
             &TestStruct { value: expected },
             &[
-                Token::Struct { name: "TestStruct", len: 1 },
+                Token::Struct {
+                    name: "TestStruct",
+                    len: 1,
+                },
                 Token::BorrowedStr("value"),
                 Token::BorrowedStr(input),
                 Token::StructEnd,

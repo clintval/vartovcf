@@ -19,8 +19,8 @@
 ##INFO=<ID=StrandBiasOddRatio,Number=1,Type=Float,Description="The odds ratio for strand bias for this variant call.">
 ##INFO=<ID=StrandBiasPValue,Number=1,Type=Float,Description="The Fisher test p-value for if you should reject the hypothesis that there is no strand bias. Not multiple hypothesis test corrected.">
 ##INFO=<ID=StrandBiasRef,Number=2,Type=Integer,Description="The number of reference forward and reverse reads in the format `forward`:`reverse`.">
-##INFO=<ID=SVLen,Number=1,Type=Integer,Description="The length of structural variant in base pairs of reference genome, if this call is a structural variant.">
-##INFO=<ID=SVType,Number=1,Type=String,Description="The structural variant type (BND, CNV, DEL, DUP, INS, INV), if this call is a structural variant.">
+##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="The length of structural variant in base pairs of reference genome, if this call is a structural variant.">
+##INFO=<ID=SVTYPE,Number=1,Type=String,Description="The structural variant type (BND, CNV, DEL, DUP, INS, INV), if this call is a structural variant.">
 ##FILTER=<ID=PASS,Description="The variant call has passed all filters and may be considered for downstream analysis.">
 ##FORMAT=<ID=GT,Number=1,Type=String,Description="The genotype for this sample.">
 ##FORMAT=<ID=AD,Number=R,Type=Integer,Description="The allelic depths for the REF and ALT alleles.">
@@ -37,9 +37,9 @@
 ##contig=<ID=chr13,length=114364328>
 ##reference=tests/reference.fa
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	dna00001
-chr12	112450447	.	A	<INV>	0	.	BaseQualMean=90;BaseQualStDev=1;DelShift3=0;DistanceReadEndMean=58;DistanceReadEndMeanStDev=1;END=123513818;MapQMean=33;MismatchesMean=0;MSI=0;MSILen=0;SignalToNoise=2;SpanPair=1;SplitRead=1;StrandBias=UnDetected:TooFewReads;StrandBiasAlt=1,0;StrandBiasOddRatio=0;StrandBiasPValue=1;StrandBiasRef=3991,2588;SVLen=11063372;SVType=INV	GT:AD:DP:VD	0/0:6579,1:6775:1
-chr12	112450447	.	A	<DUP>	0	.	BaseQualMean=90;BaseQualStDev=1;DelShift3=0;DistanceReadEndMean=58;DistanceReadEndMeanStDev=1;END=123513818;MapQMean=33;MismatchesMean=0;MSI=0;MSILen=0;SignalToNoise=2;SpanPair=1;SplitRead=1;StrandBias=UnDetected:TooFewReads;StrandBiasAlt=1,0;StrandBiasOddRatio=10;StrandBiasPValue=1;StrandBiasRef=3991,2588;SVLen=11063372;SVType=DUP;DupRate=0.001	GT:AD:DP:VD	0/0:6579,1:6775:1
-chr1	114713883	.	G	A	0	.	BaseQualMean=90;BaseQualStDev=0;DelShift3=0;DistanceReadEndMean=13;DistanceReadEndMeanStDev=0;END=114713883;MapQMean=60;MismatchesMean=2;MSI=1;MSILen=1;SignalToNoise=2;StrandBias=UnDetected:TooFewReads;StrandBiasAlt=1,0;StrandBiasOddRatio=4;StrandBiasPValue=0.34385;StrandBiasRef=2766,5280	GT:AD:DP:VD	0/0:8046,1:8104:1
-chr13	24684729	.	G	<DEL>	90	.	BaseQualMean=90;BaseQualStDev=1;DelShift3=0;DistanceReadEndMean=60.5;DistanceReadEndMeanStDev=1;END=28034141;MapQMean=60;MismatchesMean=0;MSI=0;MSILen=0;SignalToNoise=4;SpanPair=1;SplitRead=1;StrandBias=TooFewReads:TooFewReads;StrandBiasAlt=0,2;StrandBiasOddRatio=2;StrandBiasPValue=1;StrandBiasRef=0,0;SVLen=-3349413;SVType=DEL	GT:AD:DP:VD	0/1:0,2:7463:2
-chr1	114713883	.	G	T	0	.	BaseQualMean=90;BaseQualStDev=0;DelShift3=0;DistanceReadEndMean=28;DistanceReadEndMeanStDev=0;END=114713883;MapQMean=60;MismatchesMean=1;MSI=1;MSILen=1;SignalToNoise=2;StrandBias=UnDetected:TooFewReads;StrandBiasAlt=0,1;StrandBiasOddRatio=0;StrandBiasPValue=1;StrandBiasRef=2766,5280	GT:AD:DP:VD	1/1:8046,1:8104:1
-chr1	114713880	.	T	A	0	.	BaseQualMean=90;BaseQualStDev=0;DelShift3=0;DistanceReadEndMean=18;DistanceReadEndMeanStDev=0;END=114713880;MapQMean=60;MismatchesMean=1;MSI=2;MSILen=1;SignalToNoise=2;StrandBias=UnDetected:TooFewReads;StrandBiasAlt=1,0;StrandBiasOddRatio=-inf;StrandBiasPValue=0.36916;StrandBiasRef=3001,5130	GT:AD:DP:VD	0/0:8131,1:8211:1
+chr12	112450447	.	A	<INV>	0	.	END=123513818;SVLEN=11063372;SVTYPE=INV	GT:AD:DP:VD	0/0:6579,1:6775:1
+chr12	112450447	.	A	<DUP>	0	.	END=123513818;SVLEN=11063372;SVTYPE=DUP	GT:AD:DP:VD	0/0:6579,1:6775:1
+chr1	114713883	.	G	A	0	.	END=114713883	GT:AD:DP:VD	0/0:8046,1:8104:1
+chr13	24684729	.	G	<DEL>	90	.	END=28034141;SVLEN=-3349413;SVTYPE=DEL	GT:AD:DP:VD	0/1:0,2:7463:2
+chr1	114713883	.	G	T	0	.	END=114713883	GT:AD:DP:VD	1/1:8046,1:8104:1
+chr1	114713880	.	T	A	0	.	END=114713880	GT:AD:DP:VD	0/0:8131,1:8211:1
