@@ -10,6 +10,24 @@ Convert variants from VarDict/VarDictJava into VCF v4.2 format.
 
 ![The Pacific Northwest - Fish Lake](.github/img/cover.jpg)
 
+Install with the Conda or Mamba package manager after setting your [Bioconda channels](https://bioconda.github.io/#usage):
+
+```bash
+❯ mamba install vartovcf
+```
+
+### Features
+
+- Unlike the Perl script bundled with VarDict, this tool streams record-by-record
+- This tool is kept lean on purpose and is solely responsible for fast format conversion 
+- The output is compliant with the VCF v4.2 and v4.3 specifications
+- Output VCF records are unsorted and a call to `bcftools sort` is recommended
+- At this time, only tumor-only mode (`var2vcf_valid.pl`) is supported
+
+### Example Usage
+
+Replace to call to `var2vcf_valid.pl` with `vartovcf` in a typical VarDictJava stream like:
+
 ```bash
 ❯ vardict-java \
     -b input.bam \
@@ -22,26 +40,12 @@ Convert variants from VarDict/VarDictJava into VCF v4.2 format.
   | bcftools sort -Oz > variants.vcf.gz
 ```
 
-#### Features
-
-- Unlike the Perl script bundled with VarDict, this tool streams record-by-record
-- This tool is kept lean on purpose and is solely responsible for fast format conversion 
-- The output is compliant with the VCF v4.2 and v4.3 specifications
-- Output VCF records are unsorted and a call to `bcftools sort` is recommended
-- At this time, only tumor-only mode (`var2vcf_valid.pl`) is supported
-
-#### Benchmarks
+### Benchmarks
 
 ```bash
 ❯ vartovcf --reference hs38DH.fa --sample dna00001 < test.var > /dev/null
 [2025-10-21T01:16:49Z INFO  vartovcf] Input stream: STDIN
 [2025-10-21T01:16:49Z INFO  vartovcf] Output stream: STDOUT
-[2025-10-21T01:16:49Z INFO  proglog] [main] Processed 10000 variant records
-[2025-10-21T01:16:49Z INFO  proglog] [main] Processed 20000 variant records
-[2025-10-21T01:16:49Z INFO  proglog] [main] Processed 30000 variant records
-[2025-10-21T01:16:49Z INFO  proglog] [main] Processed 40000 variant records
-[2025-10-21T01:16:49Z INFO  proglog] [main] Processed 50000 variant records
-[2025-10-21T01:16:49Z INFO  proglog] [main] Processed 60000 variant records
 [2025-10-21T01:16:49Z INFO  proglog] [main] Processed 60181 variant records
 
 ❯ hyperfine --warmup 5 'vartovcf -r hs38DH.fa -s dna00001 < test.var > /dev/null'
