@@ -69,7 +69,14 @@ fn main() -> Result<(), Error> {
         _ => info!("Output stream: STDOUT"),
     }
 
-    match vartovcf(input, opt.output, &opt.reference, &opt.sample, &opt.mode, opt.skip_non_variants) {
+    match vartovcf(
+        input,
+        opt.output,
+        &opt.reference,
+        &opt.sample,
+        &opt.mode,
+        opt.skip_non_variants,
+    ) {
         Ok(exit_code) => process::exit(exit_code),
         Err(except) => panic!("{}", except),
     }

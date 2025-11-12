@@ -236,26 +236,29 @@ mod tests {
             true,
         )?;
         assert_eq!(exit, 0);
-        
+
         // Read the output and verify no non-variant sites exist
-        use rust_htslib::bcf::{Reader as VcfReader, Read};
+        use rust_htslib::bcf::{Read, Reader as VcfReader};
         let mut reader = VcfReader::from_path(&output.path()).expect("Error opening output file!");
-        
+
         let mut record_count = 0;
         for record_result in reader.records() {
             let record = record_result?;
             let alleles = record.alleles();
-            
+
             // Verify that REF != ALT (i.e., no non-variant sites)
             // ALT should not be "." which represents non-variants
             assert_ne!(alleles.len(), 0, "Record should have alleles");
             if alleles.len() >= 2 {
                 let alt = alleles[1];
-                assert_ne!(alt, b".", "Non-variant site found when --skip-non-variants is true");
+                assert_ne!(
+                    alt, b".",
+                    "Non-variant site found when --skip-non-variants is true"
+                );
             }
             record_count += 1;
         }
-        
+
         // Verify we got some records (not all were filtered)
         assert!(record_count > 0, "No records found in output");
         Ok(())
