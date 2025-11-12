@@ -114,7 +114,6 @@ where
             .deserialize(None)
             .expect("Could not deserialize record!");
 
-        // Skip non-variant sites if the flag is set
         if skip_non_variants && var.ref_allele == var.alt_allele {
             continue;
         }
