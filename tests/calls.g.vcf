@@ -1,5 +1,5 @@
 ##fileformat=VCFv4.2
-##source=vartovcf-1.0.0
+##source=vartovcf-1.1.0
 ##INFO=<ID=END,Number=1,Type=Integer,Description="The end location of this variant call.">
 ##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="The length of structural variant in base pairs of reference genome, if this call is a structural variant.">
 ##INFO=<ID=SVTYPE,Number=1,Type=String,Description="The structural variant type (BND, CNV, DEL, DUP, INS, INV), if this call is a structural variant.">
