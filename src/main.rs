@@ -39,6 +39,10 @@ struct Opt {
     /// Variant calling mode.
     #[structopt(short = "m", long = "--mode", default_value = "TumorOnly", possible_values = &VarDictMode::VARIANTS)]
     mode: VarDictMode,
+
+    /// Skip non-variant sites (where ref_allele == alt_allele)
+    #[structopt(long = "--skip-non-variants")]
+    skip_non_variants: bool,
 }
 
 /// Main binary entrypoint.
@@ -65,7 +69,14 @@ fn main() -> Result<(), Error> {
         _ => info!("Output stream: STDOUT"),
     }
 
-    match vartovcf(input, opt.output, &opt.reference, &opt.sample, &opt.mode) {
+    match vartovcf(
+        input,
+        opt.output,
+        &opt.reference,
+        &opt.sample,
+        &opt.mode,
+        opt.skip_non_variants,
+    ) {
         Ok(exit_code) => process::exit(exit_code),
         Err(except) => panic!("{}", except),
     }

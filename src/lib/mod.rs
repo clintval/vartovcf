@@ -54,6 +54,7 @@ pub enum VarDictMode {
 /// * `fasta` - The reference sequence FASTA file, must be indexed
 /// * `sample` - The sample name
 /// * `mode` - The variant calling modes for VarDict/VarDictJava
+/// * `skip_non_variants` - Skip non-variant sites (where ref_allele == alt_allele)
 ///
 /// # Returns
 ///
@@ -65,6 +66,7 @@ pub fn vartovcf<I, R>(
     fasta: R,
     sample: &str,
     mode: &VarDictMode,
+    skip_non_variants: bool,
 ) -> Result<i32, Box<dyn error::Error>>
 where
     I: Read,
@@ -111,6 +113,10 @@ where
         let var: TumorOnlyVariant = carry
             .deserialize(None)
             .expect("Could not deserialize record!");
+
+        if skip_non_variants && var.ref_allele == var.alt_allele {
+            continue;
+        }
 
         let key = format!(
             "{}-{}-{}-{}",
@@ -190,6 +196,7 @@ mod tests {
             &reference,
             &sample,
             &TumorOnly,
+            false,
         )?;
         assert_eq!(exit, 0);
         assert!(diff(&output.path().to_str().unwrap(), "tests/calls.vcf"));
@@ -208,7 +215,51 @@ mod tests {
             &reference,
             &sample,
             &TumorOnly,
+            false,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_skip_non_variants_flag() -> Result<(), Box<dyn std::error::Error>> {
+        let sample = "dna00001";
+        let input = BufReader::new(File::open("tests/calls.g.var")?);
+        let output = NamedTempFile::new().expect("Cannot create temporary file!");
+        let reference = PathBuf::from("tests/reference.fa");
+        let exit = vartovcf(
+            input,
+            Some(output.path().into()),
+            &reference,
+            &sample,
+            &TumorOnly,
+            true,
+        )?;
+        assert_eq!(exit, 0);
+
+        // Read the output and verify no non-variant sites exist
+        use rust_htslib::bcf::{Read, Reader as VcfReader};
+        let mut reader = VcfReader::from_path(&output.path()).expect("Error opening output file!");
+
+        let mut record_count = 0;
+        for record_result in reader.records() {
+            let record = record_result?;
+            let alleles = record.alleles();
+
+            // Verify that REF != ALT (i.e., no non-variant sites)
+            // ALT should not be "." which represents non-variants
+            assert_ne!(alleles.len(), 0, "Record should have alleles");
+            if alleles.len() >= 2 {
+                let alt = alleles[1];
+                assert_ne!(
+                    alt, b".",
+                    "Non-variant site found when --skip-non-variants is true"
+                );
+            }
+            record_count += 1;
+        }
+
+        // Verify we got some records (not all were filtered)
+        assert!(record_count > 0, "No records found in output");
+        Ok(())
     }
 }
