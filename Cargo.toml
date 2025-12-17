@@ -24,6 +24,7 @@ name = "vartovcf"
 path = "src/main.rs"
 
 [dependencies]
+ahash = "0.8"
 anyhow = "1.0.100"
 bio-types = "1.0.4"
 case = "1.0.0"

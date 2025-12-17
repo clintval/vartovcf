@@ -1,13 +1,13 @@
 //! A library for working with VarDict/VarDictJava output.
 #![warn(missing_docs)]
 
+use ahash::AHashSet;
 use anyhow::Result;
 use csv::ReaderBuilder;
 use log::*;
 use proglog::ProgLogBuilder;
 use rust_htslib::bcf::Format;
 use rust_htslib::bcf::Writer as VcfWriter;
-use std::collections::HashSet;
 use std::error;
 use std::fmt::Debug;
 use std::io::Read;
@@ -103,7 +103,7 @@ where
 
     let mut carry = csv::StringRecord::new();
     let mut variant = writer.empty_record();
-    let mut seen: HashSet<String> = HashSet::new();
+    let mut seen: AHashSet<String> = AHashSet::new();
 
     while reader.read_record(&mut carry)? {
         if carry.iter().collect::<Vec<&str>>()[5].is_empty() {
