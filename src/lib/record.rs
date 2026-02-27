@@ -388,7 +388,7 @@ pub fn tumor_only_header(sample: &str) -> Header {
     // header.push_record(r#"##INFO=<ID=DupRate,Number=1,Type=Float,Description="The duplication rate, if this call is a duplication.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=END,Number=1,Type=Integer,Description="The end location of this variant call.">"#.as_bytes());
     // header.push_record(r#"##INFO=<ID=MapQMean,Number=1,Type=Float,Description="The mean mapping quality (Phred) of all reads that directly support the variant call.">"#.as_bytes());
-    // header.push_record(r#"##INFO=<ID=MismatchesMean,Number=1,Type=Float,Description="The mean mismatches within all reads that directly support the variant call.">"#.as_bytes());
+    header.push_record(r#"##INFO=<ID=MEAN_READ_NM,Number=1,Type=Float,Description="The mean mismatches within all reads that directly support the variant call.">"#.as_bytes());
     // header.push_record(r#"##INFO=<ID=MSI,Number=1,Type=Float,Description="Whether the variant call is in a microsatellite (MSI) or not. Greater than 1 indicates MSI.">"#.as_bytes());
     // header.push_record(r#"##INFO=<ID=MSILen,Number=1,Type=Float,Description="The length, in base pairs, of the microsatellite this variant call is in.">"#.as_bytes());
     // header.push_record(r#"##INFO=<ID=SignalToNoise,Number=1,Type=Float,Description="The signal to noise ratio for this variant call.">"#.as_bytes());
@@ -585,7 +585,7 @@ mod tests {
         let reader = VcfReader::from_path(&file.path()).expect("Error opening tempfile!");
         let records = reader.header().header_records();
         let samples = reader.header().samples();
-        assert_eq!(records.len(), 16);
+        assert_eq!(records.len(), 17);
         assert_eq!(samples.len(), 1);
         assert!(samples.iter().all(|&s| s == "dna00001".as_bytes()));
     }

@@ -148,6 +148,7 @@ where
         }
 
         variant.push_info_integer(b"END", &[var.end as i32])?;
+        variant.push_info_float(b"MEAN_READ_NM", &[var.mean_mismatches_in_reads])?;
 
         if VALID_SV_TYPES.contains(&var.variant_type) {
             variant.push_info_integer(b"SVLEN", &[var.length()])?;
