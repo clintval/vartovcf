@@ -1,6 +1,6 @@
 [package]
 name = "vartovcf"
-version = "1.4.0"
+version = "1.5.0"
 authors = ["Clint Valentine <valentine.clint@gmail.com>"]
 edition = "2024"
 license = "MIT"

@@ -1,5 +1,5 @@
 ##fileformat=VCFv4.2
-##source=vartovcf-1.4.0
+##source=vartovcf-1.5.0
 ##INFO=<ID=END,Number=1,Type=Integer,Description="The end location of this variant call.">
 ##INFO=<ID=MEAN_READ_NM,Number=1,Type=Float,Description="The mean mismatches within all reads that directly support the variant call.">
 ##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="The length of structural variant in base pairs of reference genome, if this call is a structural variant.">
