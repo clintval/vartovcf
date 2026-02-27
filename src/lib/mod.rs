@@ -106,7 +106,7 @@ where
     let mut seen: AHashSet<String> = AHashSet::new();
 
     while reader.read_record(&mut carry)? {
-        if carry.iter().collect::<Vec<&str>>()[5].is_empty() {
+        if carry.get(5).map_or(true, |f| f.is_empty()) {
             continue; // If the 5th field is empty, it's a record we need to avoid deserializing.
         }
 
