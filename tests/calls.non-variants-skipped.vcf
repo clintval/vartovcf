@@ -1,6 +1,7 @@
 ##fileformat=VCFv4.2
 ##source=vartovcf-1.4.0
 ##INFO=<ID=END,Number=1,Type=Integer,Description="The end location of this variant call.">
+##INFO=<ID=MEAN_READ_NM,Number=1,Type=Float,Description="The mean mismatches within all reads that directly support the variant call.">
 ##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="The length of structural variant in base pairs of reference genome, if this call is a structural variant.">
 ##INFO=<ID=SVTYPE,Number=1,Type=String,Description="The structural variant type (BND, CNV, DEL, DUP, INS, INV), if this call is a structural variant.">
 ##FILTER=<ID=PASS,Description="The variant call has passed all filters and may be considered for downstream analysis.">
@@ -19,7 +20,7 @@
 ##contig=<ID=chr13,length=114364328>
 ##reference=tests/reference.fa
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	dna00001
-chr1	190098264	.	C	A	0	.	END=190098264	GT:AD:DP:VD	0/0:13944,1:14082:1
-chr1	190098270	.	C	A	90	.	END=190098270	GT:AD:DP:VD	1/1:13786,2:13885:2
-chr1	190098270	.	CA	C	0	.	END=190098271	GT:AD:DP:VD	0/1:13591,1:13806:1
-chr1	190098271	.	A	G	0	.	END=190098271	GT:AD:DP:VD	0/0:13591,1:13806:1
+chr1	190098264	.	C	A	0	.	END=190098264;MEAN_READ_NM=1	GT:AD:DP:VD	0/0:13944,1:14082:1
+chr1	190098270	.	C	A	90	.	END=190098270;MEAN_READ_NM=2	GT:AD:DP:VD	1/1:13786,2:13885:2
+chr1	190098270	.	CA	C	0	.	END=190098271;MEAN_READ_NM=0	GT:AD:DP:VD	0/1:13591,1:13806:1
+chr1	190098271	.	A	G	0	.	END=190098271;MEAN_READ_NM=1	GT:AD:DP:VD	0/0:13591,1:13806:1
