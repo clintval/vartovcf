@@ -104,4 +104,22 @@ mod tests {
         assert!(diff(&output, "tests/calls.non-variants-skipped.vcf"));
         Ok(())
     }
+
+    #[test]
+    #[rustfmt::skip]
+    fn run_end_to_end_with_max_mean_mismatches() -> Result<(), Box<dyn std::error::Error>> {
+        let output = NamedTempFile::new().expect("Cannot create temporary file!");
+        let output = output.path().to_str().unwrap();
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        cmd
+            .arg("--reference").arg("tests/reference.fa")
+            .arg("--sample").arg("dna00001")
+            .arg("--input").arg("tests/calls.max-mismatches.var")
+            .arg("--output").arg(&output)
+            .arg("--max-mean-mismatches").arg("1.5")
+            .unwrap().assert().success();
+
+        assert!(diff(&output, "tests/calls.max-mismatches.vcf"));
+        Ok(())
+    }
 }

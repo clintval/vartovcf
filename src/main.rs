@@ -43,6 +43,10 @@ struct Opt {
     /// Skip non-variant sites (where ref_allele == alt_allele)
     #[structopt(long = "--skip-non-variants")]
     skip_non_variants: bool,
+
+    /// Filter out variants where the mean number of mismatches in reads exceeds this value
+    #[structopt(long = "--max-mean-mismatches")]
+    max_mean_mismatches: Option<f32>,
 }
 
 /// Main binary entrypoint.
@@ -76,6 +80,7 @@ fn main() -> Result<(), Error> {
         &opt.sample,
         &opt.mode,
         opt.skip_non_variants,
+        opt.max_mean_mismatches,
     ) {
         Ok(exit_code) => process::exit(exit_code),
         Err(except) => panic!("{}", except),

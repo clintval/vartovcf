@@ -55,6 +55,8 @@ pub enum VarDictMode {
 /// * `sample` - The sample name
 /// * `mode` - The variant calling modes for VarDict/VarDictJava
 /// * `skip_non_variants` - Skip non-variant sites (where ref_allele == alt_allele)
+/// * `max_mean_mismatches` - If set, filter out variants where mean mismatches in reads exceeds
+///   this value
 ///
 /// # Returns
 ///
@@ -67,6 +69,7 @@ pub fn vartovcf<I, R>(
     sample: &str,
     mode: &VarDictMode,
     skip_non_variants: bool,
+    max_mean_mismatches: Option<f32>,
 ) -> Result<i32, Box<dyn error::Error>>
 where
     I: Read,
@@ -115,6 +118,12 @@ where
             .expect("Could not deserialize record!");
 
         if skip_non_variants && var.ref_allele == var.alt_allele {
+            continue;
+        }
+
+        if let Some(max) = max_mean_mismatches
+            && var.mean_mismatches_in_reads > max
+        {
             continue;
         }
 
@@ -197,6 +206,7 @@ mod tests {
             &sample,
             &TumorOnly,
             false,
+            None,
         )?;
         assert_eq!(exit, 0);
         assert!(diff(&output.path().to_str().unwrap(), "tests/calls.vcf"));
@@ -216,6 +226,7 @@ mod tests {
             &sample,
             &TumorOnly,
             false,
+            None,
         );
         assert!(result.is_err());
     }
@@ -233,6 +244,7 @@ mod tests {
             &sample,
             &TumorOnly,
             true,
+            None,
         )?;
         assert_eq!(exit, 0);
 
