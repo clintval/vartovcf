@@ -32,7 +32,7 @@ csv = "1.4.0"
 env_logger = "0.11.8"
 log = "0.4.28"
 proglog = "0.4.0"
-rust-htslib = "0.51.0"
+rust-htslib = "0.46.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_with = { version = "3.15.0" }
 structopt = "0.3.26"
