@@ -168,6 +168,11 @@ where
         variant.push_format_float(b"AF", &[var.af_value()])?;
         variant.push_format_integer(b"HICNT", &[var.hicnt_value()])?;
         variant.push_format_float(b"REALIGNED_FRAC_OF_DP", &[var.realigned_frac_of_dp_value()])?;
+        variant.push_format_float(
+            b"MEAN_DIST_TO_READ_END",
+            &[var.mean_dist_to_read_end_value()],
+        )?;
+        variant.push_format_integer(b"ALT_READ_POS_VARIES", &[var.alt_read_pos_varies_value()])?;
         variant.push_format_float(b"QMEAN", &[var.qmean_value()])?;
         variant.push_format_float(b"MEAN_MISMATCHES", &[var.mean_mismatches_value()])?;
 
