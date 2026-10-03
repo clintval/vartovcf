@@ -411,7 +411,6 @@ pub fn tumor_only_header(sample: &str) -> Header {
     header.push_record(format!(r#"##FORMAT=<ID=GT,Number=1,Type=String,Description="The genotype inferred from the allele frequency alone, since VarDict does not genotype: 1/1 when AF >= {MIN_HOM_ALT_AF}, 0/1 for any other call with an ALT allele, and 0/0 when there is no ALT allele.">"#).as_bytes());
     header.push_record(r#"##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Read depth for REF then ALT as VarDict counts them: ALT is the reads carrying this allele and REF is the reads carrying the reference base at the variant's first internal base (the first deleted base for deletions, without insertion-carrying reads for insertions). REF is missing for Complex calls, where VarDict counts only their first base and can count a read as both, and REF is the only value when there is no ALT allele.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read depth as VarDict counts it at the variant's first internal base (POS+1 for deletions), the denominator of VarDict's AF: reads with any base quality, reads whose deletion spans the base, reference-matching soft-clipped bases, reads VarDict reassigned by realignment, and N calls only under -K; overlapping mates count twice unless VarDict ran with -u, and an insertion at the same position can make it the following base's depth. REF and ALT depths need not sum to DP.">"#.as_bytes());
-    header.push_record(r#"##FORMAT=<ID=VD,Number=1,Type=Integer,Description="The variant allele depth at this location.">"#.as_bytes());
     header.push_record(r#"##ALT=<ID=BND,Description="Region with an identified unambiguous single breakend.">"#.as_bytes());
     header.push_record(r#"##ALT=<ID=CNV,Description="Copy number variable region.">"#.as_bytes());
     header.push_record(r#"##ALT=<ID=DEL,Description="Deletion relative to the reference.">"#.as_bytes());
@@ -636,7 +635,7 @@ mod tests {
         let reader = VcfReader::from_path(file.path()).expect("Error opening tempfile!");
         let records = reader.header().header_records();
         let samples = reader.header().samples();
-        assert_eq!(records.len(), 17);
+        assert_eq!(records.len(), 16);
         assert_eq!(samples.len(), 1);
         assert!(samples.iter().all(|&s| s == "dna00001".as_bytes()));
     }

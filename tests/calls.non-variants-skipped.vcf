@@ -8,7 +8,6 @@
 ##FORMAT=<ID=GT,Number=1,Type=String,Description="The genotype inferred from the allele frequency alone, since VarDict does not genotype: 1/1 when AF >= 0.8, 0/1 for any other call with an ALT allele, and 0/0 when there is no ALT allele.">
 ##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Read depth for REF then ALT as VarDict counts them: ALT is the reads carrying this allele and REF is the reads carrying the reference base at the variant's first internal base (the first deleted base for deletions, without insertion-carrying reads for insertions). REF is missing for Complex calls, where VarDict counts only their first base and can count a read as both, and REF is the only value when there is no ALT allele.">
 ##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read depth as VarDict counts it at the variant's first internal base (POS+1 for deletions), the denominator of VarDict's AF: reads with any base quality, reads whose deletion spans the base, reference-matching soft-clipped bases, reads VarDict reassigned by realignment, and N calls only under -K; overlapping mates count twice unless VarDict ran with -u, and an insertion at the same position can make it the following base's depth. REF and ALT depths need not sum to DP.">
-##FORMAT=<ID=VD,Number=1,Type=Integer,Description="The variant allele depth at this location.">
 ##ALT=<ID=BND,Description="Region with an identified unambiguous single breakend.">
 ##ALT=<ID=CNV,Description="Copy number variable region.">
 ##ALT=<ID=DEL,Description="Deletion relative to the reference.">
@@ -20,7 +19,7 @@
 ##contig=<ID=chr13,length=114364328>
 ##reference=tests/reference.fa
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	dna00001
-chr1	190098264	.	C	A	0	.	END=190098264;MEAN_READ_NM=1	GT:AD:DP:VD	0/1:13944,1:14082:1
-chr1	190098270	.	C	A	90	.	END=190098270;MEAN_READ_NM=2	GT:AD:DP:VD	1/1:13786,2:13885:2
-chr1	190098270	.	CA	C	0	.	END=190098271;MEAN_READ_NM=0	GT:AD:DP:VD	0/1:13591,1:13806:1
-chr1	190098271	.	A	G	0	.	END=190098271;MEAN_READ_NM=1	GT:AD:DP:VD	0/1:13591,1:13806:1
+chr1	190098264	.	C	A	0	.	END=190098264;MEAN_READ_NM=1	GT:AD:DP	0/1:13944,1:14082
+chr1	190098270	.	C	A	90	.	END=190098270;MEAN_READ_NM=2	GT:AD:DP	1/1:13786,2:13885
+chr1	190098270	.	CA	C	0	.	END=190098271;MEAN_READ_NM=0	GT:AD:DP	0/1:13591,1:13806
+chr1	190098271	.	A	G	0	.	END=190098271;MEAN_READ_NM=1	GT:AD:DP	0/1:13591,1:13806
