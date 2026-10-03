@@ -4,7 +4,6 @@
 use ahash::AHashSet;
 use anyhow::Result;
 use csv::ReaderBuilder;
-use log::*;
 use proglog::ProgLogBuilder;
 use rust_htslib::bcf::Format;
 use rust_htslib::bcf::Writer as VcfWriter;
@@ -106,7 +105,7 @@ where
     let mut seen: AHashSet<String> = AHashSet::new();
 
     while reader.read_record(&mut carry)? {
-        if carry.get(5).map_or(true, |f| f.is_empty()) {
+        if carry.get(5).is_none_or(|f| f.is_empty()) {
             continue; // If the 5th field is empty, it's a record we need to avoid deserializing.
         }
 
@@ -195,12 +194,12 @@ mod tests {
             input,
             Some(output.path().into()),
             &reference,
-            &sample,
+            sample,
             &TumorOnly,
             false,
         )?;
         assert_eq!(exit, 0);
-        assert!(diff(&output.path().to_str().unwrap(), "tests/calls.vcf"));
+        assert!(diff(output.path().to_str().unwrap(), "tests/calls.vcf"));
         Ok(())
     }
 
@@ -214,7 +213,7 @@ mod tests {
             input,
             Some(output.path().into()),
             &reference,
-            &sample,
+            sample,
             &TumorOnly,
             false,
         );
@@ -231,7 +230,7 @@ mod tests {
             input,
             Some(output.path().into()),
             &reference,
-            &sample,
+            sample,
             &TumorOnly,
             true,
         )?;
@@ -239,7 +238,7 @@ mod tests {
 
         // Read the output and verify no non-variant sites exist
         use rust_htslib::bcf::{Read, Reader as VcfReader};
-        let mut reader = VcfReader::from_path(&output.path()).expect("Error opening output file!");
+        let mut reader = VcfReader::from_path(output.path()).expect("Error opening output file!");
 
         let mut record_count = 0;
         for record_result in reader.records() {

@@ -16,6 +16,12 @@ Install with the Conda or Mamba package manager after setting your [Bioconda cha
 ❯ mamba install vartovcf
 ```
 
+Or build from source with Rust 1.88 or newer, a C toolchain, and libclang (used by `bindgen` to generate the htslib bindings):
+
+```bash
+❯ cargo install --locked --git https://github.com/clintval/vartovcf
+```
+
 ### Features
 
 - Unlike the Perl script bundled with VarDict, this tool streams record-by-record
@@ -57,4 +63,14 @@ Benchmark #1: vartovcf -r /references/hs38DH.fa -s dna00001 < test.var > /dev/nu
 Benchmark #1: var2vcf_valid.pl -N dna00001 -f 0.0 -E < test.var > /dev/null
   Time (mean ± σ):     359.4 ms ±   2.5 ms    [User: 329.2 ms, System: 25.8 ms]
   Range (min … max):   356.1 ms … 363.6 ms    10 runs
+```
+
+### Development
+
+The checks CI runs are cargo aliases, so they can be run locally before pushing:
+
+```bash
+❯ cargo ci-fmt
+❯ cargo ci-lint
+❯ cargo ci-test
 ```

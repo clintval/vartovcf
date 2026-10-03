@@ -5,51 +5,55 @@ use std::path::PathBuf;
 use std::process;
 
 use anyhow::{Error, Result};
+use clap::Parser;
+use clap::builder::{PossibleValuesParser, TypedValueParser};
 use env_logger::Env;
 use log::*;
-use structopt::StructOpt;
 use strum::VariantNames;
 
 use vartovcflib::{VarDictMode, vartovcf};
 
-#[derive(Clone, Debug, StructOpt)]
-#[structopt(
-    setting = structopt::clap::AppSettings::ColoredHelp,
-    setting = structopt::clap::AppSettings::DeriveDisplayOrder,
-    rename_all = "kebab-case",
-    about
-)]
+#[derive(Clone, Debug, Parser)]
+#[command(version, about)]
 struct Opt {
     /// The indexed FASTA reference sequence file
-    #[structopt(short = "r", long = "--reference", parse(from_os_str))]
+    #[arg(short, long)]
     reference: PathBuf,
 
     /// The input sample name, must match input data stream
-    #[structopt(short = "s", long = "--sample")]
+    #[arg(short, long)]
     sample: String,
 
     /// Input VAR file or stream [default: /dev/stdin]
-    #[structopt(short = "i", long = "--input", parse(from_os_str))]
+    #[arg(short, long)]
     input: Option<PathBuf>,
 
     /// Output VCF file or stream [default: /dev/stdout]
-    #[structopt(short = "o", long = "--output", parse(from_os_str))]
+    #[arg(short, long)]
     output: Option<PathBuf>,
 
     /// Variant calling mode.
-    #[structopt(short = "m", long = "--mode", default_value = "TumorOnly", possible_values = &VarDictMode::VARIANTS)]
+    #[arg(
+        short,
+        long,
+        default_value = "TumorOnly",
+        value_parser = PossibleValuesParser::new(VarDictMode::VARIANTS).try_map(|mode| mode.parse::<VarDictMode>()),
+    )]
     mode: VarDictMode,
 
     /// Skip non-variant sites (where ref_allele == alt_allele)
-    #[structopt(long = "--skip-non-variants")]
+    #[arg(long)]
     skip_non_variants: bool,
 }
 
 /// Main binary entrypoint.
-#[cfg(not(tarpaulin_include))]
 fn main() -> Result<(), Error> {
     let env = Env::default().default_filter_or("info");
-    let opt = Opt::from_args();
+    // Usage errors exit 1 instead of clap's default of 2.
+    let opt = Opt::try_parse().unwrap_or_else(|err| {
+        let _ = err.print();
+        process::exit(if err.use_stderr() { 1 } else { 0 })
+    });
 
     env_logger::Builder::from_env(env).init();
 

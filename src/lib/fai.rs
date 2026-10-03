@@ -55,7 +55,7 @@ where
         .delimiter(b'\t')
         .has_headers(false)
         .from_path(&fai)
-        .unwrap_or_else(|_| panic!("Could not open an FAI reader for file path: {:?}", &fai));
+        .unwrap_or_else(|_| panic!("Could not open an FAI reader for file path: {:?}", fai));
 
     let mut carry = csv::StringRecord::new();
     let mut records: Vec<String> = Vec::new();
@@ -165,7 +165,7 @@ mod tests {
         fai: NamedTempFile,
         contig_header_lines: Vec<String>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let actual = vcf_contig_header_records(&fai.path())
+        let actual = vcf_contig_header_records(fai.path())
             .expect("Could not parse contig header records from file!");
         for (left, right) in actual.iter().zip(contig_header_lines.iter()) {
             assert_eq!(&left, &right)
@@ -178,21 +178,21 @@ mod tests {
         fai: NamedTempFile,
         contig_header_lines: Vec<String>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let actual = vcf_contig_header_records(&fai.path())
+        let actual = vcf_contig_header_records(fai.path())
             .expect("Could not parse contig header records from file!");
 
         let mut header = Header::default();
         contigs_to_vcf_header(&actual, &mut header);
 
         let file = NamedTempFile::new().expect("Cannot create temporary file!");
-        let _ = VcfWriter::from_path(&file.path(), &mut header, true, Format::Vcf).unwrap();
-        let reader = VcfReader::from_path(&file.path()).expect("Error opening tempfile!");
+        let _ = VcfWriter::from_path(file.path(), &header, true, Format::Vcf).unwrap();
+        let reader = VcfReader::from_path(file.path()).expect("Error opening tempfile!");
         let records = reader.header().header_records();
 
         fn header_record_matches_contig(record: &HeaderRecord, line: &str) -> bool {
             match record {
                 HeaderRecord::Contig { key, values } => {
-                    line == &format!(
+                    line == format!(
                         "##{}=<ID={},length={}>",
                         key, values["ID"], values["length"]
                     )
@@ -213,12 +213,12 @@ mod tests {
     #[test]
     fn test_fasta_path_to_vcf_header_exists() {
         let mut header = Header::default();
-        fasta_path_to_vcf_header(&"/references/hg19.fa", &mut header)
+        fasta_path_to_vcf_header("/references/hg19.fa", &mut header)
             .expect("Could not add the FASTA file path to the VCF header!");
 
         let file = NamedTempFile::new().expect("Cannot create temporary file!");
-        let _ = VcfWriter::from_path(&file.path(), &mut header, true, Format::Vcf).unwrap();
-        let reader = VcfReader::from_path(&file.path()).expect("Error opening tempfile!");
+        let _ = VcfWriter::from_path(file.path(), &header, true, Format::Vcf).unwrap();
+        let reader = VcfReader::from_path(file.path()).expect("Error opening tempfile!");
         let records = reader.header().header_records();
 
         let test = records.iter().any(|rec| match rec {

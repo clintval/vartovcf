@@ -1,0 +1,5 @@
+# The same checks CI runs, so `cargo ci-fmt`, `cargo ci-lint` and `cargo ci-test` reproduce CI locally.
+[alias]
+ci-fmt = "fmt --all -- --check"
+ci-lint = "clippy --all-targets --locked -- -D warnings"
+ci-test = "test --locked"
