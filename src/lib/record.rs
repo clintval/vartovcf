@@ -275,8 +275,8 @@ pub struct TumorOnlyVariant<'a> {
     /// The standard deviation of the base quality (Phred) of all bases that directly support
     /// the variant call.
     pub stdev_base_stdev: f32,
-    /// The Fisher test p-value for if you should reject the hypothesis that there is no strand
-    /// bias. Not multiple hypothesis test corrected.
+    /// The two-sided Fisher exact p-value that the ALT reads' forward/reverse split differs from the
+    /// REF reads' split.
     pub strand_bias_p_value: f32,
     #[serde(deserialize_with = "maybe_infinite_f32_odds_ratio")]
     /// The odds ratio for strand bias.
@@ -394,6 +394,16 @@ impl<'a> TumorOnlyVariant<'a> {
             f32::missing()
         } else {
             self.mean_mapping_quality
+        }
+    }
+
+    /// Return the "STRAND_BIAS_FISHER_P" formatted VCF field for this record: missing without an ALT
+    /// allele.
+    pub fn strand_bias_fisher_p_value(&self) -> f32 {
+        if self.ref_allele == self.alt_allele {
+            f32::missing()
+        } else {
+            self.strand_bias_p_value
         }
     }
 
@@ -541,6 +551,7 @@ pub fn tumor_only_header(sample: &str) -> Header {
     header.push_record(r#"##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Read depth for REF then ALT as VarDict counts them: ALT is the reads carrying this allele and REF is the reads carrying the reference base at the variant's first internal base (the first deleted base for deletions, without insertion-carrying reads for insertions). REF is missing for Complex calls, where VarDict counts only their first base and can count a read as both, and REF is the only value when there is no ALT allele.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=ADF,Number=R,Type=Integer,Description="Reads on the forward strand (SAM flag 0x10 unset) supporting REF then ALT, the forward half of AD as VarDict counts it: REF is missing for Complex calls and is the only value when there is no ALT allele. When VarDict runs with -u, overlapping mates count only through the reverse read.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=ADR,Number=R,Type=Integer,Description="Reads on the reverse strand (SAM flag 0x10 set) supporting REF then ALT, the reverse half of AD as VarDict counts it: REF is missing for Complex calls and is the only value when there is no ALT allele. When VarDict runs with -u, overlapping mates count only through the reverse read.">"#.as_bytes());
+    header.push_record(r#"##FORMAT=<ID=STRAND_BIAS_FISHER_P,Number=A,Type=Float,Description="Two-sided Fisher exact p-value that the ALT allele's forward/reverse read split differs from REF's, from VarDict's table of REF and ALT reads by SAM strand, not a test against 50:50; its REF counts are VarDict's, including the overcount on Complex calls. Rounded by VarDict to 5 decimals, so values below 0.000005 read 0. Missing when there is no ALT allele.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read depth as VarDict counts it at the variant's first internal base (POS+1 for deletions), the denominator of VarDict's AF: reads with any base quality, reads whose deletion spans the base, reference-matching soft-clipped bases, reads VarDict reassigned by realignment, and N calls only under -K; overlapping mates count twice unless VarDict ran with -u, and an insertion at the same position can make it the following base's depth. REF and ALT depths need not sum to DP.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=AF,Number=A,Type=Float,Description="Fraction of reads carrying the ALT allele, AD[1] / DP, computed by vartovcf at full precision rather than taken from VarDict's 4-decimal AF column, and clamped to [0, 1] because VarDict's ALT count can exceed DP; AD and DP keep the raw counts. Missing when there is no ALT allele or DP is 0.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=HICNT,Number=A,Type=Integer,Description="ALT reads whose mean base quality over the allele's bases is at least VarDict's -q; mapping quality is not considered. Missing when there is no ALT allele.">"#.as_bytes());
@@ -821,6 +832,24 @@ mod tests {
     }
 
     #[rstest]
+    fn test_tumor_only_variant_strand_bias_fisher_p_value_on_an_alt_call(
+        variants: Vec<TumorOnlyVariant<'static>>,
+    ) {
+        let mut variant = variants.into_iter().nth(2).unwrap();
+        variant.strand_bias_p_value = 0.34385;
+        assert_eq!(variant.strand_bias_fisher_p_value(), 0.34385);
+    }
+
+    #[rstest]
+    fn test_tumor_only_variant_strand_bias_fisher_p_value_is_missing_without_an_alt(
+        variants: Vec<TumorOnlyVariant<'static>>,
+    ) {
+        let mut variant = variants.into_iter().nth(2).unwrap();
+        variant.alt_allele = variant.ref_allele;
+        assert!(variant.strand_bias_fisher_p_value().is_missing());
+    }
+
+    #[rstest]
     fn test_tumor_only_variant_mean_mapq_value_on_an_alt_call(
         variants: Vec<TumorOnlyVariant<'static>>,
     ) {
@@ -984,7 +1013,7 @@ mod tests {
         let reader = VcfReader::from_path(file.path()).expect("Error opening tempfile!");
         let records = reader.header().header_records();
         let samples = reader.header().samples();
-        assert_eq!(records.len(), 23);
+        assert_eq!(records.len(), 24);
         assert_eq!(samples.len(), 1);
         assert!(samples.iter().all(|&s| s == "dna00001".as_bytes()));
     }
