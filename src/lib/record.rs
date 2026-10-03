@@ -10,7 +10,7 @@ use std::str::FromStr;
 use anyhow::Result;
 use bio_types::genome::{AbstractInterval, Position};
 use rust_htslib::bcf::Header;
-use rust_htslib::bcf::record::GenotypeAllele;
+use rust_htslib::bcf::record::{GenotypeAllele, Numeric};
 use serde::{Deserialize, Serialize, de::Error};
 use serde_with::DisplayFromStr;
 use serde_with::serde_as;
@@ -321,12 +321,16 @@ pub struct TumorOnlyVariant<'a> {
 }
 
 impl<'a> TumorOnlyVariant<'a> {
-    /// Return the "AD" formatted VCF field for this record.
+    /// Return the "AD" formatted VCF field for this record: the REF depth alone without an ALT allele,
+    /// otherwise REF then ALT, with REF missing for Complex calls.
     pub fn ad_value(&self) -> Vec<i32> {
-        if self.alt_depth == 0 {
-            vec![self.ref_forward + self.ref_reverse]
+        let ref_depth = self.ref_forward + self.ref_reverse;
+        if self.ref_allele == self.alt_allele {
+            vec![ref_depth]
+        } else if self.variant_type == "Complex" {
+            vec![i32::missing(), self.alt_depth]
         } else {
-            vec![self.ref_forward + self.ref_reverse, self.alt_depth]
+            vec![ref_depth, self.alt_depth]
         }
     }
 
@@ -405,7 +409,7 @@ pub fn tumor_only_header(sample: &str) -> Header {
     header.push_record(r#"##INFO=<ID=SVTYPE,Number=1,Type=String,Description="The structural variant type (BND, CNV, DEL, DUP, INS, INV), if this call is a structural variant.">"#.as_bytes());
     header.push_record(r#"##FILTER=<ID=PASS,Description="The variant call has passed all filters and may be considered for downstream analysis.">"#.as_bytes());
     header.push_record(format!(r#"##FORMAT=<ID=GT,Number=1,Type=String,Description="The genotype inferred from the allele frequency alone, since VarDict does not genotype: 1/1 when AF >= {MIN_HOM_ALT_AF}, 0/1 for any other call with an ALT allele, and 0/0 when there is no ALT allele.">"#).as_bytes());
-    header.push_record(r#"##FORMAT=<ID=AD,Number=R,Type=Integer,Description="The allelic depths for the REF and ALT alleles.">"#.as_bytes());
+    header.push_record(r#"##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Read depth for REF then ALT as VarDict counts them: ALT is the reads carrying this allele and REF is the reads carrying the reference base at the variant's first internal base (the first deleted base for deletions, without insertion-carrying reads for insertions). REF is missing for Complex calls, where VarDict counts only their first base and can count a read as both, and REF is the only value when there is no ALT allele.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=DP,Number=1,Type=Integer,Description="The total allele depth at this location which potentially includes No-calls.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=VD,Number=1,Type=Integer,Description="The variant allele depth at this location.">"#.as_bytes());
     header.push_record(r#"##ALT=<ID=BND,Description="Region with an identified unambiguous single breakend.">"#.as_bytes());
@@ -526,6 +530,27 @@ mod tests {
         for (variant, ad) in variants.iter().zip(expected.iter()) {
             assert_eq!(&variant.ad_value(), ad);
         }
+    }
+
+    #[rstest]
+    #[case("G", "A", "SNV", 1, vec![8046, 1])]
+    #[case("G", "A", "SNV", 0, vec![8046, 0])]
+    #[case("GA", "AC", "Complex", 9, vec![i32::missing(), 9])]
+    #[case("G", "G", "", 0, vec![8046])]
+    fn test_tumor_only_variant_ad_value_by_call(
+        variants: Vec<TumorOnlyVariant<'static>>,
+        #[case] ref_allele: &'static str,
+        #[case] alt_allele: &'static str,
+        #[case] variant_type: &'static str,
+        #[case] alt_depth: i32,
+        #[case] expected: Vec<i32>,
+    ) {
+        let mut variant = variants.into_iter().nth(2).unwrap();
+        variant.ref_allele = ref_allele;
+        variant.alt_allele = alt_allele;
+        variant.variant_type = variant_type;
+        variant.alt_depth = alt_depth;
+        assert_eq!(variant.ad_value(), expected);
     }
 
     #[rstest]
