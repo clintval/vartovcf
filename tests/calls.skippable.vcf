@@ -1,5 +1,6 @@
 ##fileformat=VCFv4.2
 ##source=vartovcf-1.5.1
+##INFO=<ID=TYPE,Number=A,Type=String,Description="VarDict's class of the change from REF to ALT, from VarDict's own rule applied to the alleles in this record: SNV (one base to one base), Insertion (ALT is the single REF base followed by inserted bases), Deletion (REF is longer and ALT is its first base), Complex (every other change, including MNVs, which VarDict does not separate), or DEL, DUP or INV for a symbolic structural variant. Absent when there is no ALT allele.">
 ##INFO=<ID=END,Number=1,Type=Integer,Description="End position, written only on records with a symbolic ALT allele: the last deleted base for DEL, the last inverted base for INV, and VarDict's end of the duplication for DUP, which can be off by one depending on how VarDict found it.">
 ##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="Signed length of the structural variant, from VarDict's own event length: negative for DEL (the deleted bases), positive for DUP (the duplicated bases) and INV (the inverted bases).">
 ##INFO=<ID=SVTYPE,Number=1,Type=String,Description="Structural variant type: DEL, DUP or INV.">

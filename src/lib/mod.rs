@@ -144,6 +144,10 @@ where
 
         variant.set_qual(f32::missing());
 
+        if let Some(class) = var.variant_class() {
+            variant.push_info_string(b"TYPE", &[class.as_bytes()])?;
+        }
+
         if VALID_SV_TYPES.contains(&var.variant_type) {
             variant.push_info_integer(b"END", &[var.end as i32])?;
             let sv_length = var.sv_length().ok_or_else(|| {

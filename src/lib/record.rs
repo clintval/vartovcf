@@ -373,6 +373,38 @@ impl<'a> TumorOnlyVariant<'a> {
         }
     }
 
+    /// Return VarDict's variant class for the alleles this record writes, using VarDict's own rule
+    /// (`Variant.varType`) on the final alleles: VarDict labels a Complex call before trimming it.
+    pub fn variant_class(&self) -> Option<&'a str> {
+        let (ref_allele, alt_allele) = (self.ref_allele, self.alt_allele);
+        if ref_allele == alt_allele {
+            return None;
+        }
+        if ref_allele.len() == 1 && alt_allele.len() == 1 {
+            return Some("SNV");
+        }
+        if let Some(sv) = alt_allele
+            .strip_prefix('<')
+            .and_then(|rest| rest.strip_suffix('>'))
+            .filter(|sv| sv.len() == 3)
+        {
+            return Some(sv);
+        }
+        let class = match (ref_allele.as_bytes().first(), alt_allele.as_bytes().first()) {
+            (Some(r), Some(a)) if r == a => {
+                if ref_allele.len() == 1 && alt_allele.starts_with(ref_allele) {
+                    "Insertion"
+                } else if alt_allele.len() == 1 && ref_allele.starts_with(alt_allele) {
+                    "Deletion"
+                } else {
+                    "Complex"
+                }
+            }
+            _ => "Complex",
+        };
+        Some(class)
+    }
+
     /// Return the signed structural variant length from VarDict's own event length, which it writes
     /// after the slash in the genotype column: `-N` for DEL, `+N` for DUP and `<INVN>` for INV.
     pub fn sv_length(&self) -> Option<i32> {
@@ -417,6 +449,7 @@ pub fn tumor_only_header(sample: &str) -> Header {
     // header.push_record(r#"##INFO=<ID=DistanceReadEndMean,Number=1,Type=Float,Description="The mean distance to the nearest 5 or 3 prime read end (whichever is closer) in all reads that support the variant call.">"#.as_bytes());
     // header.push_record(r#"##INFO=<ID=DistanceReadEndMeanStDev,Number=1,Type=Float,Description="The standard deviation of the distance to the nearest 5 or 3 prime read end (whichever is closer) in all reads that support the variant call.">"#.as_bytes());
     // header.push_record(r#"##INFO=<ID=DupRate,Number=1,Type=Float,Description="The duplication rate, if this call is a duplication.">"#.as_bytes());
+    header.push_record(r#"##INFO=<ID=TYPE,Number=A,Type=String,Description="VarDict's class of the change from REF to ALT, from VarDict's own rule applied to the alleles in this record: SNV (one base to one base), Insertion (ALT is the single REF base followed by inserted bases), Deletion (REF is longer and ALT is its first base), Complex (every other change, including MNVs, which VarDict does not separate), or DEL, DUP or INV for a symbolic structural variant. Absent when there is no ALT allele.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=END,Number=1,Type=Integer,Description="End position, written only on records with a symbolic ALT allele: the last deleted base for DEL, the last inverted base for INV, and VarDict's end of the duplication for DUP, which can be off by one depending on how VarDict found it.">"#.as_bytes());
     // header.push_record(r#"##INFO=<ID=MapQMean,Number=1,Type=Float,Description="The mean mapping quality (Phred) of all reads that directly support the variant call.">"#.as_bytes());
     // header.push_record(r#"##INFO=<ID=MSI,Number=1,Type=Float,Description="Whether the variant call is in a microsatellite (MSI) or not. Greater than 1 indicates MSI.">"#.as_bytes());
@@ -552,6 +585,30 @@ mod tests {
         for (variant, ad) in variants.iter().zip(expected.iter()) {
             assert_eq!(&variant.ad_value(), ad);
         }
+    }
+
+    #[rstest]
+    #[case("G", "A", "SNV", Some("SNV"))]
+    #[case("G", "GTT", "Insertion", Some("Insertion"))]
+    #[case("GTT", "G", "Deletion", Some("Deletion"))]
+    #[case("GA", "AC", "Complex", Some("Complex"))]
+    #[case("GAT", "GCC", "Complex", Some("Complex"))]
+    #[case("A", "TA", "Complex", Some("Complex"))]
+    #[case("A", "C", "Complex", Some("SNV"))]
+    #[case("A", "<DEL>", "DEL", Some("DEL"))]
+    #[case("G", "G", "", None)]
+    fn test_tumor_only_variant_variant_class(
+        variants: Vec<TumorOnlyVariant<'static>>,
+        #[case] ref_allele: &'static str,
+        #[case] alt_allele: &'static str,
+        #[case] variant_type: &'static str,
+        #[case] expected: Option<&str>,
+    ) {
+        let mut variant = variants.into_iter().nth(2).unwrap();
+        variant.ref_allele = ref_allele;
+        variant.alt_allele = alt_allele;
+        variant.variant_type = variant_type;
+        assert_eq!(variant.variant_class(), expected);
     }
 
     #[rstest]
@@ -712,7 +769,7 @@ mod tests {
         let reader = VcfReader::from_path(file.path()).expect("Error opening tempfile!");
         let records = reader.header().header_records();
         let samples = reader.header().samples();
-        assert_eq!(records.len(), 14);
+        assert_eq!(records.len(), 15);
         assert_eq!(samples.len(), 1);
         assert!(samples.iter().all(|&s| s == "dna00001".as_bytes()));
     }

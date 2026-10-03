@@ -1,5 +1,6 @@
 ##fileformat=VCFv4.2
 ##source=vartovcf-1.5.1
+##INFO=<ID=TYPE,Number=A,Type=String,Description="VarDict's class of the change from REF to ALT, from VarDict's own rule applied to the alleles in this record: SNV (one base to one base), Insertion (ALT is the single REF base followed by inserted bases), Deletion (REF is longer and ALT is its first base), Complex (every other change, including MNVs, which VarDict does not separate), or DEL, DUP or INV for a symbolic structural variant. Absent when there is no ALT allele.">
 ##INFO=<ID=END,Number=1,Type=Integer,Description="End position, written only on records with a symbolic ALT allele: the last deleted base for DEL, the last inverted base for INV, and VarDict's end of the duplication for DUP, which can be off by one depending on how VarDict found it.">
 ##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="Signed length of the structural variant, from VarDict's own event length: negative for DEL (the deleted bases), positive for DUP (the duplicated bases) and INV (the inverted bases).">
 ##INFO=<ID=SVTYPE,Number=1,Type=String,Description="Structural variant type: DEL, DUP or INV.">
@@ -17,7 +18,7 @@
 ##contig=<ID=chr13,length=114364328>
 ##reference=tests/reference.fa
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	dna00001
-chr1	114713883	.	G	A	.	.	.	GT:AD:DP:QMEAN:MEAN_MISMATCHES	0/1:8046,1:8104:90:2
-chr12	112450447	.	A	<INV>	.	.	END=123513818;SVLEN=11063372;SVTYPE=INV	GT:AD:DP:QMEAN:MEAN_MISMATCHES	0/1:6579,1:6775:90:0
-chr13	24684729	.	G	<DEL>	.	.	END=28034141;SVLEN=-3349412;SVTYPE=DEL	GT:AD:DP:QMEAN:MEAN_MISMATCHES	0/1:0,2:7463:90:0
-chr13	24684729	.	G	<DEL>	.	.	END=28034000;SVLEN=-3349271;SVTYPE=DEL	GT:AD:DP:QMEAN:MEAN_MISMATCHES	0/1:0,2:7463:90:0
+chr1	114713883	.	G	A	.	.	TYPE=SNV	GT:AD:DP:QMEAN:MEAN_MISMATCHES	0/1:8046,1:8104:90:2
+chr12	112450447	.	A	<INV>	.	.	TYPE=INV;END=123513818;SVLEN=11063372;SVTYPE=INV	GT:AD:DP:QMEAN:MEAN_MISMATCHES	0/1:6579,1:6775:90:0
+chr13	24684729	.	G	<DEL>	.	.	TYPE=DEL;END=28034141;SVLEN=-3349412;SVTYPE=DEL	GT:AD:DP:QMEAN:MEAN_MISMATCHES	0/1:0,2:7463:90:0
+chr13	24684729	.	G	<DEL>	.	.	TYPE=DEL;END=28034000;SVLEN=-3349271;SVTYPE=DEL	GT:AD:DP:QMEAN:MEAN_MISMATCHES	0/1:0,2:7463:90:0
