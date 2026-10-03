@@ -334,6 +334,15 @@ impl<'a> TumorOnlyVariant<'a> {
         }
     }
 
+    /// Return the "QMEAN" formatted VCF field for this record: missing without an ALT allele.
+    pub fn qmean_value(&self) -> f32 {
+        if self.ref_allele == self.alt_allele {
+            f32::missing()
+        } else {
+            self.base_quality_mean
+        }
+    }
+
     /// Return the VCF-valid alternate allele for this record.
     pub fn alt_allele_for_vcf(&self) -> String {
         if self.ref_allele == self.alt_allele {
@@ -411,6 +420,7 @@ pub fn tumor_only_header(sample: &str) -> Header {
     header.push_record(format!(r#"##FORMAT=<ID=GT,Number=1,Type=String,Description="The genotype inferred from the allele frequency alone, since VarDict does not genotype: 1/1 when AF >= {MIN_HOM_ALT_AF}, 0/1 for any other call with an ALT allele, and 0/0 when there is no ALT allele.">"#).as_bytes());
     header.push_record(r#"##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Read depth for REF then ALT as VarDict counts them: ALT is the reads carrying this allele and REF is the reads carrying the reference base at the variant's first internal base (the first deleted base for deletions, without insertion-carrying reads for insertions). REF is missing for Complex calls, where VarDict counts only their first base and can count a read as both, and REF is the only value when there is no ALT allele.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read depth as VarDict counts it at the variant's first internal base (POS+1 for deletions), the denominator of VarDict's AF: reads with any base quality, reads whose deletion spans the base, reference-matching soft-clipped bases, reads VarDict reassigned by realignment, and N calls only under -K; overlapping mates count twice unless VarDict ran with -u, and an insertion at the same position can make it the following base's depth. REF and ALT depths need not sum to DP.">"#.as_bytes());
+    header.push_record(r#"##FORMAT=<ID=QMEAN,Number=A,Type=Float,Description="Mean, over the reads carrying the ALT allele, of VarDict's per-read variant quality: the base's Phred quality for SNVs, the mean of the block's bases for Complex calls (VarDict only extends a block with bases at least 5 above -q, so this runs high), the mean of the inserted bases for insertions, and the higher of the two flanking bases for deletions. Bases below -q are included and nothing is capped. Missing when there is no ALT allele.">"#.as_bytes());
     header.push_record(r#"##ALT=<ID=BND,Description="Region with an identified unambiguous single breakend.">"#.as_bytes());
     header.push_record(r#"##ALT=<ID=CNV,Description="Copy number variable region.">"#.as_bytes());
     header.push_record(r#"##ALT=<ID=DEL,Description="Deletion relative to the reference.">"#.as_bytes());
@@ -532,6 +542,24 @@ mod tests {
     }
 
     #[rstest]
+    fn test_tumor_only_variant_qmean_value_on_an_alt_call(
+        variants: Vec<TumorOnlyVariant<'static>>,
+    ) {
+        let mut variant = variants.into_iter().nth(2).unwrap();
+        variant.base_quality_mean = 37.5;
+        assert_eq!(variant.qmean_value(), 37.5);
+    }
+
+    #[rstest]
+    fn test_tumor_only_variant_qmean_value_is_missing_without_an_alt(
+        variants: Vec<TumorOnlyVariant<'static>>,
+    ) {
+        let mut variant = variants.into_iter().nth(2).unwrap();
+        variant.alt_allele = variant.ref_allele;
+        assert!(variant.qmean_value().is_missing());
+    }
+
+    #[rstest]
     #[case("G", "A", "SNV", 1, vec![8046, 1])]
     #[case("G", "A", "SNV", 0, vec![8046, 0])]
     #[case("GA", "AC", "Complex", 9, vec![i32::missing(), 9])]
@@ -635,7 +663,7 @@ mod tests {
         let reader = VcfReader::from_path(file.path()).expect("Error opening tempfile!");
         let records = reader.header().header_records();
         let samples = reader.header().samples();
-        assert_eq!(records.len(), 16);
+        assert_eq!(records.len(), 17);
         assert_eq!(samples.len(), 1);
         assert!(samples.iter().all(|&s| s == "dna00001".as_bytes()));
     }

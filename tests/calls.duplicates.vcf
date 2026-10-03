@@ -8,6 +8,7 @@
 ##FORMAT=<ID=GT,Number=1,Type=String,Description="The genotype inferred from the allele frequency alone, since VarDict does not genotype: 1/1 when AF >= 0.8, 0/1 for any other call with an ALT allele, and 0/0 when there is no ALT allele.">
 ##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Read depth for REF then ALT as VarDict counts them: ALT is the reads carrying this allele and REF is the reads carrying the reference base at the variant's first internal base (the first deleted base for deletions, without insertion-carrying reads for insertions). REF is missing for Complex calls, where VarDict counts only their first base and can count a read as both, and REF is the only value when there is no ALT allele.">
 ##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read depth as VarDict counts it at the variant's first internal base (POS+1 for deletions), the denominator of VarDict's AF: reads with any base quality, reads whose deletion spans the base, reference-matching soft-clipped bases, reads VarDict reassigned by realignment, and N calls only under -K; overlapping mates count twice unless VarDict ran with -u, and an insertion at the same position can make it the following base's depth. REF and ALT depths need not sum to DP.">
+##FORMAT=<ID=QMEAN,Number=A,Type=Float,Description="Mean, over the reads carrying the ALT allele, of VarDict's per-read variant quality: the base's Phred quality for SNVs, the mean of the block's bases for Complex calls (VarDict only extends a block with bases at least 5 above -q, so this runs high), the mean of the inserted bases for insertions, and the higher of the two flanking bases for deletions. Bases below -q are included and nothing is capped. Missing when there is no ALT allele.">
 ##ALT=<ID=BND,Description="Region with an identified unambiguous single breakend.">
 ##ALT=<ID=CNV,Description="Copy number variable region.">
 ##ALT=<ID=DEL,Description="Deletion relative to the reference.">
@@ -19,6 +20,6 @@
 ##contig=<ID=chr13,length=114364328>
 ##reference=tests/reference.fa
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	dna00001
-chr1	114713883	.	G	A	0	.	END=114713883;MEAN_READ_NM=2	GT:AD:DP	0/1:8046,1:8104
-chr12	112450447	.	A	<INV>	0	.	END=123513818;MEAN_READ_NM=0;SVLEN=11063372;SVTYPE=INV	GT:AD:DP	0/1:6579,1:6775
-chr13	24684729	.	G	<DEL>	90	.	END=28034141;MEAN_READ_NM=0;SVLEN=-3349413;SVTYPE=DEL	GT:AD:DP	0/1:0,2:7463
+chr1	114713883	.	G	A	.	.	END=114713883;MEAN_READ_NM=2	GT:AD:DP:QMEAN	0/1:8046,1:8104:90
+chr12	112450447	.	A	<INV>	.	.	END=123513818;MEAN_READ_NM=0;SVLEN=11063372;SVTYPE=INV	GT:AD:DP:QMEAN	0/1:6579,1:6775:90
+chr13	24684729	.	G	<DEL>	.	.	END=28034141;MEAN_READ_NM=0;SVLEN=-3349413;SVTYPE=DEL	GT:AD:DP:QMEAN	0/1:0,2:7463:90
