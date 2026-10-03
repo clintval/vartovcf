@@ -96,6 +96,24 @@ mod tests {
 
     #[test]
     #[rustfmt::skip]
+    fn run_end_to_end_labels_calls_near_read_ends() -> Result<(), Box<dyn std::error::Error>> {
+        let output = NamedTempFile::new().expect("Cannot create temporary file!");
+        let output = output.path().to_str().unwrap();
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        cmd
+            .arg("--reference").arg("tests/reference.fa")
+            .arg("--sample").arg("dna00001")
+            .arg("--input").arg("tests/calls.filters.var")
+            .arg("--output").arg(output)
+            .arg("--filter-near-read-end").arg("8")
+            .unwrap().assert().success();
+
+        assert!(diff(output, "tests/calls.filters.vcf"));
+        Ok(())
+    }
+
+    #[test]
+    #[rustfmt::skip]
     fn run_end_to_end_on_complex_calls() -> Result<(), Box<dyn std::error::Error>> {
         let output = NamedTempFile::new().expect("Cannot create temporary file!");
         let output = output.path().to_str().unwrap();
