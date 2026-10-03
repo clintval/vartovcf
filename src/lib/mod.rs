@@ -25,8 +25,8 @@ pub mod fai;
 pub mod io;
 pub mod record;
 
-/// The valid structural variation (SV) type values for the `SVTYPE` FORMAT field.
-pub const VALID_SV_TYPES: &[&str] = &["BND", "CNV", "DEL", "DUP", "INS", "INV"];
+/// The structural variant types VarDict writes, which are the values of the `SVTYPE` INFO field.
+pub const VALID_SV_TYPES: &[&str] = &["DEL", "DUP", "INV"];
 
 /// Namespace for path parts and extensions.
 pub mod path {
@@ -146,7 +146,13 @@ where
 
         if VALID_SV_TYPES.contains(&var.variant_type) {
             variant.push_info_integer(b"END", &[var.end as i32])?;
-            variant.push_info_integer(b"SVLEN", &[var.length()])?;
+            let sv_length = var.sv_length().ok_or_else(|| {
+                format!(
+                    "{}:{}: cannot read the {} length from the genotype column '{}'",
+                    var.contig, var.start, var.variant_type, var.gt
+                )
+            })?;
+            variant.push_info_integer(b"SVLEN", &[sv_length])?;
             variant.push_info_string(b"SVTYPE", &[var.variant_type.as_bytes()])?;
         }
 
