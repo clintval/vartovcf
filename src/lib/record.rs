@@ -516,6 +516,19 @@ impl<'a> TumorOnlyVariant<'a> {
         self.ref_allele != self.alt_allele && self.microsatellite != 0.0
     }
 
+    /// Return the structural variant's soft-clipped and discordant read counts, only for a symbolic
+    /// ALT allele; VarDict attaches its SV column to every row at the position.
+    pub fn sv_read_counts(&self) -> Option<(i32, i32)> {
+        if !self.alt_allele.starts_with('<') {
+            return None;
+        }
+        let info = self.sv_info.as_ref();
+        Some((
+            info.map_or(0, |sv| sv.supporting_split_reads),
+            info.map_or(0, |sv| sv.supporting_pairs),
+        ))
+    }
+
     /// Return the signed structural variant length from VarDict's own event length, which it writes
     /// after the slash in the genotype column: `-N` for DEL, `+N` for DUP and `<INVN>` for INV.
     pub fn sv_length(&self) -> Option<i32> {
@@ -593,6 +606,8 @@ pub fn tumor_only_header(sample: &str) -> Header {
     header.push_record(r#"##FORMAT=<ID=QMEAN,Number=A,Type=Float,Description="Mean, over the reads carrying the ALT allele, of VarDict's per-read variant quality: the base's Phred quality for SNVs, the mean of the block's bases for Complex calls (VarDict only extends a block with bases at least 5 above -q, so this runs high), the mean of the inserted bases for insertions, and the higher of the two flanking bases for deletions. Bases below -q are included and nothing is capped. Missing when there is no ALT allele.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=MEAN_MAPQ,Number=A,Type=Float,Description="Arithmetic mean mapping quality of the reads carrying the ALT allele, not the RMS over all reads that the VCF specification's MQ means; uncapped, so a MAPQ of 255 (unavailable) counts as 255. Missing when there is no ALT allele.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=MEAN_MISMATCHES,Number=A,Type=Float,Description="Mean, over the reads carrying the ALT allele, of each read's substitution mismatches: its NM tag minus every inserted or deleted base, minus any mismatches VarDict merged into this Complex allele. Includes the variant's own mismatch for SNVs and excludes soft clips; a read without an NM tag counts as 0, and reads with more than VarDict's -m mismatches (default 8) are not counted. Missing when there is no ALT allele.">"#.as_bytes());
+    header.push_record(r#"##FORMAT=<ID=SV_SOFTCLIP_READS,Number=A,Type=Integer,Description="Reads soft-clipped at this structural variant's breakpoint whose clipped sequence VarDict matched to the other side; primary alignments only, as VarDict ignores supplementary (SA) records. Written only on records with a symbolic ALT allele.">"#.as_bytes());
+    header.push_record(r#"##FORMAT=<ID=SV_DISCORDANT_READS,Number=A,Type=Integer,Description="Discordant read records (unexpected insert size or orientation) in the clusters VarDict linked to this structural variant; each mate counts, so one pair can count twice. Written only on records with a symbolic ALT allele.">"#.as_bytes());
     header.push_record(r#"##ALT=<ID=DEL,Description="Deletion relative to the reference.">"#.as_bytes());
     header.push_record(r#"##ALT=<ID=DUP,Description="Region of elevated copy number relative to the reference.">"#.as_bytes());
     header.push_record(r#"##ALT=<ID=INV,Description="Inversion of reference sequence.">"#.as_bytes());
@@ -767,6 +782,22 @@ mod tests {
         variant.microsatellite_length = unit_length;
         assert_eq!(variant.repeat_unit_copies_value(), expected_copies);
         assert_eq!(variant.repeat_unit_len_value(), expected_length);
+    }
+
+    #[rstest]
+    fn test_tumor_only_variant_sv_read_counts(variants: Vec<TumorOnlyVariant<'static>>) {
+        let variants: Vec<TumorOnlyVariant> = variants.into_iter().collect();
+        assert_eq!(variants[0].sv_read_counts(), Some((1, 1)));
+        assert_eq!(variants[2].sv_read_counts(), None);
+    }
+
+    #[rstest]
+    fn test_tumor_only_variant_sv_read_counts_without_sv_info(
+        variants: Vec<TumorOnlyVariant<'static>>,
+    ) {
+        let mut variant = variants.into_iter().next().unwrap();
+        variant.sv_info = None;
+        assert_eq!(variant.sv_read_counts(), Some((0, 0)));
     }
 
     #[rstest]
@@ -1088,7 +1119,7 @@ mod tests {
         let reader = VcfReader::from_path(file.path()).expect("Error opening tempfile!");
         let records = reader.header().header_records();
         let samples = reader.header().samples();
-        assert_eq!(records.len(), 27);
+        assert_eq!(records.len(), 29);
         assert_eq!(samples.len(), 1);
         assert!(samples.iter().all(|&s| s == "dna00001".as_bytes()));
     }
