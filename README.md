@@ -29,6 +29,7 @@ Or build from source with Rust 1.88 or newer, a C toolchain, and libclang (used 
 - The output is compliant with the VCF v4.2 and v4.3 specifications
 - Output VCF records are unsorted and a call to `bcftools sort` is recommended
 - At this time, only tumor-only mode (`var2vcf_valid.pl`) is supported
+- VarDictJava must be run with `--fisher`; rows without the strand-bias p-value and odds-ratio columns are refused
 
 ### Example Usage
 
