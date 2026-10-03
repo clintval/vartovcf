@@ -82,6 +82,9 @@ fn main() -> Result<(), Error> {
         opt.skip_non_variants,
     ) {
         Ok(exit_code) => process::exit(exit_code),
-        Err(except) => panic!("{}", except),
+        Err(except) => {
+            error!("{except}");
+            process::exit(1)
+        }
     }
 }

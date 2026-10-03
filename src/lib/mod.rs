@@ -3,7 +3,7 @@
 
 use ahash::AHashSet;
 use anyhow::Result;
-use csv::ReaderBuilder;
+use csv::{Reader, ReaderBuilder, StringRecord};
 use proglog::ProgLogBuilder;
 use rust_htslib::bcf::Format;
 use rust_htslib::bcf::Writer as VcfWriter;
@@ -88,6 +88,10 @@ where
         .has_headers(false)
         .from_reader(input);
 
+    // Read the first record before the writer emits the header so a refused stream writes nothing.
+    let mut carry = StringRecord::new();
+    let mut peeked = read_fisher_record(&mut reader, &mut carry)?;
+
     let mut writer = match output {
         Some(output) => VcfWriter::from_path(&output, &header, !has_gzip_ext(&output), Format::Vcf),
         None => VcfWriter::from_stdout(&header, true, Format::Vcf),
@@ -101,18 +105,15 @@ where
         .unit(100_000)
         .build();
 
-    let mut carry = csv::StringRecord::new();
     let mut variant = writer.empty_record();
     let mut seen: AHashSet<String> = AHashSet::new();
 
-    while reader.read_record(&mut carry)? {
+    while std::mem::take(&mut peeked) || read_fisher_record(&mut reader, &mut carry)? {
         if carry.get(5).is_none_or(|f| f.is_empty()) {
             continue; // If the 5th field is empty, it's a record we need to avoid deserializing.
         }
 
-        let var: TumorOnlyVariant = carry
-            .deserialize(None)
-            .expect("Could not deserialize record!");
+        let var: TumorOnlyVariant = carry.deserialize(None).map_err(describe_parse_error)?;
 
         if skip_non_variants && var.ref_allele == var.alt_allele {
             continue;
@@ -171,6 +172,59 @@ where
     Ok(0)
 }
 
+/// Reads the next record, refusing it unless its segment sits in column 35 as with `--fisher`.
+fn read_fisher_record<R: Read>(
+    reader: &mut Reader<R>,
+    record: &mut StringRecord,
+) -> Result<bool, Box<dyn error::Error>> {
+    if !reader.read_record(record)? {
+        return Ok(false);
+    }
+    let contig = record.get(2).unwrap_or_default();
+    let is_segment = |index: usize| {
+        record
+            .get(index)
+            .and_then(|field| {
+                field
+                    .strip_prefix(contig)?
+                    .strip_prefix(':')?
+                    .split_once('-')
+            })
+            .is_some_and(|(start, end)| start.parse::<u64>().is_ok() && end.parse::<u64>().is_ok())
+    };
+    if is_segment(34) {
+        return Ok(true);
+    }
+    let line = record.position().map_or(0, |position| position.line());
+    let message = if is_segment(32) {
+        format!(
+            "Expected the strand-bias p-value and odds-ratio columns on line {line}: run VarDictJava with --fisher!"
+        )
+    } else {
+        format!("Expected a {contig}:start-end segment in column 35 on line {line}!")
+    };
+    Err(message.into())
+}
+
+/// Names the 1-based line and column of a record that could not be deserialized.
+fn describe_parse_error(error: csv::Error) -> String {
+    match error.kind() {
+        csv::ErrorKind::Deserialize {
+            pos: Some(pos),
+            err,
+        } => match err.field() {
+            Some(index) => format!(
+                "Could not parse column {} on line {}: {}!",
+                index + 1,
+                pos.line(),
+                err.kind()
+            ),
+            None => format!("Could not parse line {}: {}!", pos.line(), err.kind()),
+        },
+        _ => error.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs::File;
@@ -180,6 +234,7 @@ mod tests {
     use anyhow::Result;
     use file_diff::diff;
     use pretty_assertions::assert_eq;
+    use rstest::rstest;
     use tempfile::NamedTempFile;
 
     use super::VarDictMode::TumorOnly;
@@ -219,6 +274,70 @@ mod tests {
             false,
         );
         assert!(result.is_err());
+    }
+
+    #[rstest]
+    #[case("tests/calls.no-fisher.reference.var")]
+    #[case("tests/calls.no-fisher.variant.var")]
+    fn test_refuses_rows_without_fisher_columns(
+        #[case] path: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let input = BufReader::new(File::open(path)?);
+        let output = NamedTempFile::new().expect("Cannot create temporary file!");
+        let reference = PathBuf::from("tests/reference.fa");
+        let result = vartovcf(
+            input,
+            Some(output.path().into()),
+            &reference,
+            "dna00001",
+            &TumorOnly,
+            false,
+        );
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Expected the strand-bias p-value and odds-ratio columns on line 1: run VarDictJava with --fisher!"
+        );
+        assert_eq!(output.as_file().metadata()?.len(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn test_malformed_row_is_an_error() -> Result<(), Box<dyn std::error::Error>> {
+        let input = BufReader::new(File::open("tests/calls.malformed.var")?);
+        let output = NamedTempFile::new().expect("Cannot create temporary file!");
+        let reference = PathBuf::from("tests/reference.fa");
+        let result = vartovcf(
+            input,
+            Some(output.path().into()),
+            &reference,
+            "dna00001",
+            &TumorOnly,
+            false,
+        );
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Could not parse column 8 on line 2: invalid digit found in string!"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_refuses_rows_without_a_segment() {
+        let input = "dna00001\tBRINP3\tchr1\t190098265\t190098265\tA\tA\n".as_bytes();
+        let output = NamedTempFile::new().expect("Cannot create temporary file!");
+        let reference = PathBuf::from("tests/reference.fa");
+        let result = vartovcf(
+            input,
+            Some(output.path().into()),
+            &reference,
+            "dna00001",
+            &TumorOnly,
+            false,
+        );
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Expected a chr1:start-end segment in column 35 on line 1!"
+        );
     }
 
     #[test]

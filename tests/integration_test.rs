@@ -6,6 +6,7 @@ mod tests {
     use assert_cmd::cmd::Command;
     use assert_cmd::prelude::*;
     use file_diff::diff;
+    use rstest::rstest;
     use tempfile::NamedTempFile;
 
     #[test]
@@ -84,6 +85,42 @@ mod tests {
             .pipe_stdin("tests/calls.var")?
             .assert()
             .stdout(read_to_string("tests/calls.vcf")?);
+        Ok(())
+    }
+
+    #[rstest]
+    #[case("tests/calls.no-fisher.reference.var")]
+    #[case("tests/calls.no-fisher.variant.var")]
+    #[rustfmt::skip]
+    fn run_end_to_end_refuses_rows_without_fisher_columns(#[case] input: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        let assert = cmd
+            .arg("--reference").arg("tests/reference.fa")
+            .arg("--sample").arg("dna00001")
+            .pipe_stdin(input)?
+            .assert()
+            .code(1)
+            .stdout("");
+
+        let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+        assert!(stderr.contains("run VarDictJava with --fisher!"), "{stderr}");
+        Ok(())
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn run_end_to_end_fails_cleanly_on_malformed_row() -> Result<(), Box<dyn std::error::Error>> {
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        let assert = cmd
+            .arg("--reference").arg("tests/reference.fa")
+            .arg("--sample").arg("dna00001")
+            .pipe_stdin("tests/calls.malformed.var")?
+            .assert()
+            .code(1);
+
+        let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+        assert!(stderr.contains("Could not parse column 8 on line 2"), "{stderr}");
+        assert!(!stderr.contains("panicked"), "{stderr}");
         Ok(())
     }
 
