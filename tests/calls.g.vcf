@@ -1,5 +1,6 @@
 ##fileformat=VCFv4.2
 ##source=vartovcf-1.5.1
+##INFO=<ID=TYPE,Number=A,Type=String,Description="VarDict's class of the change from REF to ALT, from VarDict's own rule applied to the alleles in this record: SNV (one base to one base), Insertion (ALT is the single REF base followed by inserted bases), Deletion (REF is longer and ALT is its first base), Complex (every other change, including MNVs, which VarDict does not separate), or DEL, DUP or INV for a symbolic structural variant. Absent when there is no ALT allele.">
 ##INFO=<ID=END,Number=1,Type=Integer,Description="End position, written only on records with a symbolic ALT allele: the last deleted base for DEL, the last inverted base for INV, and VarDict's end of the duplication for DUP, which can be off by one depending on how VarDict found it.">
 ##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="Signed length of the structural variant, from VarDict's own event length: negative for DEL (the deleted bases), positive for DUP (the duplicated bases) and INV (the inverted bases).">
 ##INFO=<ID=SVTYPE,Number=1,Type=String,Description="Structural variant type: DEL, DUP or INV.">
@@ -17,12 +18,12 @@
 ##contig=<ID=chr13,length=114364328>
 ##reference=tests/reference.fa
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	dna00001
-chr1	190098264	.	C	A	.	.	.	GT:AD:DP:QMEAN:MEAN_MISMATCHES	0/1:13944,1:14082:90:1
+chr1	190098264	.	C	A	.	.	TYPE=SNV	GT:AD:DP:QMEAN:MEAN_MISMATCHES	0/1:13944,1:14082:90:1
 chr1	190098265	.	A	.	.	.	.	GT:AD:DP:QMEAN:MEAN_MISMATCHES	0/0:14063:14117:.:.
 chr1	190098266	.	A	.	.	.	.	GT:AD:DP:QMEAN:MEAN_MISMATCHES	0/0:14061:14142:.:.
 chr1	190098267	.	A	.	.	.	.	GT:AD:DP:QMEAN:MEAN_MISMATCHES	0/0:13982:14093:.:.
 chr1	190098268	.	A	.	.	.	.	GT:AD:DP:QMEAN:MEAN_MISMATCHES	0/0:13866:13961:.:.
 chr1	190098269	.	T	.	.	.	.	GT:AD:DP:QMEAN:MEAN_MISMATCHES	0/0:13826:13916:.:.
-chr1	190098270	.	C	A	.	.	.	GT:AD:DP:QMEAN:MEAN_MISMATCHES	1/1:13786,2:13885:90:2
-chr1	190098270	.	CA	C	.	.	.	GT:AD:DP:QMEAN:MEAN_MISMATCHES	0/1:13591,1:13806:90:0
-chr1	190098271	.	A	G	.	.	.	GT:AD:DP:QMEAN:MEAN_MISMATCHES	0/1:13591,1:13806:90:1
+chr1	190098270	.	C	A	.	.	TYPE=SNV	GT:AD:DP:QMEAN:MEAN_MISMATCHES	1/1:13786,2:13885:90:2
+chr1	190098270	.	CA	C	.	.	TYPE=Deletion	GT:AD:DP:QMEAN:MEAN_MISMATCHES	0/1:13591,1:13806:90:0
+chr1	190098271	.	A	G	.	.	TYPE=SNV	GT:AD:DP:QMEAN:MEAN_MISMATCHES	0/1:13591,1:13806:90:1
