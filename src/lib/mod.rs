@@ -16,6 +16,7 @@ use strum::{EnumString, VariantNames};
 
 use crate::fai::{fasta_contigs_to_vcf_header, fasta_path_to_vcf_header};
 use crate::io::has_gzip_ext;
+use crate::record::MIN_HOM_ALT_AF;
 use crate::record::TumorOnlyVariant;
 use crate::record::tumor_only_header;
 
@@ -158,7 +159,7 @@ where
             variant.clear_info_integer(b"SVTYPE")?;
         }
 
-        variant.push_genotypes(var.gt_value(0.25))?;
+        variant.push_genotypes(var.gt_value(MIN_HOM_ALT_AF))?;
         variant.push_format_integer(b"AD", &var.ad_value())?;
         variant.push_format_integer(b"DP", &[var.depth])?;
         variant.push_format_integer(b"VD", &[var.alt_depth])?;

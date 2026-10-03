@@ -5,7 +5,7 @@
 ##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="The length of structural variant in base pairs of reference genome, if this call is a structural variant.">
 ##INFO=<ID=SVTYPE,Number=1,Type=String,Description="The structural variant type (BND, CNV, DEL, DUP, INS, INV), if this call is a structural variant.">
 ##FILTER=<ID=PASS,Description="The variant call has passed all filters and may be considered for downstream analysis.">
-##FORMAT=<ID=GT,Number=1,Type=String,Description="The genotype for this sample.">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="The genotype inferred from the allele frequency alone, since VarDict does not genotype: 1/1 when AF >= 0.8, 0/1 for any other call with an ALT allele, and 0/0 when there is no ALT allele.">
 ##FORMAT=<ID=AD,Number=R,Type=Integer,Description="The allelic depths for the REF and ALT alleles.">
 ##FORMAT=<ID=DP,Number=1,Type=Integer,Description="The total allele depth at this location which potentially includes No-calls.">
 ##FORMAT=<ID=VD,Number=1,Type=Integer,Description="The variant allele depth at this location.">

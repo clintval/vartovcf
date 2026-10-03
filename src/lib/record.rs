@@ -19,6 +19,9 @@ use strum::EnumString;
 const CARGO_PKG_NAME: &str = env!("CARGO_PKG_NAME");
 const CARGO_PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// The minimum allele frequency at which a variant call is genotyped homozygous alternate.
+pub const MIN_HOM_ALT_AF: f32 = 0.8;
+
 /// Deserialize a possibly infinite float into a <f32> or return a custom error. The floating point
 /// number in VAR files must be expressed as a ratio for them to be true odds ratios.
 ///
@@ -336,16 +339,15 @@ impl<'a> TumorOnlyVariant<'a> {
         }
     }
 
-    /// Return the "GT" formatted VCF field for this record, set a cutoff for calling homalt vs het.
-    pub fn gt_value(&self, cutoff: f32) -> &[GenotypeAllele] {
+    /// Return the "GT" formatted VCF field for this record: 0/0 without an ALT allele, otherwise 1/1
+    /// at or above the minimum homozygous alternate allele frequency and 0/1 below it.
+    pub fn gt_value(&self, min_hom_alt_af: f32) -> &[GenotypeAllele] {
         if self.ref_allele == self.alt_allele {
             &[GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(0)]
-        } else if self.af > (1.0 - cutoff) {
+        } else if self.af >= min_hom_alt_af {
             &[GenotypeAllele::Unphased(1), GenotypeAllele::Unphased(1)]
-        } else if self.af > cutoff {
-            &[GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(1)]
         } else {
-            &[GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(0)]
+            &[GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(1)]
         }
     }
 
@@ -402,7 +404,7 @@ pub fn tumor_only_header(sample: &str) -> Header {
     header.push_record(r#"##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="The length of structural variant in base pairs of reference genome, if this call is a structural variant.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=SVTYPE,Number=1,Type=String,Description="The structural variant type (BND, CNV, DEL, DUP, INS, INV), if this call is a structural variant.">"#.as_bytes());
     header.push_record(r#"##FILTER=<ID=PASS,Description="The variant call has passed all filters and may be considered for downstream analysis.">"#.as_bytes());
-    header.push_record(r#"##FORMAT=<ID=GT,Number=1,Type=String,Description="The genotype for this sample.">"#.as_bytes());
+    header.push_record(format!(r#"##FORMAT=<ID=GT,Number=1,Type=String,Description="The genotype inferred from the allele frequency alone, since VarDict does not genotype: 1/1 when AF >= {MIN_HOM_ALT_AF}, 0/1 for any other call with an ALT allele, and 0/0 when there is no ALT allele.">"#).as_bytes());
     header.push_record(r#"##FORMAT=<ID=AD,Number=R,Type=Integer,Description="The allelic depths for the REF and ALT alleles.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=DP,Number=1,Type=Integer,Description="The total allele depth at this location which potentially includes No-calls.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=VD,Number=1,Type=Integer,Description="The variant allele depth at this location.">"#.as_bytes());
@@ -524,6 +526,30 @@ mod tests {
         for (variant, ad) in variants.iter().zip(expected.iter()) {
             assert_eq!(&variant.ad_value(), ad);
         }
+    }
+
+    #[rstest]
+    #[case("G", "A", 0.0001, [0, 1])]
+    #[case("G", "A", 0.25, [0, 1])]
+    #[case("G", "A", 0.7999, [0, 1])]
+    #[case("G", "A", 0.8, [1, 1])]
+    #[case("G", "A", 1.0, [1, 1])]
+    #[case("G", "G", 0.9, [0, 0])]
+    fn test_tumor_only_variant_gt_value(
+        variants: Vec<TumorOnlyVariant<'static>>,
+        #[case] ref_allele: &'static str,
+        #[case] alt_allele: &'static str,
+        #[case] af: f32,
+        #[case] expected: [i32; 2],
+    ) {
+        let mut variant = variants.into_iter().nth(2).unwrap();
+        variant.ref_allele = ref_allele;
+        variant.alt_allele = alt_allele;
+        variant.af = af;
+        assert_eq!(
+            variant.gt_value(MIN_HOM_ALT_AF),
+            &expected.map(GenotypeAllele::Unphased)
+        );
     }
 
     #[rstest]
