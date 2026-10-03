@@ -49,6 +49,10 @@ struct Opt {
     /// Label calls NEAR_READ_END when their mean distance to the nearer read end is below this; not applied when not given
     #[arg(long, value_name = "MIN_MEAN_DIST")]
     filter_near_read_end: Option<f32>,
+
+    /// Label calls LOW_MEAN_MAPQ when the mean mapping quality of their ALT reads is below this; not applied when not given
+    #[arg(long, value_name = "MIN_MEAN_MAPQ")]
+    filter_low_mean_mapq: Option<f32>,
 }
 
 /// Main binary entrypoint.
@@ -87,6 +91,7 @@ fn main() -> Result<(), Error> {
         opt.skip_non_variants,
         &FilterThresholds {
             near_read_end: opt.filter_near_read_end,
+            low_mean_mapq: opt.filter_low_mean_mapq,
         },
     ) {
         Ok(exit_code) => process::exit(exit_code),

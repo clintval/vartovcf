@@ -38,6 +38,7 @@ No FILTER label is applied unless its option is given; with none given, the FILT
 | Label | Option | Applied when |
 |---|---|---|
 | `NEAR_READ_END` | `--filter-near-read-end <MIN_MEAN_DIST>` | `MEAN_DIST_TO_READ_END` is below the threshold |
+| `LOW_MEAN_MAPQ` | `--filter-low-mean-mapq <MIN_MEAN_MAPQ>` | `MEAN_MAPQ` is below the threshold |
 
 ### Example Usage
 
