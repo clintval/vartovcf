@@ -106,7 +106,6 @@ where
         .unit(100_000)
         .build();
 
-    let mut variant = writer.empty_record();
     let mut seen: AHashSet<String> = AHashSet::new();
 
     while std::mem::take(&mut peeked) || read_fisher_record(&mut reader, &mut carry)? {
@@ -135,6 +134,7 @@ where
 
         let rid = writer.header().name2rid(var.contig.as_bytes()).unwrap();
 
+        let mut variant = writer.empty_record();
         variant.set_rid(Some(rid));
         variant.set_pos(var.start as i64 - 1);
         variant.set_alleles(&[
@@ -144,16 +144,17 @@ where
 
         variant.set_qual(f32::missing());
 
-        variant.push_info_integer(b"END", &[var.end as i32])?;
+        let is_symbolic = VALID_SV_TYPES.contains(&var.variant_type);
+
+        if is_symbolic {
+            variant.push_info_integer(b"END", &[var.end as i32])?;
+        }
+
         variant.push_info_float(b"MEAN_READ_NM", &[var.mean_mismatches_in_reads])?;
 
-        if VALID_SV_TYPES.contains(&var.variant_type) {
+        if is_symbolic {
             variant.push_info_integer(b"SVLEN", &[var.length()])?;
             variant.push_info_string(b"SVTYPE", &[var.variant_type.as_bytes()])?;
-        } else {
-            // NB: Without clearing the fields, you'll end up with stale references.
-            variant.clear_info_integer(b"SVLEN")?;
-            variant.clear_info_integer(b"SVTYPE")?;
         }
 
         variant.push_genotypes(var.gt_value(MIN_HOM_ALT_AF))?;

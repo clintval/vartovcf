@@ -1,6 +1,6 @@
 ##fileformat=VCFv4.2
 ##source=vartovcf-1.5.1
-##INFO=<ID=END,Number=1,Type=Integer,Description="The end location of this variant call.">
+##INFO=<ID=END,Number=1,Type=Integer,Description="End position, written only on records with a symbolic ALT allele: the last deleted base for DEL, the last inverted base for INV, and VarDict's end of the duplication for DUP, which can be off by one depending on how VarDict found it.">
 ##INFO=<ID=MEAN_READ_NM,Number=1,Type=Float,Description="The mean mismatches within all reads that directly support the variant call.">
 ##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="The length of structural variant in base pairs of reference genome, if this call is a structural variant.">
 ##INFO=<ID=SVTYPE,Number=1,Type=String,Description="The structural variant type (BND, CNV, DEL, DUP, INS, INV), if this call is a structural variant.">
@@ -20,6 +20,6 @@
 ##contig=<ID=chr13,length=114364328>
 ##reference=tests/reference.fa
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	dna00001
-chr1	114713883	.	G	A	.	.	END=114713883;MEAN_READ_NM=2	GT:AD:DP:QMEAN	0/1:8046,1:8104:90
+chr1	114713883	.	G	A	.	.	MEAN_READ_NM=2	GT:AD:DP:QMEAN	0/1:8046,1:8104:90
 chr12	112450447	.	A	<INV>	.	.	END=123513818;MEAN_READ_NM=0;SVLEN=11063372;SVTYPE=INV	GT:AD:DP:QMEAN	0/1:6579,1:6775:90
 chr13	24684729	.	G	<DEL>	.	.	END=28034141;MEAN_READ_NM=0;SVLEN=-3349413;SVTYPE=DEL	GT:AD:DP:QMEAN	0/1:0,2:7463:90
