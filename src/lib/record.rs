@@ -358,6 +358,16 @@ impl<'a> TumorOnlyVariant<'a> {
         }
     }
 
+    /// Return the "REALIGNED_FRAC_OF_DP" formatted VCF field for this record: missing without an ALT
+    /// allele.
+    pub fn realigned_frac_of_dp_value(&self) -> f32 {
+        if self.ref_allele == self.alt_allele {
+            f32::missing()
+        } else {
+            self.af_adjusted
+        }
+    }
+
     /// Return the "QMEAN" formatted VCF field for this record: missing without an ALT allele.
     pub fn qmean_value(&self) -> f32 {
         if self.ref_allele == self.alt_allele {
@@ -505,6 +515,7 @@ pub fn tumor_only_header(sample: &str) -> Header {
     header.push_record(r#"##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read depth as VarDict counts it at the variant's first internal base (POS+1 for deletions), the denominator of VarDict's AF: reads with any base quality, reads whose deletion spans the base, reference-matching soft-clipped bases, reads VarDict reassigned by realignment, and N calls only under -K; overlapping mates count twice unless VarDict ran with -u, and an insertion at the same position can make it the following base's depth. REF and ALT depths need not sum to DP.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=AF,Number=A,Type=Float,Description="Fraction of reads carrying the ALT allele, AD[1] / DP, computed by vartovcf at full precision rather than taken from VarDict's 4-decimal AF column, and clamped to [0, 1] because VarDict's ALT count can exceed DP; AD and DP keep the raw counts. Missing when there is no ALT allele or DP is 0.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=HICNT,Number=A,Type=Integer,Description="ALT reads whose mean base quality over the allele's bases is at least VarDict's -q; mapping quality is not considered. Missing when there is no ALT allele.">"#.as_bytes());
+    header.push_record(r#"##FORMAT=<ID=REALIGNED_FRAC_OF_DP,Number=A,Type=Float,Description="Fraction of VarDict's depth made of reads it reassigned to this ALT allele by local realignment or MNV merging (VarDict's ExtraAF, which var2vcf_valid.pl calls ADJAF). Those reads are already counted in AD[1] and AF, so this is not an adjusted AF; divided by AF it gives roughly the share of the ALT reads that realignment contributed. Rounded by VarDict to 4 decimals. Missing when there is no ALT allele.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=QMEAN,Number=A,Type=Float,Description="Mean, over the reads carrying the ALT allele, of VarDict's per-read variant quality: the base's Phred quality for SNVs, the mean of the block's bases for Complex calls (VarDict only extends a block with bases at least 5 above -q, so this runs high), the mean of the inserted bases for insertions, and the higher of the two flanking bases for deletions. Bases below -q are included and nothing is capped. Missing when there is no ALT allele.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=MEAN_MISMATCHES,Number=A,Type=Float,Description="Mean, over the reads carrying the ALT allele, of each read's substitution mismatches: its NM tag minus every inserted or deleted base, minus any mismatches VarDict merged into this Complex allele. Includes the variant's own mismatch for SNVs and excludes soft clips; a read without an NM tag counts as 0, and reads with more than VarDict's -m mismatches (default 8) are not counted. Missing when there is no ALT allele.">"#.as_bytes());
     header.push_record(r#"##ALT=<ID=DEL,Description="Deletion relative to the reference.">"#.as_bytes());
@@ -703,6 +714,24 @@ mod tests {
     }
 
     #[rstest]
+    fn test_tumor_only_variant_realigned_frac_of_dp_value_on_an_alt_call(
+        variants: Vec<TumorOnlyVariant<'static>>,
+    ) {
+        let mut variant = variants.into_iter().nth(2).unwrap();
+        variant.af_adjusted = 0.1364;
+        assert_eq!(variant.realigned_frac_of_dp_value(), 0.1364);
+    }
+
+    #[rstest]
+    fn test_tumor_only_variant_realigned_frac_of_dp_value_is_missing_without_an_alt(
+        variants: Vec<TumorOnlyVariant<'static>>,
+    ) {
+        let mut variant = variants.into_iter().nth(2).unwrap();
+        variant.alt_allele = variant.ref_allele;
+        assert!(variant.realigned_frac_of_dp_value().is_missing());
+    }
+
+    #[rstest]
     fn test_tumor_only_variant_hicnt_value_on_an_alt_call(
         variants: Vec<TumorOnlyVariant<'static>>,
     ) {
@@ -884,7 +913,7 @@ mod tests {
         let reader = VcfReader::from_path(file.path()).expect("Error opening tempfile!");
         let records = reader.header().header_records();
         let samples = reader.header().samples();
-        assert_eq!(records.len(), 19);
+        assert_eq!(records.len(), 20);
         assert_eq!(samples.len(), 1);
         assert!(samples.iter().all(|&s| s == "dna00001".as_bytes()));
     }
