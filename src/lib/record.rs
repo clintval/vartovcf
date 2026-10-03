@@ -401,7 +401,7 @@ pub fn tumor_only_header(sample: &str) -> Header {
     // header.push_record(r#"##INFO=<ID=DistanceReadEndMean,Number=1,Type=Float,Description="The mean distance to the nearest 5 or 3 prime read end (whichever is closer) in all reads that support the variant call.">"#.as_bytes());
     // header.push_record(r#"##INFO=<ID=DistanceReadEndMeanStDev,Number=1,Type=Float,Description="The standard deviation of the distance to the nearest 5 or 3 prime read end (whichever is closer) in all reads that support the variant call.">"#.as_bytes());
     // header.push_record(r#"##INFO=<ID=DupRate,Number=1,Type=Float,Description="The duplication rate, if this call is a duplication.">"#.as_bytes());
-    header.push_record(r#"##INFO=<ID=END,Number=1,Type=Integer,Description="The end location of this variant call.">"#.as_bytes());
+    header.push_record(r#"##INFO=<ID=END,Number=1,Type=Integer,Description="End position, written only on records with a symbolic ALT allele: the last deleted base for DEL, the last inverted base for INV, and VarDict's end of the duplication for DUP, which can be off by one depending on how VarDict found it.">"#.as_bytes());
     // header.push_record(r#"##INFO=<ID=MapQMean,Number=1,Type=Float,Description="The mean mapping quality (Phred) of all reads that directly support the variant call.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=MEAN_READ_NM,Number=1,Type=Float,Description="The mean mismatches within all reads that directly support the variant call.">"#.as_bytes());
     // header.push_record(r#"##INFO=<ID=MSI,Number=1,Type=Float,Description="Whether the variant call is in a microsatellite (MSI) or not. Greater than 1 indicates MSI.">"#.as_bytes());
