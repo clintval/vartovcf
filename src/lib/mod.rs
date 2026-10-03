@@ -144,15 +144,8 @@ where
 
         variant.set_qual(f32::missing());
 
-        let is_symbolic = VALID_SV_TYPES.contains(&var.variant_type);
-
-        if is_symbolic {
+        if VALID_SV_TYPES.contains(&var.variant_type) {
             variant.push_info_integer(b"END", &[var.end as i32])?;
-        }
-
-        variant.push_info_float(b"MEAN_READ_NM", &[var.mean_mismatches_in_reads])?;
-
-        if is_symbolic {
             variant.push_info_integer(b"SVLEN", &[var.length()])?;
             variant.push_info_string(b"SVTYPE", &[var.variant_type.as_bytes()])?;
         }
@@ -161,6 +154,7 @@ where
         variant.push_format_integer(b"AD", &var.ad_value())?;
         variant.push_format_integer(b"DP", &[var.depth])?;
         variant.push_format_float(b"QMEAN", &[var.qmean_value()])?;
+        variant.push_format_float(b"MEAN_MISMATCHES", &[var.mean_mismatches_value()])?;
 
         writer.write(&variant)?;
         progress.record();

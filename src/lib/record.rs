@@ -295,7 +295,7 @@ pub struct TumorOnlyVariant<'a> {
     pub microsatellite: f32,
     /// The length of the microsatellite in base pairs of reference genome.
     pub microsatellite_length: i32,
-    /// The length of the microsatellite in base pairs of reference genome.
+    /// The mean substitution mismatches per read across the reads that support the variant call.
     pub mean_mismatches_in_reads: f32,
     /// The number of high quality reads supporting the variant call.
     pub high_quality_variant_reads: i32,
@@ -340,6 +340,15 @@ impl<'a> TumorOnlyVariant<'a> {
             f32::missing()
         } else {
             self.base_quality_mean
+        }
+    }
+
+    /// Return the "MEAN_MISMATCHES" formatted VCF field for this record: missing without an ALT allele.
+    pub fn mean_mismatches_value(&self) -> f32 {
+        if self.ref_allele == self.alt_allele {
+            f32::missing()
+        } else {
+            self.mean_mismatches_in_reads
         }
     }
 
@@ -403,7 +412,6 @@ pub fn tumor_only_header(sample: &str) -> Header {
     // header.push_record(r#"##INFO=<ID=DupRate,Number=1,Type=Float,Description="The duplication rate, if this call is a duplication.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=END,Number=1,Type=Integer,Description="End position, written only on records with a symbolic ALT allele: the last deleted base for DEL, the last inverted base for INV, and VarDict's end of the duplication for DUP, which can be off by one depending on how VarDict found it.">"#.as_bytes());
     // header.push_record(r#"##INFO=<ID=MapQMean,Number=1,Type=Float,Description="The mean mapping quality (Phred) of all reads that directly support the variant call.">"#.as_bytes());
-    header.push_record(r#"##INFO=<ID=MEAN_READ_NM,Number=1,Type=Float,Description="The mean mismatches within all reads that directly support the variant call.">"#.as_bytes());
     // header.push_record(r#"##INFO=<ID=MSI,Number=1,Type=Float,Description="Whether the variant call is in a microsatellite (MSI) or not. Greater than 1 indicates MSI.">"#.as_bytes());
     // header.push_record(r#"##INFO=<ID=MSILen,Number=1,Type=Float,Description="The length, in base pairs, of the microsatellite this variant call is in.">"#.as_bytes());
     // header.push_record(r#"##INFO=<ID=SignalToNoise,Number=1,Type=Float,Description="The signal to noise ratio for this variant call.">"#.as_bytes());
@@ -421,6 +429,7 @@ pub fn tumor_only_header(sample: &str) -> Header {
     header.push_record(r#"##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Read depth for REF then ALT as VarDict counts them: ALT is the reads carrying this allele and REF is the reads carrying the reference base at the variant's first internal base (the first deleted base for deletions, without insertion-carrying reads for insertions). REF is missing for Complex calls, where VarDict counts only their first base and can count a read as both, and REF is the only value when there is no ALT allele.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read depth as VarDict counts it at the variant's first internal base (POS+1 for deletions), the denominator of VarDict's AF: reads with any base quality, reads whose deletion spans the base, reference-matching soft-clipped bases, reads VarDict reassigned by realignment, and N calls only under -K; overlapping mates count twice unless VarDict ran with -u, and an insertion at the same position can make it the following base's depth. REF and ALT depths need not sum to DP.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=QMEAN,Number=A,Type=Float,Description="Mean, over the reads carrying the ALT allele, of VarDict's per-read variant quality: the base's Phred quality for SNVs, the mean of the block's bases for Complex calls (VarDict only extends a block with bases at least 5 above -q, so this runs high), the mean of the inserted bases for insertions, and the higher of the two flanking bases for deletions. Bases below -q are included and nothing is capped. Missing when there is no ALT allele.">"#.as_bytes());
+    header.push_record(r#"##FORMAT=<ID=MEAN_MISMATCHES,Number=A,Type=Float,Description="Mean, over the reads carrying the ALT allele, of each read's substitution mismatches: its NM tag minus every inserted or deleted base, minus any mismatches VarDict merged into this Complex allele. Includes the variant's own mismatch for SNVs and excludes soft clips; a read without an NM tag counts as 0, and reads with more than VarDict's -m mismatches (default 8) are not counted. Missing when there is no ALT allele.">"#.as_bytes());
     header.push_record(r#"##ALT=<ID=BND,Description="Region with an identified unambiguous single breakend.">"#.as_bytes());
     header.push_record(r#"##ALT=<ID=CNV,Description="Copy number variable region.">"#.as_bytes());
     header.push_record(r#"##ALT=<ID=DEL,Description="Deletion relative to the reference.">"#.as_bytes());
@@ -539,6 +548,24 @@ mod tests {
         for (variant, ad) in variants.iter().zip(expected.iter()) {
             assert_eq!(&variant.ad_value(), ad);
         }
+    }
+
+    #[rstest]
+    fn test_tumor_only_variant_mean_mismatches_value_on_an_alt_call(
+        variants: Vec<TumorOnlyVariant<'static>>,
+    ) {
+        let mut variant = variants.into_iter().nth(2).unwrap();
+        variant.mean_mismatches_in_reads = 1.5;
+        assert_eq!(variant.mean_mismatches_value(), 1.5);
+    }
+
+    #[rstest]
+    fn test_tumor_only_variant_mean_mismatches_value_is_missing_without_an_alt(
+        variants: Vec<TumorOnlyVariant<'static>>,
+    ) {
+        let mut variant = variants.into_iter().nth(2).unwrap();
+        variant.alt_allele = variant.ref_allele;
+        assert!(variant.mean_mismatches_value().is_missing());
     }
 
     #[rstest]
