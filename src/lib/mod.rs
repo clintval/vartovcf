@@ -167,6 +167,7 @@ where
         variant.push_format_integer(b"DP", &[var.depth])?;
         variant.push_format_float(b"AF", &[var.af_value()])?;
         variant.push_format_integer(b"HICNT", &[var.hicnt_value()])?;
+        variant.push_format_float(b"REALIGNED_FRAC_OF_DP", &[var.realigned_frac_of_dp_value()])?;
         variant.push_format_float(b"QMEAN", &[var.qmean_value()])?;
         variant.push_format_float(b"MEAN_MISMATCHES", &[var.mean_mismatches_value()])?;
 
