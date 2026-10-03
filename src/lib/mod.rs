@@ -148,6 +148,10 @@ where
             variant.push_info_string(b"TYPE", &[class.as_bytes()])?;
         }
 
+        if let Some(shift) = var.indel_3p_shift_value() {
+            variant.push_info_integer(b"INDEL_3P_SHIFT", &[shift])?;
+        }
+
         if VALID_SV_TYPES.contains(&var.variant_type) {
             variant.push_info_integer(b"END", &[var.end as i32])?;
             let sv_length = var.sv_length().ok_or_else(|| {

@@ -289,7 +289,8 @@ pub struct TumorOnlyVariant<'a> {
     pub af_high_quality_bases: f32,
     /// Adjusted allele frequency for indels due to local realignment. Lossy due to rounding.
     pub af_adjusted: f32,
-    /// The number of bases to be shifted 3-prime for deletions due to alternative alignment(s).
+    /// The number of bases an insertion or deletion can slide toward the 3' end with the same
+    /// haplotype; VarDict also prints a meaningless value here for SNVs and MNVs.
     pub num_bases_3_prime_shift_for_deletions: i32,
     /// Whether the variant call is in a microsatellite (MSI) or not. Greater than 1 indicates MSI.
     pub microsatellite: f32,
@@ -487,6 +488,17 @@ impl<'a> TumorOnlyVariant<'a> {
         Some(class)
     }
 
+    /// Return the "INDEL_3P_SHIFT" formatted VCF field for this record: only for insertions and
+    /// deletions, where VarDict's 3' shift describes the indel.
+    pub fn indel_3p_shift_value(&self) -> Option<i32> {
+        match self.variant_class() {
+            Some("Insertion") | Some("Deletion") => {
+                Some(self.num_bases_3_prime_shift_for_deletions)
+            }
+            _ => None,
+        }
+    }
+
     /// Return the signed structural variant length from VarDict's own event length, which it writes
     /// after the slash in the genotype column: `-N` for DEL, `+N` for DUP and `<INVN>` for INV.
     pub fn sv_length(&self) -> Option<i32> {
@@ -532,6 +544,7 @@ pub fn tumor_only_header(sample: &str) -> Header {
     // header.push_record(r#"##INFO=<ID=DistanceReadEndMeanStDev,Number=1,Type=Float,Description="The standard deviation of the distance to the nearest 5 or 3 prime read end (whichever is closer) in all reads that support the variant call.">"#.as_bytes());
     // header.push_record(r#"##INFO=<ID=DupRate,Number=1,Type=Float,Description="The duplication rate, if this call is a duplication.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=TYPE,Number=A,Type=String,Description="VarDict's class of the change from REF to ALT, from VarDict's own rule applied to the alleles in this record: SNV (one base to one base), Insertion (ALT is the single REF base followed by inserted bases), Deletion (REF is longer and ALT is its first base), Complex (every other change, including MNVs, which VarDict does not separate), or DEL, DUP or INV for a symbolic structural variant. Absent when there is no ALT allele.">"#.as_bytes());
+    header.push_record(r#"##INFO=<ID=INDEL_3P_SHIFT,Number=A,Type=Integer,Description="Number of bases this insertion or deletion can slide toward the 3' end (rightward on the forward strand) and still describe the same haplotype, counted within VarDict's 70-base window, so values top out near 70; POS plus this is the right-most equivalent position. Written only for insertions and deletions.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=END,Number=1,Type=Integer,Description="End position, written only on records with a symbolic ALT allele: the last deleted base for DEL, the last inverted base for INV, and VarDict's end of the duplication for DUP, which can be off by one depending on how VarDict found it.">"#.as_bytes());
     // header.push_record(r#"##INFO=<ID=MapQMean,Number=1,Type=Float,Description="The mean mapping quality (Phred) of all reads that directly support the variant call.">"#.as_bytes());
     // header.push_record(r#"##INFO=<ID=MSI,Number=1,Type=Float,Description="Whether the variant call is in a microsatellite (MSI) or not. Greater than 1 indicates MSI.">"#.as_bytes());
@@ -712,6 +725,26 @@ mod tests {
         variant.alt_depth = alt_depth;
         variant.depth = depth;
         assert!(variant.af_value().is_missing());
+    }
+
+    #[rstest]
+    #[case("GTT", "G", Some(3))]
+    #[case("G", "GTT", Some(3))]
+    #[case("G", "A", None)]
+    #[case("GA", "AC", None)]
+    #[case("A", "<DEL>", None)]
+    #[case("G", "G", None)]
+    fn test_tumor_only_variant_indel_3p_shift_value(
+        variants: Vec<TumorOnlyVariant<'static>>,
+        #[case] ref_allele: &'static str,
+        #[case] alt_allele: &'static str,
+        #[case] expected: Option<i32>,
+    ) {
+        let mut variant = variants.into_iter().nth(2).unwrap();
+        variant.ref_allele = ref_allele;
+        variant.alt_allele = alt_allele;
+        variant.num_bases_3_prime_shift_for_deletions = 3;
+        assert_eq!(variant.indel_3p_shift_value(), expected);
     }
 
     #[rstest]
@@ -1013,7 +1046,7 @@ mod tests {
         let reader = VcfReader::from_path(file.path()).expect("Error opening tempfile!");
         let records = reader.header().header_records();
         let samples = reader.header().samples();
-        assert_eq!(records.len(), 24);
+        assert_eq!(records.len(), 25);
         assert_eq!(samples.len(), 1);
         assert!(samples.iter().all(|&s| s == "dna00001".as_bytes()));
     }
