@@ -7,6 +7,7 @@ use csv::{Reader, ReaderBuilder, StringRecord};
 use proglog::ProgLogBuilder;
 use rust_htslib::bcf::Format;
 use rust_htslib::bcf::Writer as VcfWriter;
+use rust_htslib::bcf::record::Numeric;
 use std::error;
 use std::fmt::Debug;
 use std::io::Read;
@@ -141,12 +142,7 @@ where
             var.alt_allele_for_vcf().as_bytes(),
         ])?;
 
-        if var.alt_depth == 0 {
-            variant.set_qual(0.0)
-        } else {
-            let qual = (var.alt_depth as f32).ln() / 2.0_f32.ln() * var.base_quality_mean;
-            variant.set_qual(qual)
-        }
+        variant.set_qual(f32::missing());
 
         variant.push_info_integer(b"END", &[var.end as i32])?;
         variant.push_info_float(b"MEAN_READ_NM", &[var.mean_mismatches_in_reads])?;
@@ -163,6 +159,7 @@ where
         variant.push_genotypes(var.gt_value(MIN_HOM_ALT_AF))?;
         variant.push_format_integer(b"AD", &var.ad_value())?;
         variant.push_format_integer(b"DP", &[var.depth])?;
+        variant.push_format_float(b"QMEAN", &[var.qmean_value()])?;
 
         writer.write(&variant)?;
         progress.record();
