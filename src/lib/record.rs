@@ -373,13 +373,20 @@ impl<'a> TumorOnlyVariant<'a> {
         }
     }
 
-    /// The length of this variant from the perspective of the reference coordinate system.
-    pub fn length(&self) -> i32 {
-        if self.variant_type == "Deletion" || self.variant_type == "DEL" {
-            -((self.end - self.start + 1) as i32)
-        } else {
-            (self.end - self.start + 1) as i32
-        }
+    /// Return the signed structural variant length from VarDict's own event length, which it writes
+    /// after the slash in the genotype column: `-N` for DEL, `+N` for DUP and `<INVN>` for INV.
+    pub fn sv_length(&self) -> Option<i32> {
+        let event = self.gt.split_once('/')?.1;
+        let (sign, rest) = match self.variant_type {
+            "DEL" => (-1, event.strip_prefix('-')?),
+            "DUP" => (1, event.strip_prefix('+')?),
+            "INV" => (1, event.strip_prefix("<INV")?),
+            _ => return None,
+        };
+        let digits = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .map_or(rest, |end| &rest[..end]);
+        digits.parse::<i32>().ok().map(|length| sign * length)
     }
 }
 
@@ -422,19 +429,16 @@ pub fn tumor_only_header(sample: &str) -> Header {
     // header.push_record(r#"##INFO=<ID=StrandBiasOddRatio,Number=1,Type=Float,Description="The odds ratio for strand bias for this variant call.">"#.as_bytes());
     // header.push_record(r#"##INFO=<ID=StrandBiasPValue,Number=1,Type=Float,Description="The Fisher test p-value for if you should reject the hypothesis that there is no strand bias. Not multiple hypothesis test corrected.">"#.as_bytes());
     // header.push_record(r#"##INFO=<ID=StrandBiasRef,Number=2,Type=Integer,Description="The number of reference forward and reverse reads in the format `forward`:`reverse`.">"#.as_bytes());
-    header.push_record(r#"##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="The length of structural variant in base pairs of reference genome, if this call is a structural variant.">"#.as_bytes());
-    header.push_record(r#"##INFO=<ID=SVTYPE,Number=1,Type=String,Description="The structural variant type (BND, CNV, DEL, DUP, INS, INV), if this call is a structural variant.">"#.as_bytes());
+    header.push_record(r#"##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="Signed length of the structural variant, from VarDict's own event length: negative for DEL (the deleted bases), positive for DUP (the duplicated bases) and INV (the inverted bases).">"#.as_bytes());
+    header.push_record(r#"##INFO=<ID=SVTYPE,Number=1,Type=String,Description="Structural variant type: DEL, DUP or INV.">"#.as_bytes());
     header.push_record(r#"##FILTER=<ID=PASS,Description="The variant call has passed all filters and may be considered for downstream analysis.">"#.as_bytes());
     header.push_record(format!(r#"##FORMAT=<ID=GT,Number=1,Type=String,Description="The genotype inferred from the allele frequency alone, since VarDict does not genotype: 1/1 when AF >= {MIN_HOM_ALT_AF}, 0/1 for any other call with an ALT allele, and 0/0 when there is no ALT allele.">"#).as_bytes());
     header.push_record(r#"##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Read depth for REF then ALT as VarDict counts them: ALT is the reads carrying this allele and REF is the reads carrying the reference base at the variant's first internal base (the first deleted base for deletions, without insertion-carrying reads for insertions). REF is missing for Complex calls, where VarDict counts only their first base and can count a read as both, and REF is the only value when there is no ALT allele.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read depth as VarDict counts it at the variant's first internal base (POS+1 for deletions), the denominator of VarDict's AF: reads with any base quality, reads whose deletion spans the base, reference-matching soft-clipped bases, reads VarDict reassigned by realignment, and N calls only under -K; overlapping mates count twice unless VarDict ran with -u, and an insertion at the same position can make it the following base's depth. REF and ALT depths need not sum to DP.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=QMEAN,Number=A,Type=Float,Description="Mean, over the reads carrying the ALT allele, of VarDict's per-read variant quality: the base's Phred quality for SNVs, the mean of the block's bases for Complex calls (VarDict only extends a block with bases at least 5 above -q, so this runs high), the mean of the inserted bases for insertions, and the higher of the two flanking bases for deletions. Bases below -q are included and nothing is capped. Missing when there is no ALT allele.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=MEAN_MISMATCHES,Number=A,Type=Float,Description="Mean, over the reads carrying the ALT allele, of each read's substitution mismatches: its NM tag minus every inserted or deleted base, minus any mismatches VarDict merged into this Complex allele. Includes the variant's own mismatch for SNVs and excludes soft clips; a read without an NM tag counts as 0, and reads with more than VarDict's -m mismatches (default 8) are not counted. Missing when there is no ALT allele.">"#.as_bytes());
-    header.push_record(r#"##ALT=<ID=BND,Description="Region with an identified unambiguous single breakend.">"#.as_bytes());
-    header.push_record(r#"##ALT=<ID=CNV,Description="Copy number variable region.">"#.as_bytes());
     header.push_record(r#"##ALT=<ID=DEL,Description="Deletion relative to the reference.">"#.as_bytes());
     header.push_record(r#"##ALT=<ID=DUP,Description="Region of elevated copy number relative to the reference.">"#.as_bytes());
-    header.push_record(r#"##ALT=<ID=INS,Description="Insertion of novel sequence relative to the reference.">"#.as_bytes());
     header.push_record(r#"##ALT=<ID=INV,Description="Inversion of reference sequence.">"#.as_bytes());
     header
 }
@@ -548,6 +552,24 @@ mod tests {
         for (variant, ad) in variants.iter().zip(expected.iter()) {
             assert_eq!(&variant.ad_value(), ad);
         }
+    }
+
+    #[rstest]
+    #[case("DEL", "-3349412/-3349412", Some(-3349412))]
+    #[case("DUP", "A/+11063372", Some(11063372))]
+    #[case("INV", "A/<INV11063372>", Some(11063372))]
+    #[case("DEL", "G/G", None)]
+    #[case("SNV", "G/A", None)]
+    fn test_tumor_only_variant_sv_length(
+        variants: Vec<TumorOnlyVariant<'static>>,
+        #[case] variant_type: &'static str,
+        #[case] gt: &'static str,
+        #[case] expected: Option<i32>,
+    ) {
+        let mut variant = variants.into_iter().nth(3).unwrap();
+        variant.variant_type = variant_type;
+        variant.gt = gt;
+        assert_eq!(variant.sv_length(), expected);
     }
 
     #[rstest]
@@ -690,7 +712,7 @@ mod tests {
         let reader = VcfReader::from_path(file.path()).expect("Error opening tempfile!");
         let records = reader.header().header_records();
         let samples = reader.header().samples();
-        assert_eq!(records.len(), 17);
+        assert_eq!(records.len(), 14);
         assert_eq!(samples.len(), 1);
         assert!(samples.iter().all(|&s| s == "dna00001".as_bytes()));
     }

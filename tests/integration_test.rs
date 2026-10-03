@@ -143,6 +143,23 @@ mod tests {
 
     #[test]
     #[rustfmt::skip]
+    fn run_end_to_end_fails_cleanly_on_an_sv_without_a_length() -> Result<(), Box<dyn std::error::Error>> {
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        let assert = cmd
+            .arg("--reference").arg("tests/reference.fa")
+            .arg("--sample").arg("dna00001")
+            .pipe_stdin("tests/calls.sv-without-length.var")?
+            .assert()
+            .code(1);
+
+        let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+        assert!(stderr.contains("chr13:24684729: cannot read the DEL length from the genotype column 'G/G'"), "{stderr}");
+        assert!(!stderr.contains("panicked"), "{stderr}");
+        Ok(())
+    }
+
+    #[test]
+    #[rustfmt::skip]
     fn run_end_to_end_with_skip_non_variants() -> Result<(), Box<dyn std::error::Error>> {
         let output = NamedTempFile::new().expect("Cannot create temporary file!");
         let output = output.path().to_str().unwrap();
