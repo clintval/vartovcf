@@ -162,6 +162,8 @@ where
 
         variant.push_genotypes(var.gt_value(MIN_HOM_ALT_AF))?;
         variant.push_format_integer(b"AD", &var.ad_value())?;
+        variant.push_format_integer(b"ADF", &var.adf_value())?;
+        variant.push_format_integer(b"ADR", &var.adr_value())?;
         variant.push_format_integer(b"DP", &[var.depth])?;
         variant.push_format_float(b"AF", &[var.af_value()])?;
         variant.push_format_float(b"QMEAN", &[var.qmean_value()])?;
