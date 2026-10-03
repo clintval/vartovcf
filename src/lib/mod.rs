@@ -152,6 +152,13 @@ where
             variant.push_info_integer(b"INDEL_3P_SHIFT", &[shift])?;
         }
 
+        if let (Some(copies), Some(unit_length)) =
+            (var.repeat_unit_copies_value(), var.repeat_unit_len_value())
+        {
+            variant.push_info_float(b"REPEAT_UNIT_COPIES", &[copies])?;
+            variant.push_info_integer(b"REPEAT_UNIT_LEN", &[unit_length])?;
+        }
+
         if VALID_SV_TYPES.contains(&var.variant_type) {
             variant.push_info_integer(b"END", &[var.end as i32])?;
             let sv_length = var.sv_length().ok_or_else(|| {
