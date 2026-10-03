@@ -189,6 +189,11 @@ where
         variant.push_format_float(b"MEAN_MAPQ", &[var.mean_mapq_value()])?;
         variant.push_format_float(b"MEAN_MISMATCHES", &[var.mean_mismatches_value()])?;
 
+        if let Some((softclip_reads, discordant_reads)) = var.sv_read_counts() {
+            variant.push_format_integer(b"SV_SOFTCLIP_READS", &[softclip_reads])?;
+            variant.push_format_integer(b"SV_DISCORDANT_READS", &[discordant_reads])?;
+        }
+
         writer.write(&variant)?;
         progress.record();
     }
