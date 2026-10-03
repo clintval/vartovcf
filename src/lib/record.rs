@@ -352,6 +352,15 @@ impl<'a> TumorOnlyVariant<'a> {
         }
     }
 
+    /// Return the "AF" formatted VCF field for this record: the ALT depth over DP at full precision,
+    /// clamped to [0, 1], and missing without an ALT allele or without depth.
+    pub fn af_value(&self) -> f32 {
+        if self.ref_allele == self.alt_allele || self.depth <= 0 {
+            return f32::missing();
+        }
+        (self.alt_depth as f64 / self.depth as f64).clamp(0.0, 1.0) as f32
+    }
+
     /// Return the VCF-valid alternate allele for this record.
     pub fn alt_allele_for_vcf(&self) -> String {
         if self.ref_allele == self.alt_allele {
@@ -366,7 +375,7 @@ impl<'a> TumorOnlyVariant<'a> {
     pub fn gt_value(&self, min_hom_alt_af: f32) -> &[GenotypeAllele] {
         if self.ref_allele == self.alt_allele {
             &[GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(0)]
-        } else if self.af >= min_hom_alt_af {
+        } else if self.af_value() >= min_hom_alt_af {
             &[GenotypeAllele::Unphased(1), GenotypeAllele::Unphased(1)]
         } else {
             &[GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(1)]
@@ -468,6 +477,7 @@ pub fn tumor_only_header(sample: &str) -> Header {
     header.push_record(format!(r#"##FORMAT=<ID=GT,Number=1,Type=String,Description="The genotype inferred from the allele frequency alone, since VarDict does not genotype: 1/1 when AF >= {MIN_HOM_ALT_AF}, 0/1 for any other call with an ALT allele, and 0/0 when there is no ALT allele.">"#).as_bytes());
     header.push_record(r#"##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Read depth for REF then ALT as VarDict counts them: ALT is the reads carrying this allele and REF is the reads carrying the reference base at the variant's first internal base (the first deleted base for deletions, without insertion-carrying reads for insertions). REF is missing for Complex calls, where VarDict counts only their first base and can count a read as both, and REF is the only value when there is no ALT allele.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read depth as VarDict counts it at the variant's first internal base (POS+1 for deletions), the denominator of VarDict's AF: reads with any base quality, reads whose deletion spans the base, reference-matching soft-clipped bases, reads VarDict reassigned by realignment, and N calls only under -K; overlapping mates count twice unless VarDict ran with -u, and an insertion at the same position can make it the following base's depth. REF and ALT depths need not sum to DP.">"#.as_bytes());
+    header.push_record(r#"##FORMAT=<ID=AF,Number=A,Type=Float,Description="Fraction of reads carrying the ALT allele, AD[1] / DP, computed by vartovcf at full precision rather than taken from VarDict's 4-decimal AF column, and clamped to [0, 1] because VarDict's ALT count can exceed DP; AD and DP keep the raw counts. Missing when there is no ALT allele or DP is 0.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=QMEAN,Number=A,Type=Float,Description="Mean, over the reads carrying the ALT allele, of VarDict's per-read variant quality: the base's Phred quality for SNVs, the mean of the block's bases for Complex calls (VarDict only extends a block with bases at least 5 above -q, so this runs high), the mean of the inserted bases for insertions, and the higher of the two flanking bases for deletions. Bases below -q are included and nothing is capped. Missing when there is no ALT allele.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=MEAN_MISMATCHES,Number=A,Type=Float,Description="Mean, over the reads carrying the ALT allele, of each read's substitution mismatches: its NM tag minus every inserted or deleted base, minus any mismatches VarDict merged into this Complex allele. Includes the variant's own mismatch for SNVs and excludes soft clips; a read without an NM tag counts as 0, and reads with more than VarDict's -m mismatches (default 8) are not counted. Missing when there is no ALT allele.">"#.as_bytes());
     header.push_record(r#"##ALT=<ID=DEL,Description="Deletion relative to the reference.">"#.as_bytes());
@@ -588,6 +598,42 @@ mod tests {
     }
 
     #[rstest]
+    #[case(1, 1_000_000, 1e-6)]
+    #[case(9, 22, 9.0 / 22.0)]
+    #[case(12, 10, 1.0)]
+    #[case(0, 10, 0.0)]
+    fn test_tumor_only_variant_af_value(
+        variants: Vec<TumorOnlyVariant<'static>>,
+        #[case] alt_depth: i32,
+        #[case] depth: i32,
+        #[case] expected: f64,
+    ) {
+        let mut variant = variants.into_iter().nth(2).unwrap();
+        variant.alt_depth = alt_depth;
+        variant.depth = depth;
+        variant.af = 0.0;
+        assert_eq!(variant.af_value(), expected as f32);
+    }
+
+    #[rstest]
+    #[case("G", "A", 1, 0)]
+    #[case("G", "G", 9, 10)]
+    fn test_tumor_only_variant_af_value_is_missing(
+        variants: Vec<TumorOnlyVariant<'static>>,
+        #[case] ref_allele: &'static str,
+        #[case] alt_allele: &'static str,
+        #[case] alt_depth: i32,
+        #[case] depth: i32,
+    ) {
+        let mut variant = variants.into_iter().nth(2).unwrap();
+        variant.ref_allele = ref_allele;
+        variant.alt_allele = alt_allele;
+        variant.alt_depth = alt_depth;
+        variant.depth = depth;
+        assert!(variant.af_value().is_missing());
+    }
+
+    #[rstest]
     #[case("G", "A", "SNV", Some("SNV"))]
     #[case("G", "GTT", "Insertion", Some("Insertion"))]
     #[case("GTT", "G", "Deletion", Some("Deletion"))]
@@ -687,23 +733,27 @@ mod tests {
     }
 
     #[rstest]
-    #[case("G", "A", 0.0001, [0, 1])]
-    #[case("G", "A", 0.25, [0, 1])]
-    #[case("G", "A", 0.7999, [0, 1])]
-    #[case("G", "A", 0.8, [1, 1])]
-    #[case("G", "A", 1.0, [1, 1])]
-    #[case("G", "G", 0.9, [0, 0])]
+    #[case("G", "A", 1, 10000, [0, 1])]
+    #[case("G", "A", 25, 100, [0, 1])]
+    #[case("G", "A", 7999, 10000, [0, 1])]
+    #[case("G", "A", 8, 10, [1, 1])]
+    #[case("G", "A", 12, 10, [1, 1])]
+    #[case("G", "A", 1, 0, [0, 1])]
+    #[case("G", "G", 9, 10, [0, 0])]
     fn test_tumor_only_variant_gt_value(
         variants: Vec<TumorOnlyVariant<'static>>,
         #[case] ref_allele: &'static str,
         #[case] alt_allele: &'static str,
-        #[case] af: f32,
+        #[case] alt_depth: i32,
+        #[case] depth: i32,
         #[case] expected: [i32; 2],
     ) {
         let mut variant = variants.into_iter().nth(2).unwrap();
         variant.ref_allele = ref_allele;
         variant.alt_allele = alt_allele;
-        variant.af = af;
+        variant.alt_depth = alt_depth;
+        variant.depth = depth;
+        variant.af = 0.0;
         assert_eq!(
             variant.gt_value(MIN_HOM_ALT_AF),
             &expected.map(GenotypeAllele::Unphased)
@@ -769,7 +819,7 @@ mod tests {
         let reader = VcfReader::from_path(file.path()).expect("Error opening tempfile!");
         let records = reader.header().header_records();
         let samples = reader.header().samples();
-        assert_eq!(records.len(), 15);
+        assert_eq!(records.len(), 16);
         assert_eq!(samples.len(), 1);
         assert!(samples.iter().all(|&s| s == "dna00001".as_bytes()));
     }

@@ -79,6 +79,23 @@ mod tests {
 
     #[test]
     #[rustfmt::skip]
+    fn run_end_to_end_keeps_full_precision_and_clamps_af() -> Result<(), Box<dyn std::error::Error>> {
+        let output = NamedTempFile::new().expect("Cannot create temporary file!");
+        let output = output.path().to_str().unwrap();
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        cmd
+            .arg("--reference").arg("tests/reference.fa")
+            .arg("--sample").arg("dna00001")
+            .arg("--input").arg("tests/calls.deep.var")
+            .arg("--output").arg(output)
+            .unwrap().assert().success();
+
+        assert!(diff(output, "tests/calls.deep.vcf"));
+        Ok(())
+    }
+
+    #[test]
+    #[rustfmt::skip]
     fn run_end_to_end_on_complex_calls() -> Result<(), Box<dyn std::error::Error>> {
         let output = NamedTempFile::new().expect("Cannot create temporary file!");
         let output = output.path().to_str().unwrap();
