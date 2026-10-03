@@ -47,7 +47,6 @@ struct Opt {
 }
 
 /// Main binary entrypoint.
-#[cfg(not(tarpaulin_include))]
 fn main() -> Result<(), Error> {
     let env = Env::default().default_filter_or("info");
     // Usage errors exit 1 instead of clap's default of 2.

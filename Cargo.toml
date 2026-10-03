@@ -48,4 +48,4 @@ serde_test = "1.0.177"
 tempfile = "3.27.0"
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }
+unsafe_code = "forbid"
