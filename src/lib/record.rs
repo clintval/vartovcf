@@ -324,14 +324,29 @@ impl<'a> TumorOnlyVariant<'a> {
     /// Return the "AD" formatted VCF field for this record: the REF depth alone without an ALT allele,
     /// otherwise REF then ALT, with REF missing for Complex calls.
     pub fn ad_value(&self) -> Vec<i32> {
-        let ref_depth = self.ref_forward + self.ref_reverse;
+        self.allele_depths(self.ref_forward + self.ref_reverse, self.alt_depth)
+    }
+
+    /// Return a per-allele depth for this record: the REF depth alone without an ALT allele,
+    /// otherwise REF then ALT, with REF missing for Complex calls.
+    fn allele_depths(&self, ref_depth: i32, alt_depth: i32) -> Vec<i32> {
         if self.ref_allele == self.alt_allele {
             vec![ref_depth]
         } else if self.variant_type == "Complex" {
-            vec![i32::missing(), self.alt_depth]
+            vec![i32::missing(), alt_depth]
         } else {
-            vec![ref_depth, self.alt_depth]
+            vec![ref_depth, alt_depth]
         }
+    }
+
+    /// Return the "ADF" formatted VCF field for this record: the forward-strand half of AD.
+    pub fn adf_value(&self) -> Vec<i32> {
+        self.allele_depths(self.ref_forward, self.alt_forward)
+    }
+
+    /// Return the "ADR" formatted VCF field for this record: the reverse-strand half of AD.
+    pub fn adr_value(&self) -> Vec<i32> {
+        self.allele_depths(self.ref_reverse, self.alt_reverse)
     }
 
     /// Return the "QMEAN" formatted VCF field for this record: missing without an ALT allele.
@@ -476,6 +491,8 @@ pub fn tumor_only_header(sample: &str) -> Header {
     header.push_record(r#"##FILTER=<ID=PASS,Description="The variant call has passed all filters and may be considered for downstream analysis.">"#.as_bytes());
     header.push_record(format!(r#"##FORMAT=<ID=GT,Number=1,Type=String,Description="The genotype inferred from the allele frequency alone, since VarDict does not genotype: 1/1 when AF >= {MIN_HOM_ALT_AF}, 0/1 for any other call with an ALT allele, and 0/0 when there is no ALT allele.">"#).as_bytes());
     header.push_record(r#"##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Read depth for REF then ALT as VarDict counts them: ALT is the reads carrying this allele and REF is the reads carrying the reference base at the variant's first internal base (the first deleted base for deletions, without insertion-carrying reads for insertions). REF is missing for Complex calls, where VarDict counts only their first base and can count a read as both, and REF is the only value when there is no ALT allele.">"#.as_bytes());
+    header.push_record(r#"##FORMAT=<ID=ADF,Number=R,Type=Integer,Description="Reads on the forward strand (SAM flag 0x10 unset) supporting REF then ALT, the forward half of AD as VarDict counts it: REF is missing for Complex calls and is the only value when there is no ALT allele. When VarDict runs with -u, overlapping mates count only through the reverse read.">"#.as_bytes());
+    header.push_record(r#"##FORMAT=<ID=ADR,Number=R,Type=Integer,Description="Reads on the reverse strand (SAM flag 0x10 set) supporting REF then ALT, the reverse half of AD as VarDict counts it: REF is missing for Complex calls and is the only value when there is no ALT allele. When VarDict runs with -u, overlapping mates count only through the reverse read.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read depth as VarDict counts it at the variant's first internal base (POS+1 for deletions), the denominator of VarDict's AF: reads with any base quality, reads whose deletion spans the base, reference-matching soft-clipped bases, reads VarDict reassigned by realignment, and N calls only under -K; overlapping mates count twice unless VarDict ran with -u, and an insertion at the same position can make it the following base's depth. REF and ALT depths need not sum to DP.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=AF,Number=A,Type=Float,Description="Fraction of reads carrying the ALT allele, AD[1] / DP, computed by vartovcf at full precision rather than taken from VarDict's 4-decimal AF column, and clamped to [0, 1] because VarDict's ALT count can exceed DP; AD and DP keep the raw counts. Missing when there is no ALT allele or DP is 0.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=QMEAN,Number=A,Type=Float,Description="Mean, over the reads carrying the ALT allele, of VarDict's per-read variant quality: the base's Phred quality for SNVs, the mean of the block's bases for Complex calls (VarDict only extends a block with bases at least 5 above -q, so this runs high), the mean of the inserted bases for insertions, and the higher of the two flanking bases for deletions. Bases below -q are included and nothing is capped. Missing when there is no ALT allele.">"#.as_bytes());
@@ -712,6 +729,26 @@ mod tests {
     }
 
     #[rstest]
+    #[case("G", "A", "SNV", vec![2766, 1], vec![5280, 0])]
+    #[case("GA", "AC", "Complex", vec![i32::missing(), 1], vec![i32::missing(), 0])]
+    #[case("G", "G", "", vec![2766], vec![5280])]
+    fn test_tumor_only_variant_strand_depths(
+        variants: Vec<TumorOnlyVariant<'static>>,
+        #[case] ref_allele: &'static str,
+        #[case] alt_allele: &'static str,
+        #[case] variant_type: &'static str,
+        #[case] adf: Vec<i32>,
+        #[case] adr: Vec<i32>,
+    ) {
+        let mut variant = variants.into_iter().nth(2).unwrap();
+        variant.ref_allele = ref_allele;
+        variant.alt_allele = alt_allele;
+        variant.variant_type = variant_type;
+        assert_eq!(variant.adf_value(), adf);
+        assert_eq!(variant.adr_value(), adr);
+    }
+
+    #[rstest]
     #[case("G", "A", "SNV", 1, vec![8046, 1])]
     #[case("G", "A", "SNV", 0, vec![8046, 0])]
     #[case("GA", "AC", "Complex", 9, vec![i32::missing(), 9])]
@@ -819,7 +856,7 @@ mod tests {
         let reader = VcfReader::from_path(file.path()).expect("Error opening tempfile!");
         let records = reader.header().header_records();
         let samples = reader.header().samples();
-        assert_eq!(records.len(), 16);
+        assert_eq!(records.len(), 18);
         assert_eq!(samples.len(), 1);
         assert!(samples.iter().all(|&s| s == "dna00001".as_bytes()));
     }
