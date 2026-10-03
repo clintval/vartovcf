@@ -96,7 +96,7 @@ mod tests {
 
     #[test]
     #[rustfmt::skip]
-    fn run_end_to_end_labels_calls_near_read_ends() -> Result<(), Box<dyn std::error::Error>> {
+    fn run_end_to_end_labels_calls_with_the_given_filters() -> Result<(), Box<dyn std::error::Error>> {
         let output = NamedTempFile::new().expect("Cannot create temporary file!");
         let output = output.path().to_str().unwrap();
         let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
@@ -106,6 +106,7 @@ mod tests {
             .arg("--input").arg("tests/calls.filters.var")
             .arg("--output").arg(output)
             .arg("--filter-near-read-end").arg("8")
+            .arg("--filter-low-mean-mapq").arg("10")
             .unwrap().assert().success();
 
         assert!(diff(output, "tests/calls.filters.vcf"));
