@@ -120,8 +120,8 @@ where
         }
 
         let key = format!(
-            "{}-{}-{}-{}",
-            var.contig, var.start, var.ref_allele, var.alt_allele
+            "{}-{}-{}-{}-{}",
+            var.contig, var.start, var.end, var.ref_allele, var.alt_allele
         );
         if !seen.insert(key) {
             continue; // Skip this record if we have seen this variant before.
