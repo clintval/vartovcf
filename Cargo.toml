@@ -3,17 +3,19 @@ name = "vartovcf"
 version = "1.5.1"
 authors = ["Clint Valentine <valentine.clint@gmail.com>"]
 edition = "2024"
+rust-version = "1.88"
 license = "MIT"
 readme = "README.md"
+homepage = "https://github.com/clintval/vartovcf"
 repository = "https://github.com/clintval/vartovcf"
 description = "Convert variants from VarDict/VarDictJava into VCF v4.2 format."
-documentation = "https://github.com/clintval/vartovcf/README.md"
-categories = ["command-line-utilities", "science"]
-keywords = ["bioinformatics", "variant", "calling", "VCF", "VarDict", "VarDictJava"]
+documentation = "https://github.com/clintval/vartovcf/blob/main/README.md"
+categories = ["command-line-utilities", "science::bioinformatics"]
+keywords = ["bioinformatics", "variant", "vcf", "vardict", "vardictjava"]
 
 [profile.release]
+lto = "fat"
 codegen-units = 1
-lto = true
 
 [lib]
 name = "vartovcflib"
@@ -24,28 +26,26 @@ name = "vartovcf"
 path = "src/main.rs"
 
 [dependencies]
-ahash = "0.8"
-anyhow = "1.0.100"
+ahash = "0.8.12"
+anyhow = "1.0.104"
 bio-types = "1.0.4"
-case = "1.0.0"
 csv = "1.4.0"
-env_logger = "0.11.8"
-log = "0.4.28"
+env_logger = "0.11.11"
+log = "0.4.34"
 proglog = "0.4.0"
-rust-htslib = "0.46.0"
-serde = { version = "1.0.228", features = ["derive"] }
-serde_with = { version = "3.15.0" }
+rust-htslib = "1.0.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_with = "3.24.0"
 structopt = "0.3.26"
-strum = { version = "0.27.2", features = ["derive"] }
+strum = { version = "0.28.0", features = ["derive"] }
 
 [dev-dependencies]
-assert_cmd = "2.0.17"
-env_logger = "0.11.8"
+assert_cmd = "2.2.2"
 file_diff = "1.0.0"
 pretty_assertions = "1.4.1"
-rstest = "0.26.1"
+rstest = "0.27.0"
 serde_test = "1.0.177"
-tempfile = "3.23.0"
+tempfile = "3.27.0"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }
