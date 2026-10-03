@@ -107,6 +107,10 @@ mod tests {
             .arg("--output").arg(output)
             .arg("--filter-near-read-end").arg("8")
             .arg("--filter-low-mean-mapq").arg("10")
+            .arg("--filter-homopolymer-indel").arg("13")
+            .arg("--filter-homopolymer-indel-max-af").arg("0.275")
+            .arg("--filter-tandem-repeat-indel").arg("13")
+            .arg("--filter-tandem-repeat-indel-max-af").arg("0.2")
             .unwrap().assert().success();
 
         assert!(diff(output, "tests/calls.filters.vcf"));

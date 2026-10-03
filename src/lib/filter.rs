@@ -8,6 +8,12 @@ pub const NEAR_READ_END: &str = "NEAR_READ_END";
 /// The FILTER label for calls whose ALT reads have a low mean mapping quality.
 pub const LOW_MEAN_MAPQ: &str = "LOW_MEAN_MAPQ";
 
+/// The FILTER label for one-base insertions or deletions in long homopolymers.
+pub const HOMOPOLYMER_INDEL: &str = "HOMOPOLYMER_INDEL";
+
+/// The FILTER label for one-unit insertions or deletions in long 2-6 bp tandem repeats.
+pub const TANDEM_REPEAT_INDEL: &str = "TANDEM_REPEAT_INDEL";
+
 /// The thresholds of the FILTER labels to apply; a label without a threshold is not applied.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct FilterThresholds {
@@ -15,12 +21,23 @@ pub struct FilterThresholds {
     pub near_read_end: Option<f32>,
     /// The minimum mean mapping quality of the ALT reads.
     pub low_mean_mapq: Option<f32>,
+    /// The minimum homopolymer copies for a one-base indel to be labelled.
+    pub homopolymer_indel: Option<f32>,
+    /// The allele frequency below which a homopolymer indel is labelled; no limit when not given.
+    pub homopolymer_indel_max_af: Option<f32>,
+    /// The minimum repeat copies for a one-unit indel in a 2-6 bp tandem repeat to be labelled.
+    pub tandem_repeat_indel: Option<f32>,
+    /// The allele frequency below which a tandem repeat indel is labelled; no limit when not given.
+    pub tandem_repeat_indel_max_af: Option<f32>,
 }
 
 impl FilterThresholds {
     /// Whether any FILTER label is applied.
     pub fn any(&self) -> bool {
-        self.near_read_end.is_some() || self.low_mean_mapq.is_some()
+        self.near_read_end.is_some()
+            || self.low_mean_mapq.is_some()
+            || self.homopolymer_indel.is_some()
+            || self.tandem_repeat_indel.is_some()
     }
 
     /// Return the FILTER header lines of the applied labels.
@@ -34,6 +51,18 @@ impl FilterThresholds {
         if let Some(min_mean_mapq) = self.low_mean_mapq {
             lines.push(format!(
                 r#"##FILTER=<ID={LOW_MEAN_MAPQ},Description="Mean mapping quality of the ALT reads (FORMAT MEAN_MAPQ) is below {min_mean_mapq}.">"#
+            ));
+        }
+        if let Some(min_copies) = self.homopolymer_indel {
+            let af_limit = af_limit_clause(self.homopolymer_indel_max_af);
+            lines.push(format!(
+                r#"##FILTER=<ID={HOMOPOLYMER_INDEL},Description="Insertion or deletion of exactly one base in a homopolymer of at least {min_copies} copies (INFO REPEAT_UNIT_COPIES with REPEAT_UNIT_LEN 1){af_limit}, the signature of polymerase slippage.">"#
+            ));
+        }
+        if let Some(min_copies) = self.tandem_repeat_indel {
+            let af_limit = af_limit_clause(self.tandem_repeat_indel_max_af);
+            lines.push(format!(
+                r#"##FILTER=<ID={TANDEM_REPEAT_INDEL},Description="Insertion or deletion of exactly one repeat unit in a 2-6 bp tandem repeat of at least {min_copies} copies (INFO REPEAT_UNIT_COPIES and REPEAT_UNIT_LEN){af_limit}, the signature of polymerase slippage.">"#
             ));
         }
         lines
@@ -57,8 +86,42 @@ impl FilterThresholds {
         {
             labels.push(LOW_MEAN_MAPQ);
         }
+        if let (Some(copies), Some(unit_length)) = (
+            variant.repeat_unit_copies_value(),
+            variant.repeat_unit_len_value(),
+        ) {
+            let length_change = variant.ref_allele.len().abs_diff(variant.alt_allele.len());
+            let is_one_unit_indel = unit_length > 0 && length_change == unit_length as usize;
+            let af = variant.af_value();
+            let below = |max_af: Option<f32>| max_af.is_none_or(|max_af| af < max_af);
+            if is_one_unit_indel
+                && unit_length == 1
+                && self
+                    .homopolymer_indel
+                    .is_some_and(|min_copies| copies >= min_copies)
+                && below(self.homopolymer_indel_max_af)
+            {
+                labels.push(HOMOPOLYMER_INDEL);
+            }
+            if is_one_unit_indel
+                && unit_length > 1
+                && self
+                    .tandem_repeat_indel
+                    .is_some_and(|min_copies| copies >= min_copies)
+                && below(self.tandem_repeat_indel_max_af)
+            {
+                labels.push(TANDEM_REPEAT_INDEL);
+            }
+        }
         labels
     }
+}
+
+/// Return the AF clause of a repeat label's description, empty when it has no AF limit.
+fn af_limit_clause(max_af: Option<f32>) -> String {
+    max_af
+        .map(|max_af| format!(" at an AF (FORMAT AF) below {max_af}"))
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -171,11 +234,114 @@ mod tests {
         );
     }
 
+    fn repeat_variant(
+        ref_allele: &'static str,
+        alt_allele: &'static str,
+        unit_length: i32,
+        copies: f32,
+        alt_depth: i32,
+    ) -> TumorOnlyVariant<'static> {
+        TumorOnlyVariant {
+            microsatellite: copies,
+            microsatellite_length: unit_length,
+            alt_depth,
+            depth: 100,
+            ..variant(ref_allele, alt_allele, 30.0)
+        }
+    }
+
+    #[rstest]
+    #[case("GA", "G", 1, 13.0, 10, vec![HOMOPOLYMER_INDEL])]
+    #[case("G", "GA", 1, 13.0, 10, vec![HOMOPOLYMER_INDEL])]
+    #[case("GA", "G", 1, 12.0, 10, vec![])]
+    #[case("GA", "G", 1, 13.0, 28, vec![])]
+    #[case("GAA", "G", 1, 13.0, 10, vec![])]
+    #[case("G", "A", 1, 20.0, 10, vec![])]
+    #[case("GCA", "G", 2, 13.0, 10, vec![])]
+    #[case("G", "G", 1, 13.0, 10, vec![])]
+    fn test_homopolymer_indel(
+        #[case] ref_allele: &'static str,
+        #[case] alt_allele: &'static str,
+        #[case] unit_length: i32,
+        #[case] copies: f32,
+        #[case] alt_depth: i32,
+        #[case] expected: Vec<&str>,
+    ) {
+        let filters = FilterThresholds {
+            homopolymer_indel: Some(13.0),
+            homopolymer_indel_max_af: Some(0.275),
+            ..Default::default()
+        };
+        assert!(filters.any());
+        let variant = repeat_variant(ref_allele, alt_allele, unit_length, copies, alt_depth);
+        assert_eq!(filters.labels(&variant), expected);
+    }
+
+    #[rstest]
+    #[case("GCA", "G", 2, 13.0, 10, vec![TANDEM_REPEAT_INDEL])]
+    #[case("G", "GCAG", 3, 13.0, 10, vec![TANDEM_REPEAT_INDEL])]
+    #[case("GCA", "G", 2, 12.5, 10, vec![])]
+    #[case("GCA", "G", 2, 13.0, 20, vec![])]
+    #[case("GCACA", "G", 2, 13.0, 10, vec![])]
+    #[case("GA", "G", 1, 13.0, 10, vec![])]
+    fn test_tandem_repeat_indel(
+        #[case] ref_allele: &'static str,
+        #[case] alt_allele: &'static str,
+        #[case] unit_length: i32,
+        #[case] copies: f32,
+        #[case] alt_depth: i32,
+        #[case] expected: Vec<&str>,
+    ) {
+        let filters = FilterThresholds {
+            tandem_repeat_indel: Some(13.0),
+            tandem_repeat_indel_max_af: Some(0.2),
+            ..Default::default()
+        };
+        assert!(filters.any());
+        let variant = repeat_variant(ref_allele, alt_allele, unit_length, copies, alt_depth);
+        assert_eq!(filters.labels(&variant), expected);
+    }
+
+    #[test]
+    fn test_repeat_indels_have_no_af_limit_without_a_max_af() {
+        let filters = FilterThresholds {
+            homopolymer_indel: Some(13.0),
+            tandem_repeat_indel: Some(13.0),
+            ..Default::default()
+        };
+        assert_eq!(
+            filters.labels(&repeat_variant("GA", "G", 1, 13.0, 90)),
+            vec![HOMOPOLYMER_INDEL]
+        );
+        assert_eq!(
+            filters.labels(&repeat_variant("GCA", "G", 2, 13.0, 90)),
+            vec![TANDEM_REPEAT_INDEL]
+        );
+    }
+
+    #[test]
+    fn test_repeat_indel_header_lines_state_the_thresholds() {
+        let filters = FilterThresholds {
+            homopolymer_indel: Some(13.0),
+            homopolymer_indel_max_af: Some(0.275),
+            tandem_repeat_indel: Some(13.0),
+            ..Default::default()
+        };
+        assert_eq!(
+            filters.header_lines(),
+            vec![
+                r#"##FILTER=<ID=HOMOPOLYMER_INDEL,Description="Insertion or deletion of exactly one base in a homopolymer of at least 13 copies (INFO REPEAT_UNIT_COPIES with REPEAT_UNIT_LEN 1) at an AF (FORMAT AF) below 0.275, the signature of polymerase slippage.">"#,
+                r#"##FILTER=<ID=TANDEM_REPEAT_INDEL,Description="Insertion or deletion of exactly one repeat unit in a 2-6 bp tandem repeat of at least 13 copies (INFO REPEAT_UNIT_COPIES and REPEAT_UNIT_LEN), the signature of polymerase slippage.">"#,
+            ]
+        );
+    }
+
     #[test]
     fn test_labels_are_listed_in_a_fixed_order() {
         let filters = FilterThresholds {
             near_read_end: Some(8.0),
             low_mean_mapq: Some(10.0),
+            ..Default::default()
         };
         let failing_both = TumorOnlyVariant {
             mean_mapping_quality: 5.0,

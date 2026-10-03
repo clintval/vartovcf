@@ -53,6 +53,22 @@ struct Opt {
     /// Label calls LOW_MEAN_MAPQ when the mean mapping quality of their ALT reads is below this; not applied when not given
     #[arg(long, value_name = "MIN_MEAN_MAPQ")]
     filter_low_mean_mapq: Option<f32>,
+
+    /// Label one-base indels HOMOPOLYMER_INDEL in homopolymers of at least this many copies; not applied when not given
+    #[arg(long, value_name = "MIN_COPIES")]
+    filter_homopolymer_indel: Option<f32>,
+
+    /// Only label HOMOPOLYMER_INDEL when AF is below this; no AF limit when not given
+    #[arg(long, value_name = "MAX_AF", requires = "filter_homopolymer_indel")]
+    filter_homopolymer_indel_max_af: Option<f32>,
+
+    /// Label one-unit indels TANDEM_REPEAT_INDEL in 2-6 bp tandem repeats of at least this many copies; not applied when not given
+    #[arg(long, value_name = "MIN_COPIES")]
+    filter_tandem_repeat_indel: Option<f32>,
+
+    /// Only label TANDEM_REPEAT_INDEL when AF is below this; no AF limit when not given
+    #[arg(long, value_name = "MAX_AF", requires = "filter_tandem_repeat_indel")]
+    filter_tandem_repeat_indel_max_af: Option<f32>,
 }
 
 /// Main binary entrypoint.
@@ -92,6 +108,10 @@ fn main() -> Result<(), Error> {
         &FilterThresholds {
             near_read_end: opt.filter_near_read_end,
             low_mean_mapq: opt.filter_low_mean_mapq,
+            homopolymer_indel: opt.filter_homopolymer_indel,
+            homopolymer_indel_max_af: opt.filter_homopolymer_indel_max_af,
+            tandem_repeat_indel: opt.filter_tandem_repeat_indel,
+            tandem_repeat_indel_max_af: opt.filter_tandem_repeat_indel_max_af,
         },
     ) {
         Ok(exit_code) => process::exit(exit_code),
