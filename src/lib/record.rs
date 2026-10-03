@@ -281,7 +281,7 @@ pub struct TumorOnlyVariant<'a> {
     #[serde(deserialize_with = "maybe_infinite_f32_odds_ratio")]
     /// The odds ratio for strand bias.
     pub strand_bias_odds_ratio: f32,
-    /// The mean mapping quality (Phred) of all reads that directly support the variant call.
+    /// The arithmetic mean mapping quality of the reads that support the variant call, uncapped.
     pub mean_mapping_quality: f32,
     /// The signal to noise ratio.
     pub signal_to_noise: f32,
@@ -385,6 +385,15 @@ impl<'a> TumorOnlyVariant<'a> {
             i32::missing()
         } else {
             self.stdev_position_in_read as i32
+        }
+    }
+
+    /// Return the "MEAN_MAPQ" formatted VCF field for this record: missing without an ALT allele.
+    pub fn mean_mapq_value(&self) -> f32 {
+        if self.ref_allele == self.alt_allele {
+            f32::missing()
+        } else {
+            self.mean_mapping_quality
         }
     }
 
@@ -539,6 +548,7 @@ pub fn tumor_only_header(sample: &str) -> Header {
     header.push_record(r#"##FORMAT=<ID=MEAN_DIST_TO_READ_END,Number=A,Type=Float,Description="Mean, over the reads carrying the ALT allele, of the 1-based distance from the variant to the nearer end of the read's aligned part, soft clips excluded. It is measured from the variant base for SNVs, the first inserted base for insertions, the first base after the gap for deletions, and the last base of the block for Complex calls; reads VarDict realigned out of soft clips contribute their clip length. Missing when there is no ALT allele.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=ALT_READ_POS_VARIES,Number=A,Type=Integer,Description="1 when the reads carrying the ALT allele place it at two or more distinct distances from the read end, 0 when every one has it at the same distance, a common sign of an artifact. VarDict sets it to 1 whenever it merges realigned reads into the allele. Missing when there is no ALT allele.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=QMEAN,Number=A,Type=Float,Description="Mean, over the reads carrying the ALT allele, of VarDict's per-read variant quality: the base's Phred quality for SNVs, the mean of the block's bases for Complex calls (VarDict only extends a block with bases at least 5 above -q, so this runs high), the mean of the inserted bases for insertions, and the higher of the two flanking bases for deletions. Bases below -q are included and nothing is capped. Missing when there is no ALT allele.">"#.as_bytes());
+    header.push_record(r#"##FORMAT=<ID=MEAN_MAPQ,Number=A,Type=Float,Description="Arithmetic mean mapping quality of the reads carrying the ALT allele, not the RMS over all reads that the VCF specification's MQ means; uncapped, so a MAPQ of 255 (unavailable) counts as 255. Missing when there is no ALT allele.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=MEAN_MISMATCHES,Number=A,Type=Float,Description="Mean, over the reads carrying the ALT allele, of each read's substitution mismatches: its NM tag minus every inserted or deleted base, minus any mismatches VarDict merged into this Complex allele. Includes the variant's own mismatch for SNVs and excludes soft clips; a read without an NM tag counts as 0, and reads with more than VarDict's -m mismatches (default 8) are not counted. Missing when there is no ALT allele.">"#.as_bytes());
     header.push_record(r#"##ALT=<ID=DEL,Description="Deletion relative to the reference.">"#.as_bytes());
     header.push_record(r#"##ALT=<ID=DUP,Description="Region of elevated copy number relative to the reference.">"#.as_bytes());
@@ -811,6 +821,24 @@ mod tests {
     }
 
     #[rstest]
+    fn test_tumor_only_variant_mean_mapq_value_on_an_alt_call(
+        variants: Vec<TumorOnlyVariant<'static>>,
+    ) {
+        let mut variant = variants.into_iter().nth(2).unwrap();
+        variant.mean_mapping_quality = 52.5;
+        assert_eq!(variant.mean_mapq_value(), 52.5);
+    }
+
+    #[rstest]
+    fn test_tumor_only_variant_mean_mapq_value_is_missing_without_an_alt(
+        variants: Vec<TumorOnlyVariant<'static>>,
+    ) {
+        let mut variant = variants.into_iter().nth(2).unwrap();
+        variant.alt_allele = variant.ref_allele;
+        assert!(variant.mean_mapq_value().is_missing());
+    }
+
+    #[rstest]
     fn test_tumor_only_variant_qmean_value_on_an_alt_call(
         variants: Vec<TumorOnlyVariant<'static>>,
     ) {
@@ -956,7 +984,7 @@ mod tests {
         let reader = VcfReader::from_path(file.path()).expect("Error opening tempfile!");
         let records = reader.header().header_records();
         let samples = reader.header().samples();
-        assert_eq!(records.len(), 22);
+        assert_eq!(records.len(), 23);
         assert_eq!(samples.len(), 1);
         assert!(samples.iter().all(|&s| s == "dna00001".as_bytes()));
     }

@@ -174,6 +174,7 @@ where
         )?;
         variant.push_format_integer(b"ALT_READ_POS_VARIES", &[var.alt_read_pos_varies_value()])?;
         variant.push_format_float(b"QMEAN", &[var.qmean_value()])?;
+        variant.push_format_float(b"MEAN_MAPQ", &[var.mean_mapq_value()])?;
         variant.push_format_float(b"MEAN_MISMATCHES", &[var.mean_mismatches_value()])?;
 
         writer.write(&variant)?;
