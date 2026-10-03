@@ -10,6 +10,8 @@ use std::str::FromStr;
 use anyhow::Result;
 use bio_types::genome::{AbstractInterval, Position};
 use rust_htslib::bcf::Header;
+
+use crate::filter::FilterThresholds;
 use rust_htslib::bcf::record::{GenotypeAllele, Numeric};
 use serde::{Deserialize, Serialize, de::Error};
 use serde_with::DisplayFromStr;
@@ -564,9 +566,9 @@ impl<'a> AbstractInterval for TumorOnlyVariant<'a> {
     }
 }
 
-/// Create a VCF header for VarDict/VarDictJava in tumor-only mode.
+/// Create a VCF header for VarDict/VarDictJava in tumor-only mode, declaring the applied FILTER labels.
 #[rustfmt::skip]
-pub fn tumor_only_header(sample: &str) -> Header {
+pub fn tumor_only_header(sample: &str, filters: &FilterThresholds) -> Header {
     let source = [CARGO_PKG_NAME, CARGO_PKG_VERSION].join("-");
     let mut header = Header::default();
     header.push_sample(sample.as_bytes());
@@ -580,6 +582,9 @@ pub fn tumor_only_header(sample: &str) -> Header {
     header.push_record(r#"##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="Signed length of the structural variant, written only on records with a symbolic ALT allele: VarDict's own event length, negative for DEL (the deleted bases), positive for DUP (the duplicated bases) and INV (the inverted bases).">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=SVTYPE,Number=1,Type=String,Description="Structural variant type, written only on records with a symbolic ALT allele: DEL, DUP or INV.">"#.as_bytes());
     header.push_record(r#"##FILTER=<ID=PASS,Description="The variant call has passed all filters and may be considered for downstream analysis.">"#.as_bytes());
+    for line in filters.header_lines() {
+        header.push_record(line.as_bytes());
+    }
     header.push_record(format!(r#"##FORMAT=<ID=GT,Number=1,Type=String,Description="The genotype inferred from the allele frequency alone, since VarDict does not genotype: 1/1 when AF >= {MIN_HOM_ALT_AF}, 0/1 for any other call with an ALT allele, and 0/0 when there is no ALT allele.">"#).as_bytes());
     header.push_record(r#"##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Read depth for REF then ALT as VarDict counts them: ALT is the reads carrying this allele and REF is the reads carrying the reference base at the variant's first internal base (the first deleted base for deletions, without insertion-carrying reads for insertions), or at the following base when an insertion at the same position raises DP. REF is missing for Complex calls, where VarDict counts only their first base and can count a read as both, and REF is the only value when there is no ALT allele.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=ADF,Number=R,Type=Integer,Description="Reads on the forward strand (SAM flag 0x10 unset) supporting REF then ALT, the forward half of AD as VarDict counts it: REF is counted where AD's is (sometimes the following base), is missing for Complex calls and is the only value when there is no ALT allele. When VarDict runs with -u, overlapping mates count only through the reverse read.">"#.as_bytes());
@@ -1101,7 +1106,7 @@ mod tests {
 
     #[test]
     fn test_tumor_only_header() {
-        let header = tumor_only_header("dna00001");
+        let header = tumor_only_header("dna00001", &FilterThresholds::default());
         let file = NamedTempFile::new().expect("Cannot create temporary file!");
         let _ = VcfWriter::from_path(file.path(), &header, true, Format::Vcf).unwrap();
         let reader = VcfReader::from_path(file.path()).expect("Error opening tempfile!");

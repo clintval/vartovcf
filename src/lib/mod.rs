@@ -16,12 +16,14 @@ use strum::Display;
 use strum::{EnumString, VariantNames};
 
 use crate::fai::{fasta_contigs_to_vcf_header, fasta_path_to_vcf_header};
+use crate::filter::FilterThresholds;
 use crate::io::has_gzip_ext;
 use crate::record::MIN_HOM_ALT_AF;
 use crate::record::TumorOnlyVariant;
 use crate::record::tumor_only_header;
 
 pub mod fai;
+pub mod filter;
 pub mod io;
 pub mod record;
 
@@ -68,6 +70,7 @@ pub fn vartovcf<I, R>(
     sample: &str,
     mode: &VarDictMode,
     skip_non_variants: bool,
+    filters: &FilterThresholds,
 ) -> Result<i32, Box<dyn error::Error>>
 where
     I: Read,
@@ -79,7 +82,7 @@ where
         "The only mode currently supported is [TumorOnly]."
     );
 
-    let mut header = tumor_only_header(sample);
+    let mut header = tumor_only_header(sample, filters);
 
     fasta_contigs_to_vcf_header(&fasta, &mut header);
     fasta_path_to_vcf_header(&fasta, &mut header).expect("Adding FASTA path to header failed!");
@@ -143,6 +146,16 @@ where
         ])?;
 
         variant.set_qual(f32::missing());
+
+        if filters.any() && var.ref_allele != var.alt_allele {
+            let labels = filters.labels(&var);
+            if labels.is_empty() {
+                variant.push_filter("PASS".as_bytes())?;
+            }
+            for label in labels {
+                variant.push_filter(label.as_bytes())?;
+            }
+        }
 
         if let Some(class) = var.variant_class() {
             variant.push_info_string(b"TYPE", &[class.as_bytes()])?;
@@ -282,6 +295,7 @@ mod tests {
             sample,
             &TumorOnly,
             false,
+            &FilterThresholds::default(),
         )?;
         assert_eq!(exit, 0);
         assert!(diff(output.path().to_str().unwrap(), "tests/calls.vcf"));
@@ -301,6 +315,7 @@ mod tests {
             sample,
             &TumorOnly,
             false,
+            &FilterThresholds::default(),
         );
         assert!(result.is_err());
     }
@@ -321,6 +336,7 @@ mod tests {
             "dna00001",
             &TumorOnly,
             false,
+            &FilterThresholds::default(),
         );
         assert_eq!(
             result.unwrap_err().to_string(),
@@ -342,6 +358,7 @@ mod tests {
             "dna00001",
             &TumorOnly,
             false,
+            &FilterThresholds::default(),
         );
         assert_eq!(
             result.unwrap_err().to_string(),
@@ -362,6 +379,7 @@ mod tests {
             "dna00001",
             &TumorOnly,
             false,
+            &FilterThresholds::default(),
         );
         assert_eq!(
             result.unwrap_err().to_string(),
@@ -382,6 +400,7 @@ mod tests {
             sample,
             &TumorOnly,
             true,
+            &FilterThresholds::default(),
         )?;
         assert_eq!(exit, 0);
 

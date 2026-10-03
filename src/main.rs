@@ -11,6 +11,7 @@ use env_logger::Env;
 use log::*;
 use strum::VariantNames;
 
+use vartovcflib::filter::FilterThresholds;
 use vartovcflib::{VarDictMode, vartovcf};
 
 #[derive(Clone, Debug, Parser)]
@@ -44,6 +45,10 @@ struct Opt {
     /// Skip non-variant sites (where ref_allele == alt_allele)
     #[arg(long)]
     skip_non_variants: bool,
+
+    /// Label calls NEAR_READ_END when their mean distance to the nearer read end is below this; not applied when not given
+    #[arg(long, value_name = "MIN_MEAN_DIST")]
+    filter_near_read_end: Option<f32>,
 }
 
 /// Main binary entrypoint.
@@ -80,6 +85,9 @@ fn main() -> Result<(), Error> {
         &opt.sample,
         &opt.mode,
         opt.skip_non_variants,
+        &FilterThresholds {
+            near_read_end: opt.filter_near_read_end,
+        },
     ) {
         Ok(exit_code) => process::exit(exit_code),
         Err(except) => {
