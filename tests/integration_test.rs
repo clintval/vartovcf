@@ -116,6 +116,7 @@ mod tests {
             .arg("--filter-strand-bias").arg("0.01")
             .arg("--filter-strand-bias-min-odds-ratio").arg("5")
             .arg("--filter-strand-bias-max-af").arg("0.25")
+            .arg("--filter-low-af").arg("0.0001")
             .unwrap().assert().success();
 
         assert!(diff(output, "tests/calls.filters.vcf"));
