@@ -120,6 +120,7 @@ mod tests {
             .arg("--filter-low-qmean").arg("30")
             .arg("--filter-low-dp").arg("3")
             .arg("--filter-low-hicnt").arg("1")
+            .arg("--filter-low-hicnt-fraction").arg("0.6")
             .unwrap().assert().success();
 
         assert!(diff(output, "tests/calls.filters.vcf"));

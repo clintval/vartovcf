@@ -105,6 +105,10 @@ struct Opt {
     /// Label calls LOW_HICNT when they have fewer high-quality ALT reads than this; not applied when not given
     #[arg(long, value_name = "MIN_HICNT")]
     filter_low_hicnt: Option<i32>,
+
+    /// Label calls LOW_HICNT_FRACTION when the fraction of their ALT reads that are high quality is below this; not applied when not given
+    #[arg(long, value_name = "MIN_FRACTION")]
+    filter_low_hicnt_fraction: Option<f32>,
 }
 
 /// Main binary entrypoint.
@@ -157,6 +161,7 @@ fn main() -> Result<(), Error> {
             low_qmean: opt.filter_low_qmean,
             low_dp: opt.filter_low_dp,
             low_hicnt: opt.filter_low_hicnt,
+            low_hicnt_fraction: opt.filter_low_hicnt_fraction,
         },
     ) {
         Ok(exit_code) => process::exit(exit_code),

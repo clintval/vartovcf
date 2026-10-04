@@ -35,6 +35,9 @@ pub const LOW_DP: &str = "LOW_DP";
 /// The FILTER label for calls with few high-quality ALT reads.
 pub const LOW_HICNT: &str = "LOW_HICNT";
 
+/// The FILTER label for calls whose ALT reads are mostly low quality.
+pub const LOW_HICNT_FRACTION: &str = "LOW_HICNT_FRACTION";
+
 /// The thresholds of the FILTER labels to apply; a label without a threshold is not applied.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct FilterThresholds {
@@ -68,6 +71,8 @@ pub struct FilterThresholds {
     pub low_dp: Option<i32>,
     /// The minimum number of high-quality ALT reads.
     pub low_hicnt: Option<i32>,
+    /// The minimum fraction of ALT reads that are high quality.
+    pub low_hicnt_fraction: Option<f32>,
 }
 
 impl FilterThresholds {
@@ -84,6 +89,7 @@ impl FilterThresholds {
             || self.low_qmean.is_some()
             || self.low_dp.is_some()
             || self.low_hicnt.is_some()
+            || self.low_hicnt_fraction.is_some()
     }
 
     /// Return the FILTER header lines of the applied labels.
@@ -152,6 +158,11 @@ impl FilterThresholds {
         if let Some(min_hicnt) = self.low_hicnt {
             lines.push(format!(
                 r#"##FILTER=<ID={LOW_HICNT},Description="High-quality ALT reads (FORMAT HICNT) are fewer than {min_hicnt}.">"#
+            ));
+        }
+        if let Some(min_fraction) = self.low_hicnt_fraction {
+            lines.push(format!(
+                r#"##FILTER=<ID={LOW_HICNT_FRACTION},Description="Fraction of ALT reads that are high quality (FORMAT HICNT over AD[1]) is below {min_fraction}.">"#
             ));
         }
         lines
@@ -248,6 +259,13 @@ impl FilterThresholds {
             .is_some_and(|min_hicnt| variant.high_quality_variant_reads < min_hicnt)
         {
             labels.push(LOW_HICNT);
+        }
+        if self.low_hicnt_fraction.is_some_and(|min_fraction| {
+            variant.alt_depth > 0
+                && (variant.high_quality_variant_reads as f32 / variant.alt_depth as f32)
+                    < min_fraction
+        }) {
+            labels.push(LOW_HICNT_FRACTION);
         }
         labels
     }
@@ -772,6 +790,46 @@ mod tests {
             vec![
                 r#"##FILTER=<ID=LOW_DP,Description="Read depth (FORMAT DP) is below 3.">"#,
                 r#"##FILTER=<ID=LOW_HICNT,Description="High-quality ALT reads (FORMAT HICNT) are fewer than 2.">"#,
+            ]
+        );
+    }
+
+    #[rstest]
+    #[case("G", "A", 5, 10, vec![LOW_HICNT_FRACTION])]
+    #[case("G", "A", 6, 10, vec![])]
+    #[case("G", "A", 0, 0, vec![])]
+    #[case("G", "G", 0, 10, vec![])]
+    fn test_low_hicnt_fraction(
+        #[case] ref_allele: &'static str,
+        #[case] alt_allele: &'static str,
+        #[case] hicnt: i32,
+        #[case] alt_depth: i32,
+        #[case] expected: Vec<&str>,
+    ) {
+        let filters = FilterThresholds {
+            low_hicnt_fraction: Some(0.6),
+            ..Default::default()
+        };
+        assert!(filters.any());
+        let variant = TumorOnlyVariant {
+            high_quality_variant_reads: hicnt,
+            alt_depth,
+            depth: 100,
+            ..variant(ref_allele, alt_allele, 30.0)
+        };
+        assert_eq!(filters.labels(&variant), expected);
+    }
+
+    #[test]
+    fn test_low_hicnt_fraction_header_line_states_the_threshold() {
+        let filters = FilterThresholds {
+            low_hicnt_fraction: Some(0.6),
+            ..Default::default()
+        };
+        assert_eq!(
+            filters.header_lines(),
+            vec![
+                r#"##FILTER=<ID=LOW_HICNT_FRACTION,Description="Fraction of ALT reads that are high quality (FORMAT HICNT over AD[1]) is below 0.6.">"#
             ]
         );
     }
