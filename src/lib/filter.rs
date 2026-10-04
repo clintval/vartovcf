@@ -17,6 +17,9 @@ pub const TANDEM_REPEAT_INDEL: &str = "TANDEM_REPEAT_INDEL";
 /// The FILTER label for calls whose ALT reads carry many other mismatches.
 pub const HIGH_MEAN_MISMATCHES: &str = "HIGH_MEAN_MISMATCHES";
 
+/// The FILTER label for calls whose ALT reads all place the variant at the same read position.
+pub const SAME_READ_POSITION: &str = "SAME_READ_POSITION";
+
 /// The thresholds of the FILTER labels to apply; a label without a threshold is not applied.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct FilterThresholds {
@@ -34,6 +37,8 @@ pub struct FilterThresholds {
     pub tandem_repeat_indel_max_af: Option<f32>,
     /// The maximum mean substitution mismatches per ALT read.
     pub high_mean_mismatches: Option<f32>,
+    /// The allele frequency below which a call whose ALT reads share one read position is labelled.
+    pub same_read_position: Option<f32>,
 }
 
 impl FilterThresholds {
@@ -44,6 +49,7 @@ impl FilterThresholds {
             || self.homopolymer_indel.is_some()
             || self.tandem_repeat_indel.is_some()
             || self.high_mean_mismatches.is_some()
+            || self.same_read_position.is_some()
     }
 
     /// Return the FILTER header lines of the applied labels.
@@ -74,6 +80,11 @@ impl FilterThresholds {
         if let Some(max_mean_mismatches) = self.high_mean_mismatches {
             lines.push(format!(
                 r#"##FILTER=<ID={HIGH_MEAN_MISMATCHES},Description="Mean substitution mismatches per ALT read (FORMAT MEAN_MISMATCHES) is above {max_mean_mismatches}, suggesting misaligned or paralogous reads.">"#
+            ));
+        }
+        if let Some(max_af) = self.same_read_position {
+            lines.push(format!(
+                r#"##FILTER=<ID={SAME_READ_POSITION},Description="Every one of at least 2 ALT reads places the variant at the same distance from its read end (FORMAT ALT_READ_POS_VARIES 0) at an AF (FORMAT AF) below {max_af}, a sign of one fragment counted repeatedly or an error at a fixed sequencing cycle.">"#
             ));
         }
         lines
@@ -131,6 +142,13 @@ impl FilterThresholds {
             })
         {
             labels.push(HIGH_MEAN_MISMATCHES);
+        }
+        if self.same_read_position.is_some_and(|max_af| {
+            variant.alt_depth >= 2
+                && variant.alt_read_pos_varies_value() == 0
+                && variant.af_value() < max_af
+        }) {
+            labels.push(SAME_READ_POSITION);
         }
         labels
     }
@@ -387,6 +405,47 @@ mod tests {
             filters.header_lines(),
             vec![
                 r#"##FILTER=<ID=HIGH_MEAN_MISMATCHES,Description="Mean substitution mismatches per ALT read (FORMAT MEAN_MISMATCHES) is above 5.25, suggesting misaligned or paralogous reads.">"#
+            ]
+        );
+    }
+
+    #[rstest]
+    #[case("G", "A", 0.0, 3, vec![SAME_READ_POSITION])]
+    #[case("G", "A", 1.0, 3, vec![])]
+    #[case("G", "A", 0.0, 1, vec![])]
+    #[case("G", "A", 0.0, 40, vec![])]
+    #[case("G", "G", 0.0, 3, vec![])]
+    fn test_same_read_position(
+        #[case] ref_allele: &'static str,
+        #[case] alt_allele: &'static str,
+        #[case] positions_vary: f32,
+        #[case] alt_depth: i32,
+        #[case] expected: Vec<&str>,
+    ) {
+        let filters = FilterThresholds {
+            same_read_position: Some(0.35),
+            ..Default::default()
+        };
+        assert!(filters.any());
+        let variant = TumorOnlyVariant {
+            stdev_position_in_read: positions_vary,
+            alt_depth,
+            depth: 100,
+            ..variant(ref_allele, alt_allele, 30.0)
+        };
+        assert_eq!(filters.labels(&variant), expected);
+    }
+
+    #[test]
+    fn test_same_read_position_header_line_states_the_threshold() {
+        let filters = FilterThresholds {
+            same_read_position: Some(0.35),
+            ..Default::default()
+        };
+        assert_eq!(
+            filters.header_lines(),
+            vec![
+                r#"##FILTER=<ID=SAME_READ_POSITION,Description="Every one of at least 2 ALT reads places the variant at the same distance from its read end (FORMAT ALT_READ_POS_VARIES 0) at an AF (FORMAT AF) below 0.35, a sign of one fragment counted repeatedly or an error at a fixed sequencing cycle.">"#
             ]
         );
     }
