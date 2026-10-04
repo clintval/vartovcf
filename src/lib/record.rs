@@ -278,71 +278,76 @@ impl<'a> TumorOnlyVariant<'a> {
         }
     }
 
-    /// Return the "REALIGNED_FRAC_OF_DP" formatted VCF field for this record: missing without an ALT
-    /// allele.
+    /// Return the "REALIGNED_FRAC_OF_DP" formatted VCF field for this record: missing without ALT
+    /// reads.
     pub fn realigned_frac_of_dp_value(&self) -> f32 {
-        if self.ref_allele == self.alt_allele {
+        if !self.has_alt_reads() {
             f32::missing()
         } else {
             self.af_adjusted
         }
     }
 
-    /// Return the "MEAN_DIST_TO_READ_END" formatted VCF field for this record: missing without an
-    /// ALT allele.
+    /// Return the "MEAN_DIST_TO_READ_END" formatted VCF field for this record: missing without
+    /// ALT reads.
     pub fn mean_dist_to_read_end_value(&self) -> f32 {
-        if self.ref_allele == self.alt_allele {
+        if !self.has_alt_reads() {
             f32::missing()
         } else {
             self.mean_position_in_read
         }
     }
 
-    /// Return the "ALT_READ_POS_VARIES" formatted VCF field for this record: missing without an ALT
-    /// allele.
+    /// Return the "ALT_READ_POS_VARIES" formatted VCF field for this record: missing without ALT
+    /// reads.
     pub fn alt_read_pos_varies_value(&self) -> i32 {
-        if self.ref_allele == self.alt_allele {
+        if !self.has_alt_reads() {
             i32::missing()
         } else {
             self.stdev_position_in_read as i32
         }
     }
 
-    /// Return the "MEAN_MAPQ" formatted VCF field for this record: missing without an ALT allele.
+    /// Return the "MEAN_MAPQ" formatted VCF field for this record: missing without ALT reads.
     pub fn mean_mapq_value(&self) -> f32 {
-        if self.ref_allele == self.alt_allele {
+        if !self.has_alt_reads() {
             f32::missing()
         } else {
             self.mean_mapping_quality
         }
     }
 
-    /// Return the "STRAND_BIAS_FISHER_P" formatted VCF field for this record: missing without an ALT
-    /// allele.
+    /// Return the "STRAND_BIAS_FISHER_P" formatted VCF field for this record: missing without ALT
+    /// reads.
     pub fn strand_bias_fisher_p_value(&self) -> f32 {
-        if self.ref_allele == self.alt_allele {
+        if !self.has_alt_reads() {
             f32::missing()
         } else {
             self.strand_bias_p_value
         }
     }
 
-    /// Return the "QMEAN" formatted VCF field for this record: missing without an ALT allele.
+    /// Return the "QMEAN" formatted VCF field for this record: missing without ALT reads.
     pub fn qmean_value(&self) -> f32 {
-        if self.ref_allele == self.alt_allele {
+        if !self.has_alt_reads() {
             f32::missing()
         } else {
             self.base_quality_mean
         }
     }
 
-    /// Return the "MEAN_MISMATCHES" formatted VCF field for this record: missing without an ALT allele.
+    /// Return the "MEAN_MISMATCHES" formatted VCF field for this record: missing without ALT reads.
     pub fn mean_mismatches_value(&self) -> f32 {
-        if self.ref_allele == self.alt_allele {
+        if !self.has_alt_reads() {
             f32::missing()
         } else {
             self.mean_mismatches_in_reads
         }
+    }
+
+    /// Whether this record has an ALT allele and at least one read carrying it.
+    pub fn has_alt_reads(&self) -> bool {
+        self.ref_allele != self.alt_allele && self.alt_depth > 0
     }
 
     /// Return the "AF" formatted VCF field for this record: the ALT depth over DP at full precision,
@@ -363,10 +368,16 @@ impl<'a> TumorOnlyVariant<'a> {
         }
     }
 
-    /// Return the "GT" formatted VCF field for this record: 0/0 without an ALT allele, otherwise 1/1
-    /// at or above the minimum homozygous alternate allele frequency and 0/1 below it.
+    /// Return the "GT" formatted VCF field for this record: ./. without depth or ALT reads, 0/0 with
+    /// depth but no ALT reads, otherwise 1/1 at or above the minimum homozygous alternate allele
+    /// frequency and 0/1 below it.
     pub fn gt_value(&self, min_hom_alt_af: f32) -> &[GenotypeAllele] {
-        if self.ref_allele == self.alt_allele {
+        if !self.has_alt_reads() && self.depth <= 0 {
+            &[
+                GenotypeAllele::UnphasedMissing,
+                GenotypeAllele::UnphasedMissing,
+            ]
+        } else if !self.has_alt_reads() {
             &[GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(0)]
         } else if self.af_value() >= min_hom_alt_af {
             &[GenotypeAllele::Unphased(1), GenotypeAllele::Unphased(1)]
@@ -497,20 +508,20 @@ pub fn tumor_only_header(sample: &str, filters: &FilterThresholds) -> Header {
     for line in filters.header_lines() {
         header.push_record(line.as_bytes());
     }
-    header.push_record(format!(r#"##FORMAT=<ID=GT,Number=1,Type=String,Description="The genotype inferred from the allele frequency alone, since VarDict does not genotype: 1/1 when AF >= {MIN_HOM_ALT_AF}, 0/1 for any other call with an ALT allele, and 0/0 when there is no ALT allele.">"#).as_bytes());
+    header.push_record(format!(r#"##FORMAT=<ID=GT,Number=1,Type=String,Description="The genotype inferred from the allele frequency alone, since VarDict does not genotype: 1/1 when AF >= {MIN_HOM_ALT_AF}, 0/1 for any other call with ALT reads, 0/0 when no read carries the ALT allele or there is no ALT allele, and ./. when DP is 0 too.">"#).as_bytes());
     header.push_record(r#"##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Read depth for REF then ALT as VarDict counts them: ALT is the reads carrying this allele and REF is the reads carrying the reference base at the variant's first internal base (the first deleted base for deletions, without insertion-carrying reads for insertions), or at the following base when an insertion at the same position raises DP. REF is missing for Complex calls, where VarDict counts only their first base and can count a read as both, and REF is the only value when there is no ALT allele.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=ADF,Number=R,Type=Integer,Description="Reads on the forward strand (SAM flag 0x10 unset) supporting REF then ALT, the forward half of AD as VarDict counts it: REF is counted where AD's is (sometimes the following base), is missing for Complex calls and is the only value when there is no ALT allele. When VarDict runs with -u, overlapping mates count only through the reverse read.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=ADR,Number=R,Type=Integer,Description="Reads on the reverse strand (SAM flag 0x10 set) supporting REF then ALT, the reverse half of AD as VarDict counts it: REF is counted where AD's is (sometimes the following base), is missing for Complex calls and is the only value when there is no ALT allele. When VarDict runs with -u, overlapping mates count only through the reverse read.">"#.as_bytes());
-    header.push_record(r#"##FORMAT=<ID=STRAND_BIAS_FISHER_P,Number=A,Type=Float,Description="Two-sided Fisher exact p-value that the ALT allele's forward/reverse read split differs from REF's, from VarDict's table of REF and ALT reads by SAM strand, not a test against 50:50; its REF counts are VarDict's, including the overcount on Complex calls. Rounded by VarDict to 5 decimals, so values below 0.000005 read 0. Missing when there is no ALT allele.">"#.as_bytes());
+    header.push_record(r#"##FORMAT=<ID=STRAND_BIAS_FISHER_P,Number=A,Type=Float,Description="Two-sided Fisher exact p-value that the ALT allele's forward/reverse read split differs from REF's, from VarDict's table of REF and ALT reads by SAM strand, not a test against 50:50; its REF counts are VarDict's, including the overcount on Complex calls. Rounded by VarDict to 5 decimals, so values below 0.000005 read 0. Missing when no read carries the ALT allele.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read depth as VarDict counts it at the variant's first internal base (POS+1 for deletions), the denominator of FORMAT AF and usually of VarDict's own AF: reads with any base quality, reads whose deletion spans the base, reference-matching soft-clipped bases, reads VarDict reassigned by realignment, and N calls only under -K; overlapping mates count twice unless VarDict ran with -u or -UN, and an insertion at the same position can make it the following base's depth. REF and ALT depths need not sum to DP.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=AF,Number=A,Type=Float,Description="Fraction of reads carrying the ALT allele, AD[1] / DP, computed by vartovcf at full precision and clamped to [0, 1] because VarDict's ALT count can exceed DP; AD and DP keep the raw counts. VarDict's own AF column is rounded to 4 decimals and its denominator can differ from DP, for example at a position shared with an insertion. Missing when there is no ALT allele or DP is 0.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=HICNT,Number=A,Type=Integer,Description="ALT reads whose per-read variant quality, the one QMEAN averages (the base's quality for SNVs, the better flanking base's for deletions and so on), is at least VarDict's -q; mapping quality is not considered. Missing when there is no ALT allele.">"#.as_bytes());
-    header.push_record(r#"##FORMAT=<ID=REALIGNED_FRAC_OF_DP,Number=A,Type=Float,Description="Fraction of VarDict's depth made of reads it reassigned to this ALT allele by local realignment or MNV merging (VarDict's ExtraAF, which var2vcf_valid.pl calls ADJAF). Those reads are already counted in AD[1] and AF, so this is not an adjusted AF; divided by AF it gives roughly the share of the ALT reads that realignment contributed. Rounded by VarDict to 4 decimals. Missing when there is no ALT allele.">"#.as_bytes());
-    header.push_record(r#"##FORMAT=<ID=MEAN_DIST_TO_READ_END,Number=A,Type=Float,Description="Mean, over the reads carrying the ALT allele, of the 1-based distance from the variant to the nearer end of the read's aligned part, soft clips excluded. It is measured from the variant base for SNVs, the first inserted base for insertions and the first base after the gap for deletions; a Complex call is measured like the insertion or deletion it starts with, or from the last base of the block when it starts with a mismatch. Reads VarDict realigned out of soft clips contribute their clip length. Rounded by VarDict to 1 decimal. Missing when there is no ALT allele.">"#.as_bytes());
-    header.push_record(r#"##FORMAT=<ID=ALT_READ_POS_VARIES,Number=A,Type=Integer,Description="1 when the reads carrying the ALT allele place it at two or more distinct distances from the read end, and 0 when every one has it at the same distance, which with several reads is a common sign of an artifact. VarDict also sets it to 1 whenever it reassigns reads to the allele, as in local realignment or MNV merging, so it is 1 whenever REALIGNED_FRAC_OF_DP is above 0; otherwise a call with one ALT read is always 0. Missing when there is no ALT allele.">"#.as_bytes());
-    header.push_record(r#"##FORMAT=<ID=QMEAN,Number=A,Type=Float,Description="Mean, over the reads carrying the ALT allele, of VarDict's per-read variant quality: the base's Phred quality for SNVs, the mean of the inserted bases for insertions, the higher of the two flanking bases for deletions, and the mean of the block's bases for Complex calls, with that flanking base averaged in when the block starts with a deletion. VarDict grows an MNV only through mismatches at least 5 above -q, so MNV values run high. Bases below -q are included and nothing is capped. Rounded by VarDict to 1 decimal. Missing when there is no ALT allele.">"#.as_bytes());
-    header.push_record(r#"##FORMAT=<ID=MEAN_MAPQ,Number=A,Type=Float,Description="Arithmetic mean mapping quality of the reads carrying the ALT allele, not the RMS over all reads that the VCF specification's MQ means; uncapped, so a MAPQ of 255 (unavailable) counts as 255. Rounded by VarDict to 1 decimal. Missing when there is no ALT allele.">"#.as_bytes());
-    header.push_record(r#"##FORMAT=<ID=MEAN_MISMATCHES,Number=A,Type=Float,Description="Mean, over the reads carrying the ALT allele, of each read's substitution mismatches: its NM tag minus every inserted or deleted base, and for Complex calls minus some of the mismatches VarDict folded into the allele after its first change. Includes the variant's own mismatch for SNVs and excludes soft clips; a read without an NM tag counts as 0, and reads with more than VarDict's -m mismatches (default 8) are not counted. Rounded by VarDict to 1 decimal. Missing when there is no ALT allele.">"#.as_bytes());
+    header.push_record(r#"##FORMAT=<ID=REALIGNED_FRAC_OF_DP,Number=A,Type=Float,Description="Fraction of VarDict's depth made of reads it reassigned to this ALT allele by local realignment or MNV merging (VarDict's ExtraAF, which var2vcf_valid.pl calls ADJAF). Those reads are already counted in AD[1] and AF, so this is not an adjusted AF; divided by AF it gives roughly the share of the ALT reads that realignment contributed. Rounded by VarDict to 4 decimals. Missing when no read carries the ALT allele.">"#.as_bytes());
+    header.push_record(r#"##FORMAT=<ID=MEAN_DIST_TO_READ_END,Number=A,Type=Float,Description="Mean, over the reads carrying the ALT allele, of the 1-based distance from the variant to the nearer end of the read's aligned part, soft clips excluded. It is measured from the variant base for SNVs, the first inserted base for insertions and the first base after the gap for deletions; a Complex call is measured like the insertion or deletion it starts with, or from the last base of the block when it starts with a mismatch. Reads VarDict realigned out of soft clips contribute their clip length. Rounded by VarDict to 1 decimal. Missing when no read carries the ALT allele.">"#.as_bytes());
+    header.push_record(r#"##FORMAT=<ID=ALT_READ_POS_VARIES,Number=A,Type=Integer,Description="1 when the reads carrying the ALT allele place it at two or more distinct distances from the read end, and 0 when every one has it at the same distance, which with several reads is a common sign of an artifact. VarDict also sets it to 1 whenever it reassigns reads to the allele, as in local realignment or MNV merging, so it is 1 whenever REALIGNED_FRAC_OF_DP is above 0; otherwise a call with one ALT read is always 0. Missing when no read carries the ALT allele.">"#.as_bytes());
+    header.push_record(r#"##FORMAT=<ID=QMEAN,Number=A,Type=Float,Description="Mean, over the reads carrying the ALT allele, of VarDict's per-read variant quality: the base's Phred quality for SNVs, the mean of the inserted bases for insertions, the higher of the two flanking bases for deletions, and the mean of the block's bases for Complex calls, with that flanking base averaged in when the block starts with a deletion. VarDict grows an MNV only through mismatches at least 5 above -q, so MNV values run high. Bases below -q are included and nothing is capped. Rounded by VarDict to 1 decimal. Missing when no read carries the ALT allele.">"#.as_bytes());
+    header.push_record(r#"##FORMAT=<ID=MEAN_MAPQ,Number=A,Type=Float,Description="Arithmetic mean mapping quality of the reads carrying the ALT allele, not the RMS over all reads that the VCF specification's MQ means; uncapped, so a MAPQ of 255 (unavailable) counts as 255. Rounded by VarDict to 1 decimal. Missing when no read carries the ALT allele.">"#.as_bytes());
+    header.push_record(r#"##FORMAT=<ID=MEAN_MISMATCHES,Number=A,Type=Float,Description="Mean, over the reads carrying the ALT allele, of each read's substitution mismatches: its NM tag minus every inserted or deleted base, and for Complex calls minus some of the mismatches VarDict folded into the allele after its first change. Includes the variant's own mismatch for SNVs and excludes soft clips; a read without an NM tag counts as 0, and reads with more than VarDict's -m mismatches (default 8) are not counted. Rounded by VarDict to 1 decimal. Missing when no read carries the ALT allele.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=SV_SOFTCLIP_READS,Number=A,Type=Integer,Description="Reads soft-clipped at this structural variant's breakpoint whose clipped sequence VarDict matched to the other side; primary alignments only, as VarDict ignores supplementary (SA) records. Written only on records with a symbolic ALT allele.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=SV_DISCORDANT_READS,Number=A,Type=Integer,Description="Discordant read records (unexpected insert size or orientation) in the clusters VarDict linked to this structural variant; each mate counts, so one pair can count twice. Written only on records with a symbolic ALT allele.">"#.as_bytes());
     header.push_record(r#"##ALT=<ID=DEL,Description="Deletion relative to the reference.">"#.as_bytes());
@@ -857,6 +868,21 @@ mod tests {
     }
 
     #[rstest]
+    fn test_tumor_only_variant_alt_read_summaries_are_missing_without_alt_reads(
+        variants: Vec<TumorOnlyVariant<'static>>,
+    ) {
+        let mut variant = variants.into_iter().nth(2).unwrap();
+        variant.alt_depth = 0;
+        assert!(variant.realigned_frac_of_dp_value().is_missing());
+        assert!(variant.mean_dist_to_read_end_value().is_missing());
+        assert!(variant.alt_read_pos_varies_value().is_missing());
+        assert!(variant.mean_mapq_value().is_missing());
+        assert!(variant.strand_bias_fisher_p_value().is_missing());
+        assert!(variant.qmean_value().is_missing());
+        assert!(variant.mean_mismatches_value().is_missing());
+    }
+
+    #[rstest]
     #[case("G", "A", "SNV", vec![2766, 1], vec![5280, 0])]
     #[case("GA", "AC", "Complex", vec![i32::missing(), 1], vec![i32::missing(), 0])]
     #[case("G", "G", "", vec![2766], vec![5280])]
@@ -923,6 +949,26 @@ mod tests {
             variant.gt_value(MIN_HOM_ALT_AF),
             &expected.map(GenotypeAllele::Unphased)
         );
+    }
+
+    #[rstest]
+    #[case("G", "A", 0, 10, [GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(0)])]
+    #[case("G", "A", 0, 0, [GenotypeAllele::UnphasedMissing, GenotypeAllele::UnphasedMissing])]
+    #[case("G", "G", 0, 0, [GenotypeAllele::UnphasedMissing, GenotypeAllele::UnphasedMissing])]
+    fn test_tumor_only_variant_gt_value_without_alt_reads(
+        variants: Vec<TumorOnlyVariant<'static>>,
+        #[case] ref_allele: &'static str,
+        #[case] alt_allele: &'static str,
+        #[case] alt_depth: i32,
+        #[case] depth: i32,
+        #[case] expected: [GenotypeAllele; 2],
+    ) {
+        let mut variant = variants.into_iter().nth(2).unwrap();
+        variant.ref_allele = ref_allele;
+        variant.alt_allele = alt_allele;
+        variant.alt_depth = alt_depth;
+        variant.depth = depth;
+        assert_eq!(variant.gt_value(MIN_HOM_ALT_AF), &expected);
     }
 
     #[rstest]

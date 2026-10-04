@@ -146,7 +146,8 @@ impl FilterThresholds {
         lines
     }
 
-    /// Return the FILTER labels a call fails; none for a record without an ALT allele.
+    /// Return the FILTER labels a call fails by its FORMAT values: none without an ALT allele, and
+    /// none from a value that is missing.
     pub fn labels(&self, variant: &TumorOnlyVariant) -> Vec<&'static str> {
         let mut labels = Vec::new();
         if variant.ref_allele == variant.alt_allele {
@@ -154,13 +155,13 @@ impl FilterThresholds {
         }
         if self
             .near_read_end
-            .is_some_and(|min_mean_dist| variant.mean_position_in_read < min_mean_dist)
+            .is_some_and(|min_mean_dist| variant.mean_dist_to_read_end_value() < min_mean_dist)
         {
             labels.push(NEAR_READ_END);
         }
         if self
             .low_mean_mapq
-            .is_some_and(|min_mean_mapq| variant.mean_mapping_quality < min_mean_mapq)
+            .is_some_and(|min_mean_mapq| variant.mean_mapq_value() < min_mean_mapq)
         {
             labels.push(LOW_MEAN_MAPQ);
         }
@@ -194,7 +195,7 @@ impl FilterThresholds {
         if self
             .high_mean_mismatches
             .is_some_and(|max_mean_mismatches| {
-                variant.mean_mismatches_in_reads > max_mean_mismatches
+                variant.mean_mismatches_value() > max_mean_mismatches
             })
         {
             labels.push(HIGH_MEAN_MISMATCHES);
@@ -225,7 +226,7 @@ impl FilterThresholds {
         }
         if self
             .low_qmean
-            .is_some_and(|min_qmean| variant.base_quality_mean < min_qmean)
+            .is_some_and(|min_qmean| variant.qmean_value() < min_qmean)
         {
             labels.push(LOW_QMEAN);
         }
@@ -276,8 +277,35 @@ mod tests {
             alt_allele,
             mean_position_in_read: mean_dist,
             mean_mapping_quality: 60.0,
+            alt_depth: 1,
+            depth: 100,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn test_a_call_without_alt_reads_gets_only_count_labels() {
+        let filters = FilterThresholds {
+            near_read_end: Some(8.0),
+            low_mean_mapq: Some(10.0),
+            high_mean_mismatches: Some(5.25),
+            same_read_position: Some(0.35),
+            strand_bias: Some(0.01),
+            low_af: Some(0.01),
+            low_qmean: Some(22.5),
+            low_dp: Some(50),
+            ..Default::default()
+        };
+        let no_alt_reads = TumorOnlyVariant {
+            alt_depth: 0,
+            depth: 30,
+            mean_mapping_quality: 0.0,
+            base_quality_mean: 0.0,
+            mean_mismatches_in_reads: 9.0,
+            strand_bias_p_value: 0.0,
+            ..variant("G", "A", 0.0)
+        };
+        assert_eq!(filters.labels(&no_alt_reads), vec![LOW_AF, LOW_DP]);
     }
 
     fn mapq_variant(
