@@ -20,6 +20,9 @@ pub const HIGH_MEAN_MISMATCHES: &str = "HIGH_MEAN_MISMATCHES";
 /// The FILTER label for calls whose ALT reads all place the variant at the same read position.
 pub const SAME_READ_POSITION: &str = "SAME_READ_POSITION";
 
+/// The FILTER label for calls whose ALT reads split across strands differently from the REF reads.
+pub const STRAND_BIAS: &str = "STRAND_BIAS";
+
 /// The thresholds of the FILTER labels to apply; a label without a threshold is not applied.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct FilterThresholds {
@@ -39,6 +42,12 @@ pub struct FilterThresholds {
     pub high_mean_mismatches: Option<f32>,
     /// The allele frequency below which a call whose ALT reads share one read position is labelled.
     pub same_read_position: Option<f32>,
+    /// The strand-bias Fisher p-value below which a call is labelled.
+    pub strand_bias: Option<f32>,
+    /// The folded strand odds ratio a labelled call must exceed, unless the table has an empty cell.
+    pub strand_bias_min_odds_ratio: Option<f32>,
+    /// The allele frequency below which a strand-biased call is labelled; no limit when not given.
+    pub strand_bias_max_af: Option<f32>,
 }
 
 impl FilterThresholds {
@@ -50,6 +59,7 @@ impl FilterThresholds {
             || self.tandem_repeat_indel.is_some()
             || self.high_mean_mismatches.is_some()
             || self.same_read_position.is_some()
+            || self.strand_bias.is_some()
     }
 
     /// Return the FILTER header lines of the applied labels.
@@ -85,6 +95,19 @@ impl FilterThresholds {
         if let Some(max_af) = self.same_read_position {
             lines.push(format!(
                 r#"##FILTER=<ID={SAME_READ_POSITION},Description="Every one of at least 2 ALT reads places the variant at the same distance from its read end (FORMAT ALT_READ_POS_VARIES 0) at an AF (FORMAT AF) below {max_af}, a sign of one fragment counted repeatedly or an error at a fixed sequencing cycle.">"#
+            ));
+        }
+        if let Some(max_p) = self.strand_bias {
+            let odds_ratio = self
+                .strand_bias_min_odds_ratio
+                .map(|min_odds_ratio| format!(", the odds ratio of that table, folded so either direction counts, is above {min_odds_ratio} or the table has an empty cell"))
+                .unwrap_or_default();
+            let af_limit = self
+                .strand_bias_max_af
+                .map(|max_af| format!(", and AF (FORMAT AF) is below {max_af}"))
+                .unwrap_or_default();
+            lines.push(format!(
+                r#"##FILTER=<ID={STRAND_BIAS},Description="The ALT reads split across strands differently from the REF reads: the two-sided Fisher p-value of REF and ALT reads by strand (FORMAT STRAND_BIAS_FISHER_P) is below {max_p}{odds_ratio}{af_limit}.">"#
             ));
         }
         lines
@@ -150,8 +173,35 @@ impl FilterThresholds {
         }) {
             labels.push(SAME_READ_POSITION);
         }
+        if self.strand_bias.is_some_and(|max_p| {
+            variant.strand_bias_fisher_p_value() < max_p
+                && self
+                    .strand_bias_min_odds_ratio
+                    .is_none_or(|min_odds_ratio| strand_odds_ratio_exceeds(variant, min_odds_ratio))
+                && self
+                    .strand_bias_max_af
+                    .is_none_or(|max_af| variant.af_value() < max_af)
+        }) {
+            labels.push(STRAND_BIAS);
+        }
         labels
     }
+}
+
+/// Whether the REF and ALT strand table has an empty cell or a folded odds ratio above the minimum.
+fn strand_odds_ratio_exceeds(variant: &TumorOnlyVariant, min_odds_ratio: f32) -> bool {
+    let cells = [
+        variant.ref_forward,
+        variant.ref_reverse,
+        variant.alt_forward,
+        variant.alt_reverse,
+    ];
+    if cells.contains(&0) {
+        return true;
+    }
+    let odds_ratio = (variant.ref_forward as f64 * variant.alt_reverse as f64)
+        / (variant.ref_reverse as f64 * variant.alt_forward as f64);
+    odds_ratio.max(1.0 / odds_ratio) > min_odds_ratio as f64
 }
 
 /// Return the AF clause of a repeat label's description, empty when it has no AF limit.
@@ -446,6 +496,98 @@ mod tests {
             filters.header_lines(),
             vec![
                 r#"##FILTER=<ID=SAME_READ_POSITION,Description="Every one of at least 2 ALT reads places the variant at the same distance from its read end (FORMAT ALT_READ_POS_VARIES 0) at an AF (FORMAT AF) below 0.35, a sign of one fragment counted repeatedly or an error at a fixed sequencing cycle.">"#
+            ]
+        );
+    }
+
+    fn strand_variant(
+        p_value: f32,
+        ref_strands: (i32, i32),
+        alt_strands: (i32, i32),
+    ) -> TumorOnlyVariant<'static> {
+        TumorOnlyVariant {
+            strand_bias_p_value: p_value,
+            ref_forward: ref_strands.0,
+            ref_reverse: ref_strands.1,
+            alt_forward: alt_strands.0,
+            alt_reverse: alt_strands.1,
+            alt_depth: alt_strands.0 + alt_strands.1,
+            depth: 1000,
+            ..variant("G", "A", 30.0)
+        }
+    }
+
+    #[rstest]
+    #[case(0.001, (500, 500), (0, 10), vec![STRAND_BIAS])]
+    #[case(0.001, (500, 500), (2, 60), vec![STRAND_BIAS])]
+    #[case(0.001, (500, 500), (60, 2), vec![STRAND_BIAS])]
+    #[case(0.001, (500, 500), (20, 40), vec![])]
+    #[case(0.5, (500, 500), (0, 10), vec![])]
+    #[case(0.001, (500, 500), (0, 300), vec![])]
+    fn test_strand_bias(
+        #[case] p_value: f32,
+        #[case] ref_strands: (i32, i32),
+        #[case] alt_strands: (i32, i32),
+        #[case] expected: Vec<&str>,
+    ) {
+        let filters = FilterThresholds {
+            strand_bias: Some(0.01),
+            strand_bias_min_odds_ratio: Some(5.0),
+            strand_bias_max_af: Some(0.25),
+            ..Default::default()
+        };
+        assert!(filters.any());
+        assert_eq!(
+            filters.labels(&strand_variant(p_value, ref_strands, alt_strands)),
+            expected
+        );
+    }
+
+    #[test]
+    fn test_strand_bias_without_optional_limits() {
+        let filters = FilterThresholds {
+            strand_bias: Some(0.01),
+            ..Default::default()
+        };
+        let modest_skew_at_high_af = strand_variant(0.001, (500, 500), (200, 400));
+        assert_eq!(filters.labels(&modest_skew_at_high_af), vec![STRAND_BIAS]);
+    }
+
+    #[test]
+    fn test_strand_bias_is_not_applied_without_an_alt() {
+        let filters = FilterThresholds {
+            strand_bias: Some(0.01),
+            ..Default::default()
+        };
+        let reference_row = TumorOnlyVariant {
+            alt_allele: "G",
+            ..strand_variant(0.001, (500, 500), (0, 10))
+        };
+        assert!(filters.labels(&reference_row).is_empty());
+    }
+
+    #[test]
+    fn test_strand_bias_header_line_states_the_thresholds() {
+        let filters = FilterThresholds {
+            strand_bias: Some(0.01),
+            strand_bias_min_odds_ratio: Some(5.0),
+            strand_bias_max_af: Some(0.25),
+            ..Default::default()
+        };
+        assert_eq!(
+            filters.header_lines(),
+            vec![
+                r#"##FILTER=<ID=STRAND_BIAS,Description="The ALT reads split across strands differently from the REF reads: the two-sided Fisher p-value of REF and ALT reads by strand (FORMAT STRAND_BIAS_FISHER_P) is below 0.01, the odds ratio of that table, folded so either direction counts, is above 5 or the table has an empty cell, and AF (FORMAT AF) is below 0.25.">"#
+            ]
+        );
+        let p_only = FilterThresholds {
+            strand_bias: Some(0.01),
+            ..Default::default()
+        };
+        assert_eq!(
+            p_only.header_lines(),
+            vec![
+                r#"##FILTER=<ID=STRAND_BIAS,Description="The ALT reads split across strands differently from the REF reads: the two-sided Fisher p-value of REF and ALT reads by strand (FORMAT STRAND_BIAS_FISHER_P) is below 0.01.">"#
             ]
         );
     }

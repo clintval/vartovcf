@@ -77,6 +77,18 @@ struct Opt {
     /// Label calls SAME_READ_POSITION when 2 or more ALT reads all place the variant at one read position, at an AF below this; not applied when not given
     #[arg(long, value_name = "MAX_AF")]
     filter_same_read_position: Option<f32>,
+
+    /// Label calls STRAND_BIAS when the Fisher p-value of REF and ALT reads by strand is below this; not applied when not given
+    #[arg(long, value_name = "MAX_P")]
+    filter_strand_bias: Option<f32>,
+
+    /// Only label STRAND_BIAS when the folded strand odds ratio is above this or the table has an empty cell; no odds-ratio limit when not given
+    #[arg(long, value_name = "MIN_ODDS_RATIO", requires = "filter_strand_bias")]
+    filter_strand_bias_min_odds_ratio: Option<f32>,
+
+    /// Only label STRAND_BIAS when AF is below this; no AF limit when not given
+    #[arg(long, value_name = "MAX_AF", requires = "filter_strand_bias")]
+    filter_strand_bias_max_af: Option<f32>,
 }
 
 /// Main binary entrypoint.
@@ -122,6 +134,9 @@ fn main() -> Result<(), Error> {
             tandem_repeat_indel_max_af: opt.filter_tandem_repeat_indel_max_af,
             high_mean_mismatches: opt.filter_high_mean_mismatches,
             same_read_position: opt.filter_same_read_position,
+            strand_bias: opt.filter_strand_bias,
+            strand_bias_min_odds_ratio: opt.filter_strand_bias_min_odds_ratio,
+            strand_bias_max_af: opt.filter_strand_bias_max_af,
         },
     ) {
         Ok(exit_code) => process::exit(exit_code),
