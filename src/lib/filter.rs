@@ -14,6 +14,9 @@ pub const HOMOPOLYMER_INDEL: &str = "HOMOPOLYMER_INDEL";
 /// The FILTER label for one-unit insertions or deletions in long 2-6 bp tandem repeats.
 pub const TANDEM_REPEAT_INDEL: &str = "TANDEM_REPEAT_INDEL";
 
+/// The FILTER label for calls whose ALT reads carry many other mismatches.
+pub const HIGH_MEAN_MISMATCHES: &str = "HIGH_MEAN_MISMATCHES";
+
 /// The thresholds of the FILTER labels to apply; a label without a threshold is not applied.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct FilterThresholds {
@@ -29,6 +32,8 @@ pub struct FilterThresholds {
     pub tandem_repeat_indel: Option<f32>,
     /// The allele frequency below which a tandem repeat indel is labelled; no limit when not given.
     pub tandem_repeat_indel_max_af: Option<f32>,
+    /// The maximum mean substitution mismatches per ALT read.
+    pub high_mean_mismatches: Option<f32>,
 }
 
 impl FilterThresholds {
@@ -38,6 +43,7 @@ impl FilterThresholds {
             || self.low_mean_mapq.is_some()
             || self.homopolymer_indel.is_some()
             || self.tandem_repeat_indel.is_some()
+            || self.high_mean_mismatches.is_some()
     }
 
     /// Return the FILTER header lines of the applied labels.
@@ -63,6 +69,11 @@ impl FilterThresholds {
             let af_limit = af_limit_clause(self.tandem_repeat_indel_max_af);
             lines.push(format!(
                 r#"##FILTER=<ID={TANDEM_REPEAT_INDEL},Description="Insertion or deletion of exactly one repeat unit in a 2-6 bp tandem repeat of at least {min_copies} copies (INFO REPEAT_UNIT_COPIES and REPEAT_UNIT_LEN){af_limit}, the signature of polymerase slippage.">"#
+            ));
+        }
+        if let Some(max_mean_mismatches) = self.high_mean_mismatches {
+            lines.push(format!(
+                r#"##FILTER=<ID={HIGH_MEAN_MISMATCHES},Description="Mean substitution mismatches per ALT read (FORMAT MEAN_MISMATCHES) is above {max_mean_mismatches}, suggesting misaligned or paralogous reads.">"#
             ));
         }
         lines
@@ -112,6 +123,14 @@ impl FilterThresholds {
             {
                 labels.push(TANDEM_REPEAT_INDEL);
             }
+        }
+        if self
+            .high_mean_mismatches
+            .is_some_and(|max_mean_mismatches| {
+                variant.mean_mismatches_in_reads > max_mean_mismatches
+            })
+        {
+            labels.push(HIGH_MEAN_MISMATCHES);
         }
         labels
     }
@@ -332,6 +351,42 @@ mod tests {
             vec![
                 r#"##FILTER=<ID=HOMOPOLYMER_INDEL,Description="Insertion or deletion of exactly one base in a homopolymer of at least 13 copies (INFO REPEAT_UNIT_COPIES with REPEAT_UNIT_LEN 1) at an AF (FORMAT AF) below 0.275, the signature of polymerase slippage.">"#,
                 r#"##FILTER=<ID=TANDEM_REPEAT_INDEL,Description="Insertion or deletion of exactly one repeat unit in a 2-6 bp tandem repeat of at least 13 copies (INFO REPEAT_UNIT_COPIES and REPEAT_UNIT_LEN), the signature of polymerase slippage.">"#,
+            ]
+        );
+    }
+
+    #[rstest]
+    #[case("G", "A", 5.5, vec![HIGH_MEAN_MISMATCHES])]
+    #[case("G", "A", 5.25, vec![])]
+    #[case("G", "G", 5.5, vec![])]
+    fn test_high_mean_mismatches(
+        #[case] ref_allele: &'static str,
+        #[case] alt_allele: &'static str,
+        #[case] mean_mismatches: f32,
+        #[case] expected: Vec<&str>,
+    ) {
+        let filters = FilterThresholds {
+            high_mean_mismatches: Some(5.25),
+            ..Default::default()
+        };
+        assert!(filters.any());
+        let variant = TumorOnlyVariant {
+            mean_mismatches_in_reads: mean_mismatches,
+            ..variant(ref_allele, alt_allele, 30.0)
+        };
+        assert_eq!(filters.labels(&variant), expected);
+    }
+
+    #[test]
+    fn test_high_mean_mismatches_header_line_states_the_threshold() {
+        let filters = FilterThresholds {
+            high_mean_mismatches: Some(5.25),
+            ..Default::default()
+        };
+        assert_eq!(
+            filters.header_lines(),
+            vec![
+                r#"##FILTER=<ID=HIGH_MEAN_MISMATCHES,Description="Mean substitution mismatches per ALT read (FORMAT MEAN_MISMATCHES) is above 5.25, suggesting misaligned or paralogous reads.">"#
             ]
         );
     }

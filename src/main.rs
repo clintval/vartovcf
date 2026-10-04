@@ -69,6 +69,10 @@ struct Opt {
     /// Only label TANDEM_REPEAT_INDEL when AF is below this; no AF limit when not given
     #[arg(long, value_name = "MAX_AF", requires = "filter_tandem_repeat_indel")]
     filter_tandem_repeat_indel_max_af: Option<f32>,
+
+    /// Label calls HIGH_MEAN_MISMATCHES when their ALT reads average more substitution mismatches than this; not applied when not given
+    #[arg(long, value_name = "MAX_MEAN_MISMATCHES")]
+    filter_high_mean_mismatches: Option<f32>,
 }
 
 /// Main binary entrypoint.
@@ -112,6 +116,7 @@ fn main() -> Result<(), Error> {
             homopolymer_indel_max_af: opt.filter_homopolymer_indel_max_af,
             tandem_repeat_indel: opt.filter_tandem_repeat_indel,
             tandem_repeat_indel_max_af: opt.filter_tandem_repeat_indel_max_af,
+            high_mean_mismatches: opt.filter_high_mean_mismatches,
         },
     ) {
         Ok(exit_code) => process::exit(exit_code),
