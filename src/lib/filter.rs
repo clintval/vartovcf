@@ -29,6 +29,12 @@ pub const LOW_AF: &str = "LOW_AF";
 /// The FILTER label for calls whose ALT reads have a low mean variant base quality.
 pub const LOW_QMEAN: &str = "LOW_QMEAN";
 
+/// The FILTER label for calls with a low read depth.
+pub const LOW_DP: &str = "LOW_DP";
+
+/// The FILTER label for calls with few high-quality ALT reads.
+pub const LOW_HICNT: &str = "LOW_HICNT";
+
 /// The thresholds of the FILTER labels to apply; a label without a threshold is not applied.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct FilterThresholds {
@@ -58,6 +64,10 @@ pub struct FilterThresholds {
     pub low_af: Option<f32>,
     /// The minimum mean per-read variant base quality of the ALT reads.
     pub low_qmean: Option<f32>,
+    /// The minimum read depth.
+    pub low_dp: Option<i32>,
+    /// The minimum number of high-quality ALT reads.
+    pub low_hicnt: Option<i32>,
 }
 
 impl FilterThresholds {
@@ -72,6 +82,8 @@ impl FilterThresholds {
             || self.strand_bias.is_some()
             || self.low_af.is_some()
             || self.low_qmean.is_some()
+            || self.low_dp.is_some()
+            || self.low_hicnt.is_some()
     }
 
     /// Return the FILTER header lines of the applied labels.
@@ -130,6 +142,16 @@ impl FilterThresholds {
         if let Some(min_qmean) = self.low_qmean {
             lines.push(format!(
                 r#"##FILTER=<ID={LOW_QMEAN},Description="Mean per-read variant base quality of the ALT reads (FORMAT QMEAN) is below {min_qmean}.">"#
+            ));
+        }
+        if let Some(min_dp) = self.low_dp {
+            lines.push(format!(
+                r#"##FILTER=<ID={LOW_DP},Description="Read depth (FORMAT DP) is below {min_dp}.">"#
+            ));
+        }
+        if let Some(min_hicnt) = self.low_hicnt {
+            lines.push(format!(
+                r#"##FILTER=<ID={LOW_HICNT},Description="High-quality ALT reads (FORMAT HICNT) are fewer than {min_hicnt}.">"#
             ));
         }
         lines
@@ -217,6 +239,15 @@ impl FilterThresholds {
             .is_some_and(|min_qmean| variant.base_quality_mean < min_qmean)
         {
             labels.push(LOW_QMEAN);
+        }
+        if self.low_dp.is_some_and(|min_dp| variant.depth < min_dp) {
+            labels.push(LOW_DP);
+        }
+        if self
+            .low_hicnt
+            .is_some_and(|min_hicnt| variant.high_quality_variant_reads < min_hicnt)
+        {
+            labels.push(LOW_HICNT);
         }
         labels
     }
@@ -696,6 +727,51 @@ mod tests {
             filters.header_lines(),
             vec![
                 r#"##FILTER=<ID=LOW_QMEAN,Description="Mean per-read variant base quality of the ALT reads (FORMAT QMEAN) is below 30.">"#
+            ]
+        );
+    }
+
+    #[rstest]
+    #[case("G", "A", 2, 5, vec![LOW_DP])]
+    #[case("G", "A", 3, 5, vec![])]
+    #[case("G", "A", 10, 1, vec![LOW_HICNT])]
+    #[case("G", "A", 10, 2, vec![])]
+    #[case("G", "A", 2, 1, vec![LOW_DP, LOW_HICNT])]
+    #[case("G", "G", 2, 1, vec![])]
+    fn test_low_dp_and_low_hicnt(
+        #[case] ref_allele: &'static str,
+        #[case] alt_allele: &'static str,
+        #[case] depth: i32,
+        #[case] hicnt: i32,
+        #[case] expected: Vec<&str>,
+    ) {
+        let filters = FilterThresholds {
+            low_dp: Some(3),
+            low_hicnt: Some(2),
+            ..Default::default()
+        };
+        assert!(filters.any());
+        let variant = TumorOnlyVariant {
+            depth,
+            alt_depth: 1,
+            high_quality_variant_reads: hicnt,
+            ..variant(ref_allele, alt_allele, 30.0)
+        };
+        assert_eq!(filters.labels(&variant), expected);
+    }
+
+    #[test]
+    fn test_low_dp_and_low_hicnt_header_lines_state_the_thresholds() {
+        let filters = FilterThresholds {
+            low_dp: Some(3),
+            low_hicnt: Some(2),
+            ..Default::default()
+        };
+        assert_eq!(
+            filters.header_lines(),
+            vec![
+                r#"##FILTER=<ID=LOW_DP,Description="Read depth (FORMAT DP) is below 3.">"#,
+                r#"##FILTER=<ID=LOW_HICNT,Description="High-quality ALT reads (FORMAT HICNT) are fewer than 2.">"#,
             ]
         );
     }
