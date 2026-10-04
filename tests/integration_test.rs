@@ -112,6 +112,7 @@ mod tests {
             .arg("--filter-tandem-repeat-indel").arg("13")
             .arg("--filter-tandem-repeat-indel-max-af").arg("0.2")
             .arg("--filter-high-mean-mismatches").arg("5.25")
+            .arg("--filter-same-read-position").arg("0.35")
             .unwrap().assert().success();
 
         assert!(diff(output, "tests/calls.filters.vcf"));

@@ -73,6 +73,10 @@ struct Opt {
     /// Label calls HIGH_MEAN_MISMATCHES when their ALT reads average more substitution mismatches than this; not applied when not given
     #[arg(long, value_name = "MAX_MEAN_MISMATCHES")]
     filter_high_mean_mismatches: Option<f32>,
+
+    /// Label calls SAME_READ_POSITION when 2 or more ALT reads all place the variant at one read position, at an AF below this; not applied when not given
+    #[arg(long, value_name = "MAX_AF")]
+    filter_same_read_position: Option<f32>,
 }
 
 /// Main binary entrypoint.
@@ -117,6 +121,7 @@ fn main() -> Result<(), Error> {
             tandem_repeat_indel: opt.filter_tandem_repeat_indel,
             tandem_repeat_indel_max_af: opt.filter_tandem_repeat_indel_max_af,
             high_mean_mismatches: opt.filter_high_mean_mismatches,
+            same_read_position: opt.filter_same_read_position,
         },
     ) {
         Ok(exit_code) => process::exit(exit_code),
