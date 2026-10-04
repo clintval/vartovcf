@@ -52,7 +52,7 @@ No FILTER label is applied unless its option is given; with none given, the FILT
 
 ### Example Usage
 
-Replace to call to `var2vcf_valid.pl` with `vartovcf` in a typical VarDictJava stream like:
+Replace the call to `var2vcf_valid.pl` with `vartovcf` in a typical VarDictJava stream like the one below. The `--filter-*` values reproduce the thresholds `var2vcf_valid.pl` applies by default; leave out any you don't want, and the label is not applied.
 
 ```bash
 ❯ vardict-java \
@@ -63,7 +63,34 @@ Replace to call to `var2vcf_valid.pl` with `vartovcf` in a typical VarDictJava s
     --fisher \
     calling-intervals.bed \
   | vartovcf --reference hg38.fa --sample dna00001 \
+      --filter-near-read-end 8 \
+      --filter-low-mean-mapq 10 \
+      --filter-homopolymer-indel 13 --filter-homopolymer-indel-max-af 0.275 \
+      --filter-tandem-repeat-indel 13 --filter-tandem-repeat-indel-max-af 0.2 \
+      --filter-high-mean-mismatches 5.25 \
+      --filter-same-read-position 0.35 \
+      --filter-strand-bias 0.01 --filter-strand-bias-min-odds-ratio 5 --filter-strand-bias-max-af 0.25 \
   | bcftools sort -Oz > variants.vcf.gz
+```
+
+In pileup mode (`-p`) VarDict keeps every candidate and switches off its own `-f`, `-r`, `-q` and `-o` rules. Add the matching labels to mark the candidates those rules would have dropped, here with VarDict's defaults (`-f` as given, `-r 2`, `-q 22.5`, `-o 1.5`):
+
+```bash
+❯ vardict-java -p ... --fisher calling-intervals.bed \
+  | vartovcf --reference hg38.fa --sample dna00001 --skip-non-variants \
+      --filter-near-read-end 8 \
+      --filter-low-mean-mapq 10 \
+      --filter-homopolymer-indel 13 --filter-homopolymer-indel-max-af 0.275 \
+      --filter-tandem-repeat-indel 13 --filter-tandem-repeat-indel-max-af 0.2 \
+      --filter-high-mean-mismatches 5.25 \
+      --filter-same-read-position 0.35 \
+      --filter-strand-bias 0.01 --filter-strand-bias-min-odds-ratio 5 --filter-strand-bias-max-af 0.25 \
+      --filter-low-af 0.05 \
+      --filter-low-hicnt 2 \
+      --filter-low-qmean 22.5 \
+      --filter-low-hicnt-fraction 0.6 \
+      --filter-low-dp 3 \
+  | bcftools sort -Oz > candidates.vcf.gz
 ```
 
 ### Benchmarks
