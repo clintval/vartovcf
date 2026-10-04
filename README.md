@@ -54,7 +54,7 @@ Replace the call to `var2vcf_valid.pl` with `vartovcf` in a typical VarDictJava 
   | bcftools sort -Oz > variants.vcf.gz
 ```
 
-In pileup mode (`-p`) VarDict keeps every candidate and switches off its own `-f`, `-r`, `-q` and `-o` rules. Add the matching labels to mark the candidates those rules would have dropped, here with VarDict's defaults (`-f` as given, `-r 2`, `-q 22.5`, `-o 1.5`):
+In pileup mode (`-p`) VarDict keeps every candidate and switches off its own call rules. Add `LOW_AF`, `LOW_QMEAN` and `LOW_DP` to mark the candidates its `-f` and `-q` rules would have dropped, here with VarDict's defaults (`-f` as given, `-q 22.5`):
 
 ```bash
 ❯ vardict-java -p ... --fisher calling-intervals.bed \
@@ -67,9 +67,7 @@ In pileup mode (`-p`) VarDict keeps every candidate and switches off its own `-f
       --filter-same-read-position 0.35 \
       --filter-strand-bias 0.01 --filter-strand-bias-min-odds-ratio 5 --filter-strand-bias-max-af 0.25 \
       --filter-low-af 0.05 \
-      --filter-low-hicnt 2 \
       --filter-low-qmean 22.5 \
-      --filter-low-hicnt-fraction 0.6 \
       --filter-low-dp 3 \
   | bcftools sort -Oz > candidates.vcf.gz
 ```
@@ -90,8 +88,6 @@ No FILTER label is applied unless its option is given; with none given, the FILT
 | `LOW_AF` | `--filter-low-af <MIN_AF>` | `AF` is below the threshold, useful when VarDict runs with `-p`, which ignores its own `-f` |
 | `LOW_QMEAN` | `--filter-low-qmean <MIN_QMEAN>` | `QMEAN` is below the threshold, useful when VarDict runs with `-p`, which keeps calls failing its own `-q` |
 | `LOW_DP` | `--filter-low-dp <MIN_DP>` | `DP` is below the threshold |
-| `LOW_HICNT` | `--filter-low-hicnt <MIN_HICNT>` | `HICNT` is below the threshold, the count VarDict's own `-r` tests and `-p` turns off |
-| `LOW_HICNT_FRACTION` | `--filter-low-hicnt-fraction <MIN_FRACTION>` | `HICNT` over `AD[1]` is below the threshold; VarDict's own `-o` rule, which `-p` turns off, is this with 0.6 |
 
 ### Benchmarks
 

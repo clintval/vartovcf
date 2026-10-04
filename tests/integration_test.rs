@@ -119,11 +119,35 @@ mod tests {
             .arg("--filter-low-af").arg("0.0001")
             .arg("--filter-low-qmean").arg("30")
             .arg("--filter-low-dp").arg("3")
-            .arg("--filter-low-hicnt").arg("1")
-            .arg("--filter-low-hicnt-fraction").arg("0.6")
             .unwrap().assert().success();
 
         assert!(diff(output, "tests/calls.filters.vcf"));
+        Ok(())
+    }
+
+    #[rstest]
+    #[case("--filter-low-hicnt")]
+    #[case("--filter-low-hicnt-fraction")]
+    fn run_end_to_end_refuses_the_removed_hicnt_filters(
+        #[case] option: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        let assert = cmd
+            .args([
+                "--reference",
+                "tests/reference.fa",
+                "--sample",
+                "dna00001",
+                option,
+                "1",
+            ])
+            .assert()
+            .code(1);
+        let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+        assert!(
+            stderr.contains(&format!("unexpected argument '{option}'")),
+            "{stderr}"
+        );
         Ok(())
     }
 
