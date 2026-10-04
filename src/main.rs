@@ -97,6 +97,14 @@ struct Opt {
     /// Label calls LOW_QMEAN when the mean per-read variant base quality of their ALT reads is below this; not applied when not given
     #[arg(long, value_name = "MIN_QMEAN")]
     filter_low_qmean: Option<f32>,
+
+    /// Label calls LOW_DP when their read depth is below this; not applied when not given
+    #[arg(long, value_name = "MIN_DP")]
+    filter_low_dp: Option<i32>,
+
+    /// Label calls LOW_HICNT when they have fewer high-quality ALT reads than this; not applied when not given
+    #[arg(long, value_name = "MIN_HICNT")]
+    filter_low_hicnt: Option<i32>,
 }
 
 /// Main binary entrypoint.
@@ -147,6 +155,8 @@ fn main() -> Result<(), Error> {
             strand_bias_max_af: opt.filter_strand_bias_max_af,
             low_af: opt.filter_low_af,
             low_qmean: opt.filter_low_qmean,
+            low_dp: opt.filter_low_dp,
+            low_hicnt: opt.filter_low_hicnt,
         },
     ) {
         Ok(exit_code) => process::exit(exit_code),

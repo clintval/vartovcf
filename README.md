@@ -46,6 +46,8 @@ No FILTER label is applied unless its option is given; with none given, the FILT
 | `STRAND_BIAS` | `--filter-strand-bias <MAX_P>`, optionally `--filter-strand-bias-min-odds-ratio <MIN_ODDS_RATIO>` and `--filter-strand-bias-max-af <MAX_AF>` | `STRAND_BIAS_FISHER_P` is below `MAX_P`, the folded odds ratio of the REF and ALT strand counts is above `MIN_ODDS_RATIO` or the table has an empty cell (if given), and `AF` is below `MAX_AF` (if given) |
 | `LOW_AF` | `--filter-low-af <MIN_AF>` | `AF` is below the threshold, useful when VarDict runs with `-p`, which ignores its own `-f` |
 | `LOW_QMEAN` | `--filter-low-qmean <MIN_QMEAN>` | `QMEAN` is below the threshold, useful when VarDict runs with `-p`, which keeps calls failing its own `-q` |
+| `LOW_DP` | `--filter-low-dp <MIN_DP>` | `DP` is below the threshold |
+| `LOW_HICNT` | `--filter-low-hicnt <MIN_HICNT>` | `HICNT` is below the threshold, the count VarDict's own `-r` tests and `-p` turns off |
 
 ### Example Usage
 
