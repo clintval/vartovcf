@@ -29,26 +29,7 @@ Or build from source with Rust 1.88 or newer, a C toolchain, and libclang (used 
 - The output is compliant with the VCF v4.2 and v4.3 specifications
 - Output VCF records are unsorted and a call to `bcftools sort` is recommended
 - At this time, only tumor-only mode (`var2vcf_valid.pl`) is supported
-- VarDictJava must be run with `--fisher`; rows without the strand-bias p-value and odds-ratio columns are refused
-
-### Filters
-
-No FILTER label is applied unless its option is given; with none given, the FILTER column is `.`. Once any label is applied, a call that fails none of them is `PASS`, and a record without an ALT allele stays `.`. Each label's threshold is written into its `##FILTER` description.
-
-| Label | Option | Applied when |
-|---|---|---|
-| `NEAR_READ_END` | `--filter-near-read-end <MIN_MEAN_DIST>` | `MEAN_DIST_TO_READ_END` is below the threshold |
-| `LOW_MEAN_MAPQ` | `--filter-low-mean-mapq <MIN_MEAN_MAPQ>` | `MEAN_MAPQ` is below the threshold |
-| `HOMOPOLYMER_INDEL` | `--filter-homopolymer-indel <MIN_COPIES>` and optionally `--filter-homopolymer-indel-max-af <MAX_AF>` | a one-base insertion or deletion in a homopolymer of at least `MIN_COPIES` copies, at an `AF` below `MAX_AF` if given |
-| `TANDEM_REPEAT_INDEL` | `--filter-tandem-repeat-indel <MIN_COPIES>` and optionally `--filter-tandem-repeat-indel-max-af <MAX_AF>` | a one-unit insertion or deletion in a 2-6 bp tandem repeat of at least `MIN_COPIES` copies, at an `AF` below `MAX_AF` if given |
-| `HIGH_MEAN_MISMATCHES` | `--filter-high-mean-mismatches <MAX_MEAN_MISMATCHES>` | `MEAN_MISMATCHES` is above the threshold |
-| `SAME_READ_POSITION` | `--filter-same-read-position <MAX_AF>` | 2 or more ALT reads all place the variant at the same read position (`ALT_READ_POS_VARIES` 0) and `AF` is below the threshold |
-| `STRAND_BIAS` | `--filter-strand-bias <MAX_P>`, optionally `--filter-strand-bias-min-odds-ratio <MIN_ODDS_RATIO>` and `--filter-strand-bias-max-af <MAX_AF>` | `STRAND_BIAS_FISHER_P` is below `MAX_P`, the folded odds ratio of the REF and ALT strand counts is above `MIN_ODDS_RATIO` or the table has an empty cell (if given), and `AF` is below `MAX_AF` (if given) |
-| `LOW_AF` | `--filter-low-af <MIN_AF>` | `AF` is below the threshold, useful when VarDict runs with `-p`, which ignores its own `-f` |
-| `LOW_QMEAN` | `--filter-low-qmean <MIN_QMEAN>` | `QMEAN` is below the threshold, useful when VarDict runs with `-p`, which keeps calls failing its own `-q` |
-| `LOW_DP` | `--filter-low-dp <MIN_DP>` | `DP` is below the threshold |
-| `LOW_HICNT` | `--filter-low-hicnt <MIN_HICNT>` | `HICNT` is below the threshold, the count VarDict's own `-r` tests and `-p` turns off |
-| `LOW_HICNT_FRACTION` | `--filter-low-hicnt-fraction <MIN_FRACTION>` | `HICNT` over `AD[1]` is below the threshold; VarDict's own `-o` rule, which `-p` turns off, is this with 0.6 |
+- VarDictJava must be run with `--fisher`
 
 ### Example Usage
 
@@ -92,6 +73,25 @@ In pileup mode (`-p`) VarDict keeps every candidate and switches off its own `-f
       --filter-low-dp 3 \
   | bcftools sort -Oz > candidates.vcf.gz
 ```
+
+### Filters
+
+No FILTER label is applied unless its option is given; with none given, the FILTER column is `.`. Once any label is applied, a call that fails none of them is `PASS`, and a record without an ALT allele stays `.`. Each label's threshold is written into its `##FILTER` description.
+
+| Label | Option | Applied when |
+|---|---|---|
+| `NEAR_READ_END` | `--filter-near-read-end <MIN_MEAN_DIST>` | `MEAN_DIST_TO_READ_END` is below the threshold |
+| `LOW_MEAN_MAPQ` | `--filter-low-mean-mapq <MIN_MEAN_MAPQ>` | `MEAN_MAPQ` is below the threshold |
+| `HOMOPOLYMER_INDEL` | `--filter-homopolymer-indel <MIN_COPIES>` and optionally `--filter-homopolymer-indel-max-af <MAX_AF>` | a one-base insertion or deletion in a homopolymer of at least `MIN_COPIES` copies, at an `AF` below `MAX_AF` if given |
+| `TANDEM_REPEAT_INDEL` | `--filter-tandem-repeat-indel <MIN_COPIES>` and optionally `--filter-tandem-repeat-indel-max-af <MAX_AF>` | a one-unit insertion or deletion in a 2-6 bp tandem repeat of at least `MIN_COPIES` copies, at an `AF` below `MAX_AF` if given |
+| `HIGH_MEAN_MISMATCHES` | `--filter-high-mean-mismatches <MAX_MEAN_MISMATCHES>` | `MEAN_MISMATCHES` is above the threshold |
+| `SAME_READ_POSITION` | `--filter-same-read-position <MAX_AF>` | 2 or more ALT reads all place the variant at the same read position (`ALT_READ_POS_VARIES` 0) and `AF` is below the threshold |
+| `STRAND_BIAS` | `--filter-strand-bias <MAX_P>`, optionally `--filter-strand-bias-min-odds-ratio <MIN_ODDS_RATIO>` and `--filter-strand-bias-max-af <MAX_AF>` | `STRAND_BIAS_FISHER_P` is below `MAX_P`, the folded odds ratio of the REF and ALT strand counts is above `MIN_ODDS_RATIO` or the table has an empty cell (if given), and `AF` is below `MAX_AF` (if given) |
+| `LOW_AF` | `--filter-low-af <MIN_AF>` | `AF` is below the threshold, useful when VarDict runs with `-p`, which ignores its own `-f` |
+| `LOW_QMEAN` | `--filter-low-qmean <MIN_QMEAN>` | `QMEAN` is below the threshold, useful when VarDict runs with `-p`, which keeps calls failing its own `-q` |
+| `LOW_DP` | `--filter-low-dp <MIN_DP>` | `DP` is below the threshold |
+| `LOW_HICNT` | `--filter-low-hicnt <MIN_HICNT>` | `HICNT` is below the threshold, the count VarDict's own `-r` tests and `-p` turns off |
+| `LOW_HICNT_FRACTION` | `--filter-low-hicnt-fraction <MIN_FRACTION>` | `HICNT` over `AD[1]` is below the threshold; VarDict's own `-o` rule, which `-p` turns off, is this with 0.6 |
 
 ### Benchmarks
 
