@@ -48,6 +48,7 @@ No FILTER label is applied unless its option is given; with none given, the FILT
 | `LOW_QMEAN` | `--filter-low-qmean <MIN_QMEAN>` | `QMEAN` is below the threshold, useful when VarDict runs with `-p`, which keeps calls failing its own `-q` |
 | `LOW_DP` | `--filter-low-dp <MIN_DP>` | `DP` is below the threshold |
 | `LOW_HICNT` | `--filter-low-hicnt <MIN_HICNT>` | `HICNT` is below the threshold, the count VarDict's own `-r` tests and `-p` turns off |
+| `LOW_HICNT_FRACTION` | `--filter-low-hicnt-fraction <MIN_FRACTION>` | `HICNT` over `AD[1]` is below the threshold; VarDict's own `-o` rule, which `-p` turns off, is this with 0.6 |
 
 ### Example Usage
 
