@@ -153,6 +153,64 @@ mod tests {
 
     #[test]
     #[rustfmt::skip]
+    fn run_end_to_end_takes_the_sample_name_from_the_input() -> Result<(), Box<dyn std::error::Error>> {
+        let output = NamedTempFile::new().expect("Cannot create temporary file!");
+        let output = output.path().to_str().unwrap();
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        cmd
+            .arg("--reference").arg("tests/reference.fa")
+            .arg("--input").arg("tests/calls.var")
+            .arg("--output").arg(output)
+            .unwrap().assert().success();
+
+        assert!(diff(output, "tests/calls.vcf"));
+        Ok(())
+    }
+
+    #[rstest]
+    #[case(
+        "tests/calls.var",
+        Some("normal"),
+        "--normal-sample was given but the input is tumor-only!"
+    )]
+    #[case(
+        "tests/calls.paired.var",
+        None,
+        "The input is tumor-normal but no --normal-sample was given!"
+    )]
+    fn run_end_to_end_refuses_a_mismatched_normal_sample(
+        #[case] input: &str,
+        #[case] normal_sample: Option<&str>,
+        #[case] message: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        cmd.arg("--reference")
+            .arg("tests/reference.fa")
+            .arg("--input")
+            .arg(input);
+        if let Some(normal_sample) = normal_sample {
+            cmd.arg("--normal-sample").arg(normal_sample);
+        }
+        let assert = cmd.assert().code(1);
+        let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+        assert!(stderr.contains(message), "{stderr}");
+        Ok(())
+    }
+
+    #[test]
+    fn run_end_to_end_refuses_the_removed_mode_option() -> Result<(), Box<dyn std::error::Error>> {
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        let assert = cmd
+            .args(["--reference", "tests/reference.fa", "--mode", "TumorOnly"])
+            .assert()
+            .code(1);
+        let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+        assert!(stderr.contains("unexpected argument '--mode'"), "{stderr}");
+        Ok(())
+    }
+
+    #[test]
+    #[rustfmt::skip]
     fn run_end_to_end_on_complex_calls() -> Result<(), Box<dyn std::error::Error>> {
         let output = NamedTempFile::new().expect("Cannot create temporary file!");
         let output = output.path().to_str().unwrap();

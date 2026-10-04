@@ -6,13 +6,11 @@ use std::process;
 
 use anyhow::{Error, Result};
 use clap::Parser;
-use clap::builder::{PossibleValuesParser, TypedValueParser};
 use env_logger::Env;
 use log::*;
-use strum::VariantNames;
 
 use vartovcflib::filter::FilterThresholds;
-use vartovcflib::{VarDictMode, vartovcf};
+use vartovcflib::vartovcf;
 
 #[derive(Clone, Debug, Parser)]
 #[command(version, about)]
@@ -21,9 +19,13 @@ struct Opt {
     #[arg(short, long)]
     reference: PathBuf,
 
-    /// The input sample name, must match input data stream
+    /// The tumor (or only) sample name; read from the input when not given, and checked against it when given
     #[arg(short, long)]
-    sample: String,
+    sample: Option<String>,
+
+    /// The matched normal sample name, required for tumor-normal input because VarDict does not write it
+    #[arg(long)]
+    normal_sample: Option<String>,
 
     /// Input VAR file or stream [default: /dev/stdin]
     #[arg(short, long)]
@@ -32,15 +34,6 @@ struct Opt {
     /// Output VCF file or stream [default: /dev/stdout]
     #[arg(short, long)]
     output: Option<PathBuf>,
-
-    /// Variant calling mode.
-    #[arg(
-        short,
-        long,
-        default_value = "TumorOnly",
-        value_parser = PossibleValuesParser::new(VarDictMode::VARIANTS).try_map(|mode| mode.parse::<VarDictMode>()),
-    )]
-    mode: VarDictMode,
 
     /// Skip non-variant sites (where ref_allele == alt_allele)
     #[arg(long)]
@@ -134,8 +127,8 @@ fn main() -> Result<(), Error> {
         input,
         opt.output,
         &opt.reference,
-        &opt.sample,
-        &opt.mode,
+        opt.sample.as_deref(),
+        opt.normal_sample.as_deref(),
         opt.skip_non_variants,
         &FilterThresholds {
             near_read_end: opt.filter_near_read_end,

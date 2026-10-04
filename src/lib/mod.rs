@@ -12,8 +12,6 @@ use std::error;
 use std::fmt::Debug;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use strum::Display;
-use strum::{EnumString, VariantNames};
 
 use crate::fai::{fasta_contigs_to_vcf_header, fasta_path_to_vcf_header};
 use crate::filter::FilterThresholds;
@@ -37,16 +35,27 @@ pub mod path {
     pub const GZIP_EXTENSION: &str = "gz";
 }
 
-/// The variant calling modes for VarDict/VarDictJava.
-#[derive(Clone, Copy, Debug, Display, EnumString, VariantNames, PartialEq, PartialOrd)]
-pub enum VarDictMode {
-    /// The amplicon variant calling mode.
-    //Amplicon,
-    /// The tumor-normal variant calling mode.
-    //TumorNormal,
-    /// The tumor-only variant calling mode.
+/// The layouts of VarDictJava output rows `vartovcf` reads, each from a run with `--fisher`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Layout {
+    /// One sample per row, from `vardict-java -b sample.bam`.
     TumorOnly,
+    /// A tumor and its matched normal per row, from `vardict-java -b "tumor.bam|normal.bam"`.
+    TumorNormal,
 }
+
+impl Layout {
+    /// The 0-based column holding VarDict's `chr:start-end` segment.
+    fn segment_column(&self) -> usize {
+        match self {
+            Layout::TumorOnly => 34,
+            Layout::TumorNormal => 52,
+        }
+    }
+}
+
+/// The 0-based segment columns of the tumor-only and tumor-normal layouts without `--fisher`.
+const NO_FISHER_SEGMENT_COLUMNS: [usize; 2] = [32, 48];
 
 /// Runs the tool `vartovcf` on an input VAR file and writes the records to an output VCF file.
 ///
@@ -55,8 +64,8 @@ pub enum VarDictMode {
 /// * `input` - The input VAR file or stream
 /// * `output` - The output VCF file or stream
 /// * `fasta` - The reference sequence FASTA file, must be indexed
-/// * `sample` - The sample name
-/// * `mode` - The variant calling modes for VarDict/VarDictJava
+/// * `sample` - The tumor (or only) sample name, read from the input when not given
+/// * `normal_sample` - The matched normal sample name, required for tumor-normal input
 /// * `skip_non_variants` - Skip non-variant sites (where ref_allele == alt_allele)
 ///
 /// # Returns
@@ -67,8 +76,8 @@ pub fn vartovcf<I, R>(
     input: I,
     output: Option<PathBuf>,
     fasta: R,
-    sample: &str,
-    mode: &VarDictMode,
+    sample: Option<&str>,
+    normal_sample: Option<&str>,
     skip_non_variants: bool,
     filters: &FilterThresholds,
 ) -> Result<i32, Box<dyn error::Error>>
@@ -76,25 +85,34 @@ where
     I: Read,
     R: AsRef<Path> + Debug,
 {
-    assert_eq!(
-        mode,
-        &VarDictMode::TumorOnly,
-        "The only mode currently supported is [TumorOnly]."
-    );
-
-    let mut header = tumor_only_header(sample, filters);
-
-    fasta_contigs_to_vcf_header(&fasta, &mut header);
-    fasta_path_to_vcf_header(&fasta, &mut header).expect("Adding FASTA path to header failed!");
-
     let mut reader = ReaderBuilder::new()
         .delimiter(b'\t')
         .has_headers(false)
         .from_reader(input);
 
-    // Read the first record before the writer emits the header so a refused stream writes nothing.
+    // Peek at the first row to learn the layout and sample before the writer emits the header.
     let mut carry = StringRecord::new();
-    let mut peeked = read_fisher_record(&mut reader, &mut carry)?;
+    let mut peeked = reader.read_record(&mut carry)?;
+    let layout = if peeked {
+        Some(detect_layout(&carry)?)
+    } else {
+        None
+    };
+    let row_sample = peeked.then(|| carry.get(0).unwrap_or_default().to_string());
+    let (sample, normal_sample) =
+        resolve_samples(row_sample.as_deref(), layout, sample, normal_sample)?;
+    if layout == Some(Layout::TumorNormal) {
+        return Err("Tumor-normal input is not supported yet!".into());
+    }
+    let layout = layout.unwrap_or(Layout::TumorOnly);
+
+    let mut header = tumor_only_header(&sample, filters);
+    if let Some(normal_sample) = &normal_sample {
+        header.push_sample(normal_sample.as_bytes());
+    }
+
+    fasta_contigs_to_vcf_header(&fasta, &mut header);
+    fasta_path_to_vcf_header(&fasta, &mut header).expect("Adding FASTA path to header failed!");
 
     let mut writer = match output {
         Some(output) => VcfWriter::from_path(&output, &header, !has_gzip_ext(&output), Format::Vcf),
@@ -111,7 +129,7 @@ where
 
     let mut seen: AHashSet<String> = AHashSet::new();
 
-    while std::mem::take(&mut peeked) || read_fisher_record(&mut reader, &mut carry)? {
+    while std::mem::take(&mut peeked) || read_row(&mut reader, &mut carry, layout)? {
         if carry.get(5).is_none_or(|f| f.is_empty()) {
             continue; // If the 5th field is empty, it's a record we need to avoid deserializing.
         }
@@ -214,38 +232,88 @@ where
     Ok(0)
 }
 
-/// Reads the next record, refusing it unless its segment sits in column 35 as with `--fisher`.
-fn read_fisher_record<R: Read>(
+/// Reads the next row, refusing one whose layout differs from the first row's.
+fn read_row<R: Read>(
     reader: &mut Reader<R>,
     record: &mut StringRecord,
+    layout: Layout,
 ) -> Result<bool, Box<dyn error::Error>> {
     if !reader.read_record(record)? {
         return Ok(false);
     }
-    let contig = record.get(2).unwrap_or_default();
-    let is_segment = |index: usize| {
-        record
-            .get(index)
-            .and_then(|field| {
-                field
-                    .strip_prefix(contig)?
-                    .strip_prefix(':')?
-                    .split_once('-')
-            })
-            .is_some_and(|(start, end)| start.parse::<u64>().is_ok() && end.parse::<u64>().is_ok())
-    };
-    if is_segment(34) {
-        return Ok(true);
+    if is_segment(record, layout.segment_column()) {
+        Ok(true)
+    } else {
+        Err(layout_error(record).into())
     }
+}
+
+/// Detects the layout of a row from the column holding its segment.
+fn detect_layout(record: &StringRecord) -> Result<Layout, String> {
+    [Layout::TumorOnly, Layout::TumorNormal]
+        .into_iter()
+        .find(|layout| is_segment(record, layout.segment_column()))
+        .ok_or_else(|| layout_error(record))
+}
+
+/// Whether a row holds a `chr:start-end` segment on its own contig at a 0-based column.
+fn is_segment(record: &StringRecord, index: usize) -> bool {
+    let contig = record.get(2).unwrap_or_default();
+    record
+        .get(index)
+        .and_then(|field| {
+            field
+                .strip_prefix(contig)?
+                .strip_prefix(':')?
+                .split_once('-')
+        })
+        .is_some_and(|(start, end)| start.parse::<u64>().is_ok() && end.parse::<u64>().is_ok())
+}
+
+/// Describes why a row matches neither layout.
+fn layout_error(record: &StringRecord) -> String {
     let line = record.position().map_or(0, |position| position.line());
-    let message = if is_segment(32) {
+    if NO_FISHER_SEGMENT_COLUMNS
+        .iter()
+        .any(|&index| is_segment(record, index))
+    {
         format!(
             "Expected the strand-bias p-value and odds-ratio columns on line {line}: run VarDictJava with --fisher!"
         )
     } else {
-        format!("Expected a {contig}:start-end segment in column 35 on line {line}!")
+        let contig = record.get(2).unwrap_or_default();
+        format!(
+            "Expected a {contig}:start-end segment in column 35 (tumor-only) or 53 (tumor-normal) on line {line}!"
+        )
+    }
+}
+
+/// Resolves the tumor and normal sample names from the first row's sample, the layout and the arguments.
+fn resolve_samples(
+    row_sample: Option<&str>,
+    layout: Option<Layout>,
+    sample: Option<&str>,
+    normal_sample: Option<&str>,
+) -> Result<(String, Option<String>), String> {
+    let tumor = match (row_sample, sample) {
+        (Some(row), Some(given)) if row != given => {
+            return Err(format!("Expected sample '{given}' found '{row}'!"));
+        }
+        (Some(row), _) => row,
+        (None, Some(given)) => given,
+        (None, None) => {
+            return Err("The input has no rows to take a sample name from: give --sample, and --normal-sample for tumor-normal output!".to_string());
+        }
     };
-    Err(message.into())
+    match (layout, normal_sample) {
+        (Some(Layout::TumorNormal), None) => {
+            Err("The input is tumor-normal but no --normal-sample was given!".to_string())
+        }
+        (Some(Layout::TumorOnly), Some(_)) => {
+            Err("--normal-sample was given but the input is tumor-only!".to_string())
+        }
+        (_, normal) => Ok((tumor.to_string(), normal.map(str::to_string))),
+    }
 }
 
 /// Names the 1-based line and column of a record that could not be deserialized.
@@ -279,7 +347,6 @@ mod tests {
     use rstest::rstest;
     use tempfile::NamedTempFile;
 
-    use super::VarDictMode::TumorOnly;
     use super::*;
 
     #[test]
@@ -292,8 +359,8 @@ mod tests {
             input,
             Some(output.path().into()),
             &reference,
-            sample,
-            &TumorOnly,
+            Some(sample),
+            None,
             false,
             &FilterThresholds::default(),
         )?;
@@ -313,8 +380,8 @@ mod tests {
             input.as_bytes(),
             Some(output.path().into()),
             PathBuf::from("tests/reference.fa"),
-            "dna00001",
-            &TumorOnly,
+            Some("dna00001"),
+            None,
             false,
             &FilterThresholds::default(),
         )?;
@@ -332,8 +399,8 @@ mod tests {
             input,
             Some(output.path().into()),
             &reference,
-            sample,
-            &TumorOnly,
+            Some(sample),
+            None,
             false,
             &FilterThresholds::default(),
         );
@@ -353,8 +420,8 @@ mod tests {
             input,
             Some(output.path().into()),
             &reference,
-            "dna00001",
-            &TumorOnly,
+            Some("dna00001"),
+            None,
             false,
             &FilterThresholds::default(),
         );
@@ -375,8 +442,8 @@ mod tests {
             input,
             Some(output.path().into()),
             &reference,
-            "dna00001",
-            &TumorOnly,
+            Some("dna00001"),
+            None,
             false,
             &FilterThresholds::default(),
         );
@@ -396,15 +463,154 @@ mod tests {
             input,
             Some(output.path().into()),
             &reference,
-            "dna00001",
-            &TumorOnly,
+            Some("dna00001"),
+            None,
             false,
             &FilterThresholds::default(),
         );
         assert_eq!(
             result.unwrap_err().to_string(),
-            "Expected a chr1:start-end segment in column 35 on line 1!"
+            "Expected a chr1:start-end segment in column 35 (tumor-only) or 53 (tumor-normal) on line 1!"
         );
+    }
+
+    fn paired_row_without_fisher() -> String {
+        let row = std::fs::read_to_string("tests/calls.paired.var").unwrap();
+        let mut fields: Vec<&str> = row.trim_end().split('\t').collect();
+        fields.truncate(59);
+        fields.remove(46);
+        fields.remove(45);
+        fields.remove(26);
+        fields.remove(25);
+        format!("{}\n", fields.join("\t"))
+    }
+
+    fn first_record(input: &str) -> StringRecord {
+        let mut reader = ReaderBuilder::new()
+            .delimiter(b'\t')
+            .has_headers(false)
+            .from_reader(input.as_bytes());
+        let mut record = StringRecord::new();
+        assert!(reader.read_record(&mut record).unwrap());
+        record
+    }
+
+    #[test]
+    fn test_detect_layout() {
+        let tumor_only = std::fs::read_to_string("tests/calls.var").unwrap();
+        let paired = std::fs::read_to_string("tests/calls.paired.var").unwrap();
+        assert_eq!(
+            detect_layout(&first_record(&tumor_only)),
+            Ok(Layout::TumorOnly)
+        );
+        assert_eq!(
+            detect_layout(&first_record(&paired)),
+            Ok(Layout::TumorNormal)
+        );
+    }
+
+    #[test]
+    fn test_detect_layout_refuses_paired_rows_without_fisher_columns() {
+        assert_eq!(
+            paired_row_without_fisher().trim_end().split('\t').count(),
+            55
+        );
+        assert_eq!(
+            detect_layout(&first_record(&paired_row_without_fisher())),
+            Err("Expected the strand-bias p-value and odds-ratio columns on line 1: run VarDictJava with --fisher!".to_string())
+        );
+    }
+
+    #[test]
+    fn test_detect_layout_refuses_rows_without_a_segment() {
+        let input = "dna00001\tBRINP3\tchr1\t190098265\t190098265\tA\tA\n";
+        assert_eq!(
+            detect_layout(&first_record(input)),
+            Err("Expected a chr1:start-end segment in column 35 (tumor-only) or 53 (tumor-normal) on line 1!".to_string())
+        );
+    }
+
+    #[rstest]
+    #[case(Some("dna00001"), Some(Layout::TumorOnly), None, None, Ok(("dna00001", None)))]
+    #[case(Some("dna00001"), Some(Layout::TumorOnly), Some("dna00001"), None, Ok(("dna00001", None)))]
+    #[case(
+        Some("dna00001"),
+        Some(Layout::TumorOnly),
+        Some("XXXX"),
+        None,
+        Err("Expected sample 'XXXX' found 'dna00001'!")
+    )]
+    #[case(
+        Some("dna00001"),
+        Some(Layout::TumorOnly),
+        None,
+        Some("normal"),
+        Err("--normal-sample was given but the input is tumor-only!")
+    )]
+    #[case(
+        Some("tumor"),
+        Some(Layout::TumorNormal),
+        None,
+        None,
+        Err("The input is tumor-normal but no --normal-sample was given!")
+    )]
+    #[case(Some("tumor"), Some(Layout::TumorNormal), None, Some("normal"), Ok(("tumor", Some("normal"))))]
+    #[case(
+        None,
+        None,
+        None,
+        None,
+        Err(
+            "The input has no rows to take a sample name from: give --sample, and --normal-sample for tumor-normal output!"
+        )
+    )]
+    #[case(None, None, Some("tumor"), None, Ok(("tumor", None)))]
+    #[case(None, None, Some("tumor"), Some("normal"), Ok(("tumor", Some("normal"))))]
+    fn test_resolve_samples(
+        #[case] row_sample: Option<&str>,
+        #[case] layout: Option<Layout>,
+        #[case] sample: Option<&str>,
+        #[case] normal_sample: Option<&str>,
+        #[case] expected: Result<(&str, Option<&str>), &str>,
+    ) {
+        let expected = expected
+            .map(|(tumor, normal)| (tumor.to_string(), normal.map(str::to_string)))
+            .map_err(str::to_string);
+        assert_eq!(
+            resolve_samples(row_sample, layout, sample, normal_sample),
+            expected
+        );
+    }
+
+    #[rstest]
+    #[case(None, vec!["tumor"])]
+    #[case(Some("normal"), vec!["tumor", "normal"])]
+    fn test_empty_input_writes_a_header_for_the_named_samples(
+        #[case] normal_sample: Option<&str>,
+        #[case] expected: Vec<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let output = NamedTempFile::new().expect("Cannot create temporary file!");
+        let reference = PathBuf::from("tests/reference.fa");
+        let exit = vartovcf(
+            "".as_bytes(),
+            Some(output.path().into()),
+            &reference,
+            Some("tumor"),
+            normal_sample,
+            false,
+            &FilterThresholds::default(),
+        )?;
+        assert_eq!(exit, 0);
+        use rust_htslib::bcf::{Read, Reader as VcfReader};
+        let reader = VcfReader::from_path(output.path()).expect("Error opening output file!");
+        let samples: Vec<String> = reader
+            .header()
+            .samples()
+            .iter()
+            .map(|sample| String::from_utf8_lossy(sample).to_string())
+            .collect();
+        assert_eq!(samples, expected);
+        Ok(())
     }
 
     #[test]
@@ -417,8 +623,8 @@ mod tests {
             input,
             Some(output.path().into()),
             &reference,
-            sample,
-            &TumorOnly,
+            Some(sample),
+            None,
             true,
             &FilterThresholds::default(),
         )?;
