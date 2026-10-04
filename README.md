@@ -29,7 +29,50 @@ Or build from source with Rust 1.88 or newer, a C toolchain, and libclang (used 
 - The output is compliant with the VCF v4.2 and v4.3 specifications
 - Output VCF records are unsorted and a call to `bcftools sort` is recommended
 - At this time, only tumor-only mode (`var2vcf_valid.pl`) is supported
-- VarDictJava must be run with `--fisher`; rows without the strand-bias p-value and odds-ratio columns are refused
+- VarDictJava must be run with `--fisher`
+
+### Example Usage
+
+Replace the call to `var2vcf_valid.pl` with `vartovcf` in a typical VarDictJava stream like the one below. The `--filter-*` values reproduce the thresholds `var2vcf_valid.pl` applies by default; leave out any you don't want, and the label is not applied.
+
+```bash
+❯ vardict-java \
+    -b input.bam \
+    -G hg38.fa \
+    -N dna00001 \
+    -c1 -S2 -E3 -g4 -f0.05 \
+    --fisher \
+    calling-intervals.bed \
+  | vartovcf --reference hg38.fa --sample dna00001 \
+      --filter-near-read-end 8 \
+      --filter-low-mean-mapq 10 \
+      --filter-homopolymer-indel 13 --filter-homopolymer-indel-max-af 0.275 \
+      --filter-tandem-repeat-indel 13 --filter-tandem-repeat-indel-max-af 0.2 \
+      --filter-high-mean-mismatches 5.25 \
+      --filter-same-read-position 0.35 \
+      --filter-strand-bias 0.01 --filter-strand-bias-min-odds-ratio 5 --filter-strand-bias-max-af 0.25 \
+  | bcftools sort -Oz > variants.vcf.gz
+```
+
+In pileup mode (`-p`) VarDict keeps every candidate and switches off its own `-f`, `-r`, `-q` and `-o` rules. Add the matching labels to mark the candidates those rules would have dropped, here with VarDict's defaults (`-f` as given, `-r 2`, `-q 22.5`, `-o 1.5`):
+
+```bash
+❯ vardict-java -p ... --fisher calling-intervals.bed \
+  | vartovcf --reference hg38.fa --sample dna00001 --skip-non-variants \
+      --filter-near-read-end 8 \
+      --filter-low-mean-mapq 10 \
+      --filter-homopolymer-indel 13 --filter-homopolymer-indel-max-af 0.275 \
+      --filter-tandem-repeat-indel 13 --filter-tandem-repeat-indel-max-af 0.2 \
+      --filter-high-mean-mismatches 5.25 \
+      --filter-same-read-position 0.35 \
+      --filter-strand-bias 0.01 --filter-strand-bias-min-odds-ratio 5 --filter-strand-bias-max-af 0.25 \
+      --filter-low-af 0.05 \
+      --filter-low-hicnt 2 \
+      --filter-low-qmean 22.5 \
+      --filter-low-hicnt-fraction 0.6 \
+      --filter-low-dp 3 \
+  | bcftools sort -Oz > candidates.vcf.gz
+```
 
 ### Filters
 
@@ -49,22 +92,6 @@ No FILTER label is applied unless its option is given; with none given, the FILT
 | `LOW_DP` | `--filter-low-dp <MIN_DP>` | `DP` is below the threshold |
 | `LOW_HICNT` | `--filter-low-hicnt <MIN_HICNT>` | `HICNT` is below the threshold, the count VarDict's own `-r` tests and `-p` turns off |
 | `LOW_HICNT_FRACTION` | `--filter-low-hicnt-fraction <MIN_FRACTION>` | `HICNT` over `AD[1]` is below the threshold; VarDict's own `-o` rule, which `-p` turns off, is this with 0.6 |
-
-### Example Usage
-
-Replace to call to `var2vcf_valid.pl` with `vartovcf` in a typical VarDictJava stream like:
-
-```bash
-❯ vardict-java \
-    -b input.bam \
-    -G hg38.fa \
-    -N dna00001 \
-    -c1 -S2 -E3 -g4 -f0.05 \
-    --fisher \
-    calling-intervals.bed \
-  | vartovcf --reference hg38.fa --sample dna00001 \
-  | bcftools sort -Oz > variants.vcf.gz
-```
 
 ### Benchmarks
 
