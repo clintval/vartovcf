@@ -26,6 +26,9 @@ pub const STRAND_BIAS: &str = "STRAND_BIAS";
 /// The FILTER label for calls with a low allele frequency.
 pub const LOW_AF: &str = "LOW_AF";
 
+/// The FILTER label for calls whose ALT reads have a low mean variant base quality.
+pub const LOW_QMEAN: &str = "LOW_QMEAN";
+
 /// The thresholds of the FILTER labels to apply; a label without a threshold is not applied.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct FilterThresholds {
@@ -53,6 +56,8 @@ pub struct FilterThresholds {
     pub strand_bias_max_af: Option<f32>,
     /// The minimum allele frequency.
     pub low_af: Option<f32>,
+    /// The minimum mean per-read variant base quality of the ALT reads.
+    pub low_qmean: Option<f32>,
 }
 
 impl FilterThresholds {
@@ -66,6 +71,7 @@ impl FilterThresholds {
             || self.same_read_position.is_some()
             || self.strand_bias.is_some()
             || self.low_af.is_some()
+            || self.low_qmean.is_some()
     }
 
     /// Return the FILTER header lines of the applied labels.
@@ -119,6 +125,11 @@ impl FilterThresholds {
         if let Some(min_af) = self.low_af {
             lines.push(format!(
                 r#"##FILTER=<ID={LOW_AF},Description="Fraction of reads carrying the ALT allele (FORMAT AF) is below {min_af}.">"#
+            ));
+        }
+        if let Some(min_qmean) = self.low_qmean {
+            lines.push(format!(
+                r#"##FILTER=<ID={LOW_QMEAN},Description="Mean per-read variant base quality of the ALT reads (FORMAT QMEAN) is below {min_qmean}.">"#
             ));
         }
         lines
@@ -200,6 +211,12 @@ impl FilterThresholds {
             .is_some_and(|min_af| variant.af_value() < min_af)
         {
             labels.push(LOW_AF);
+        }
+        if self
+            .low_qmean
+            .is_some_and(|min_qmean| variant.base_quality_mean < min_qmean)
+        {
+            labels.push(LOW_QMEAN);
         }
         labels
     }
@@ -643,6 +660,42 @@ mod tests {
             filters.header_lines(),
             vec![
                 r#"##FILTER=<ID=LOW_AF,Description="Fraction of reads carrying the ALT allele (FORMAT AF) is below 0.001.">"#
+            ]
+        );
+    }
+
+    #[rstest]
+    #[case("G", "A", 20.0, vec![LOW_QMEAN])]
+    #[case("G", "A", 30.0, vec![])]
+    #[case("G", "G", 20.0, vec![])]
+    fn test_low_qmean(
+        #[case] ref_allele: &'static str,
+        #[case] alt_allele: &'static str,
+        #[case] qmean: f32,
+        #[case] expected: Vec<&str>,
+    ) {
+        let filters = FilterThresholds {
+            low_qmean: Some(30.0),
+            ..Default::default()
+        };
+        assert!(filters.any());
+        let variant = TumorOnlyVariant {
+            base_quality_mean: qmean,
+            ..variant(ref_allele, alt_allele, 30.0)
+        };
+        assert_eq!(filters.labels(&variant), expected);
+    }
+
+    #[test]
+    fn test_low_qmean_header_line_states_the_threshold() {
+        let filters = FilterThresholds {
+            low_qmean: Some(30.0),
+            ..Default::default()
+        };
+        assert_eq!(
+            filters.header_lines(),
+            vec![
+                r#"##FILTER=<ID=LOW_QMEAN,Description="Mean per-read variant base quality of the ALT reads (FORMAT QMEAN) is below 30.">"#
             ]
         );
     }
