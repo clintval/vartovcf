@@ -7,7 +7,7 @@ use csv::{Reader, ReaderBuilder, StringRecord};
 use proglog::ProgLogBuilder;
 use rust_htslib::bcf::Format;
 use rust_htslib::bcf::Writer as VcfWriter;
-use rust_htslib::bcf::record::Numeric;
+use rust_htslib::bcf::record::{GenotypeAllele, Numeric};
 use std::error;
 use std::fmt::Debug;
 use std::io::Read;
@@ -17,8 +17,9 @@ use crate::fai::{fasta_contigs_to_vcf_header, fasta_path_to_vcf_header};
 use crate::filter::FilterThresholds;
 use crate::io::has_gzip_ext;
 use crate::record::MIN_HOM_ALT_AF;
+use crate::record::TumorNormalVariant;
 use crate::record::TumorOnlyVariant;
-use crate::record::tumor_only_header;
+use crate::record::{tumor_normal_header, tumor_only_header};
 
 pub mod fai;
 pub mod filter;
@@ -102,15 +103,12 @@ where
     let row_sample = peeked.then(|| carry.get(0).unwrap_or_default().to_string());
     let (sample, normal_sample) =
         resolve_samples(row_sample.as_deref(), layout, sample, normal_sample)?;
-    if layout == Some(Layout::TumorNormal) {
-        return Err("Tumor-normal input is not supported yet!".into());
-    }
     let layout = layout.unwrap_or(Layout::TumorOnly);
 
-    let mut header = tumor_only_header(&sample, filters);
-    if let Some(normal_sample) = &normal_sample {
-        header.push_sample(normal_sample.as_bytes());
-    }
+    let mut header = match &normal_sample {
+        Some(normal_sample) => tumor_normal_header(&sample, normal_sample, filters),
+        None => tumor_only_header(&sample, filters),
+    };
 
     fasta_contigs_to_vcf_header(&fasta, &mut header);
     fasta_path_to_vcf_header(&fasta, &mut header).expect("Adding FASTA path to header failed!");
@@ -128,6 +126,7 @@ where
         .unit(100_000)
         .build();
 
+    let row_sample = row_sample.unwrap_or_default();
     let mut seen: AHashSet<String> = AHashSet::new();
 
     while std::mem::take(&mut peeked) || read_row(&mut reader, &mut carry, layout)? {
@@ -135,7 +134,19 @@ where
             continue; // If the 5th field is empty, it's a record we need to avoid deserializing.
         }
 
-        let var: TumorOnlyVariant = carry.deserialize(None).map_err(describe_parse_error)?;
+        let (calls, tumor_normal) = match layout {
+            Layout::TumorOnly => {
+                let call: TumorOnlyVariant =
+                    carry.deserialize(None).map_err(describe_parse_error)?;
+                (vec![call], None)
+            }
+            Layout::TumorNormal => {
+                let row: TumorNormalVariant =
+                    carry.deserialize(None).map_err(describe_parse_error)?;
+                (vec![row.tumor_call(), row.normal_call()], Some(row))
+            }
+        };
+        let var = &calls[0];
 
         if skip_non_variants && var.ref_allele == var.alt_allele {
             continue;
@@ -149,88 +160,146 @@ where
             continue; // Skip this record if we have seen this variant before.
         }
 
-        if var.sample != sample {
-            let message = format!("Expected sample '{}' found '{}'!", sample, var.sample);
+        if var.sample != row_sample {
+            let message = format!("Expected sample '{}' found '{}'!", row_sample, var.sample);
             return Err(message.into());
         };
 
-        let rid = writer.header().name2rid(var.contig.as_bytes()).unwrap();
+        write_record(&mut writer, &calls, tumor_normal.as_ref(), filters)?;
+        progress.record();
+    }
 
-        let mut variant = writer.empty_record();
-        variant.set_rid(Some(rid));
-        variant.set_pos(var.start as i64 - 1);
-        variant.set_alleles(&[
-            var.ref_allele.as_bytes(),
-            var.alt_allele_for_vcf().as_bytes(),
-        ])?;
+    Ok(0)
+}
 
-        variant.set_qual(f32::missing());
+/// Writes one VCF record with a sample column per call, the tumor (or only) sample first; FILTER and
+/// the site's INFO come from the first call.
+fn write_record(
+    writer: &mut VcfWriter,
+    calls: &[TumorOnlyVariant],
+    tumor_normal: Option<&TumorNormalVariant>,
+    filters: &FilterThresholds,
+) -> Result<(), Box<dyn error::Error>> {
+    let var = &calls[0];
+    let rid = writer.header().name2rid(var.contig.as_bytes()).unwrap();
 
-        if filters.any() && var.ref_allele != var.alt_allele {
-            let labels = filters.labels(&var);
-            if labels.is_empty() {
-                variant.push_filter("PASS".as_bytes())?;
-            }
-            for label in labels {
-                variant.push_filter(label.as_bytes())?;
-            }
+    let mut variant = writer.empty_record();
+    variant.set_rid(Some(rid));
+    variant.set_pos(var.start as i64 - 1);
+    variant.set_alleles(&[
+        var.ref_allele.as_bytes(),
+        var.alt_allele_for_vcf().as_bytes(),
+    ])?;
+
+    variant.set_qual(f32::missing());
+
+    if filters.any() && var.ref_allele != var.alt_allele {
+        let labels = filters.labels(var);
+        if labels.is_empty() {
+            variant.push_filter("PASS".as_bytes())?;
         }
-
-        if let Some(class) = var.variant_class() {
-            variant.push_info_string(b"TYPE", &[class.as_bytes()])?;
+        for label in labels {
+            variant.push_filter(label.as_bytes())?;
         }
+    }
 
-        if let Some(shift) = var.indel_3p_shift_value() {
-            variant.push_info_integer(b"INDEL_3P_SHIFT", &[shift])?;
-        }
+    if let Some(class) = var.variant_class() {
+        variant.push_info_string(b"TYPE", &[class.as_bytes()])?;
+    }
 
-        if let (Some(copies), Some(unit_length)) =
-            (var.repeat_unit_copies_value(), var.repeat_unit_len_value())
-        {
-            variant.push_info_float(b"REPEAT_UNIT_COPIES", &[copies])?;
-            variant.push_info_integer(b"REPEAT_UNIT_LEN", &[unit_length])?;
-        }
+    if let Some(shift) = var.indel_3p_shift_value() {
+        variant.push_info_integer(b"INDEL_3P_SHIFT", &[shift])?;
+    }
 
-        if VALID_SV_TYPES.contains(&var.variant_type) {
-            variant.push_info_integer(b"END", &[var.end as i32])?;
-            let sv_length = var.sv_length().ok_or_else(|| {
+    if let (Some(copies), Some(unit_length)) =
+        (var.repeat_unit_copies_value(), var.repeat_unit_len_value())
+    {
+        variant.push_info_float(b"REPEAT_UNIT_COPIES", &[copies])?;
+        variant.push_info_integer(b"REPEAT_UNIT_LEN", &[unit_length])?;
+    }
+
+    if VALID_SV_TYPES.contains(&var.variant_type) {
+        variant.push_info_integer(b"END", &[var.end as i32])?;
+        let sv_length = tumor_normal
+            .map_or_else(|| var.sv_length(), TumorNormalVariant::sv_length)
+            .ok_or_else(|| {
                 format!(
                     "{}:{}: cannot read the {} length from the genotype column '{}'",
                     var.contig, var.start, var.variant_type, var.gt
                 )
             })?;
-            variant.push_info_integer(b"SVLEN", &[sv_length])?;
-            variant.push_info_string(b"SVTYPE", &[var.variant_type.as_bytes()])?;
-        }
-
-        variant.push_genotypes(var.gt_value(MIN_HOM_ALT_AF))?;
-        variant.push_format_integer(b"AD", &var.ad_value())?;
-        variant.push_format_integer(b"ADF", &var.adf_value())?;
-        variant.push_format_integer(b"ADR", &var.adr_value())?;
-        variant.push_format_float(b"STRAND_BIAS_FISHER_P", &[var.strand_bias_fisher_p_value()])?;
-        variant.push_format_integer(b"DP", &[var.depth])?;
-        variant.push_format_float(b"AF", &[var.af_value()])?;
-        variant.push_format_integer(b"HICNT", &[var.hicnt_value()])?;
-        variant.push_format_float(b"REALIGNED_FRAC_OF_DP", &[var.realigned_frac_of_dp_value()])?;
-        variant.push_format_float(
-            b"MEAN_DIST_TO_READ_END",
-            &[var.mean_dist_to_read_end_value()],
-        )?;
-        variant.push_format_integer(b"ALT_READ_POS_VARIES", &[var.alt_read_pos_varies_value()])?;
-        variant.push_format_float(b"QMEAN", &[var.qmean_value()])?;
-        variant.push_format_float(b"MEAN_MAPQ", &[var.mean_mapq_value()])?;
-        variant.push_format_float(b"MEAN_MISMATCHES", &[var.mean_mismatches_value()])?;
-
-        if let Some((softclip_reads, discordant_reads)) = var.sv_read_counts() {
-            variant.push_format_integer(b"SV_SOFTCLIP_READS", &[softclip_reads])?;
-            variant.push_format_integer(b"SV_DISCORDANT_READS", &[discordant_reads])?;
-        }
-
-        writer.write(&variant)?;
-        progress.record();
+        variant.push_info_integer(b"SVLEN", &[sv_length])?;
+        variant.push_info_string(b"SVTYPE", &[var.variant_type.as_bytes()])?;
     }
 
-    Ok(0)
+    if let Some(row) = tumor_normal {
+        variant.push_info_string(b"VARDICT_STATUS", &[row.status.as_bytes()])?;
+        variant.push_info_float(
+            b"TUMOR_NORMAL_FISHER_P",
+            &[row.tumor_normal_fisher_p_value()],
+        )?;
+    }
+
+    let genotypes: Vec<GenotypeAllele> = calls
+        .iter()
+        .flat_map(|call| call.gt_value(MIN_HOM_ALT_AF).iter().copied())
+        .collect();
+    variant.push_genotypes(&genotypes)?;
+    variant.push_format_integer(b"AD", &each_allele(calls, TumorOnlyVariant::ad_value))?;
+    variant.push_format_integer(b"ADF", &each_allele(calls, TumorOnlyVariant::adf_value))?;
+    variant.push_format_integer(b"ADR", &each_allele(calls, TumorOnlyVariant::adr_value))?;
+    variant.push_format_float(
+        b"STRAND_BIAS_FISHER_P",
+        &each(calls, TumorOnlyVariant::strand_bias_fisher_p_value),
+    )?;
+    variant.push_format_integer(b"DP", &each(calls, |call| call.depth))?;
+    variant.push_format_float(b"AF", &each(calls, TumorOnlyVariant::af_value))?;
+    if tumor_normal.is_none() {
+        variant.push_format_integer(b"HICNT", &each(calls, TumorOnlyVariant::hicnt_value))?;
+    }
+    variant.push_format_float(
+        b"REALIGNED_FRAC_OF_DP",
+        &each(calls, TumorOnlyVariant::realigned_frac_of_dp_value),
+    )?;
+    variant.push_format_float(
+        b"MEAN_DIST_TO_READ_END",
+        &each(calls, TumorOnlyVariant::mean_dist_to_read_end_value),
+    )?;
+    variant.push_format_integer(
+        b"ALT_READ_POS_VARIES",
+        &each(calls, TumorOnlyVariant::alt_read_pos_varies_value),
+    )?;
+    variant.push_format_float(b"QMEAN", &each(calls, TumorOnlyVariant::qmean_value))?;
+    variant.push_format_float(
+        b"MEAN_MAPQ",
+        &each(calls, TumorOnlyVariant::mean_mapq_value),
+    )?;
+    variant.push_format_float(
+        b"MEAN_MISMATCHES",
+        &each(calls, TumorOnlyVariant::mean_mismatches_value),
+    )?;
+
+    if let Some(counts) = calls
+        .iter()
+        .map(TumorOnlyVariant::sv_read_counts)
+        .collect::<Option<Vec<_>>>()
+    {
+        variant.push_format_integer(b"SV_SOFTCLIP_READS", &each(&counts, |count| count.0))?;
+        variant.push_format_integer(b"SV_DISCORDANT_READS", &each(&counts, |count| count.1))?;
+    }
+
+    writer.write(&variant)?;
+    Ok(())
+}
+
+/// Collects one value per sample.
+fn each<T, V>(items: &[T], value: impl Fn(&T) -> V) -> Vec<V> {
+    items.iter().map(value).collect()
+}
+
+/// Collects one value per allele for each sample, sample after sample.
+fn each_allele<T>(items: &[T], value: impl Fn(&T) -> Vec<i32>) -> Vec<i32> {
+    items.iter().flat_map(value).collect()
 }
 
 /// Reads the next row, refusing one whose layout differs from the first row's.
@@ -289,14 +358,20 @@ fn layout_error(record: &StringRecord) -> String {
     }
 }
 
-/// Resolves the tumor and normal sample names from the first row's sample, the layout and the arguments.
+/// Resolves the tumor and normal sample names from the first row's sample, the layout and the
+/// arguments. A tumor-normal row names both samples as `tumor|normal` when VarDict was given both
+/// names with a BED file of regions, and only the tumor otherwise.
 fn resolve_samples(
     row_sample: Option<&str>,
     layout: Option<Layout>,
     sample: Option<&str>,
     normal_sample: Option<&str>,
 ) -> Result<(String, Option<String>), String> {
-    let tumor = match (row_sample, sample) {
+    let (row_tumor, row_normal) = match (layout, row_sample.map(|row| row.split_once('|'))) {
+        (Some(Layout::TumorNormal), Some(Some((tumor, normal)))) => (Some(tumor), Some(normal)),
+        _ => (row_sample, None),
+    };
+    let tumor = match (row_tumor, sample) {
         (Some(row), Some(given)) if row != given => {
             return Err(format!("Expected sample '{given}' found '{row}'!"));
         }
@@ -306,15 +381,20 @@ fn resolve_samples(
             return Err("The input has no rows to take a sample name from: give --sample, and --normal-sample for tumor-normal output!".to_string());
         }
     };
-    match (layout, normal_sample) {
-        (Some(Layout::TumorNormal), None) => {
-            Err("The input is tumor-normal but no --normal-sample was given!".to_string())
+    let normal = match (layout, row_normal, normal_sample) {
+        (Some(Layout::TumorNormal), Some(row), Some(given)) if row != given => {
+            return Err(format!("Expected normal sample '{given}' found '{row}'!"));
         }
-        (Some(Layout::TumorOnly), Some(_)) => {
-            Err("--normal-sample was given but the input is tumor-only!".to_string())
+        (Some(Layout::TumorNormal), Some(row), _) => Some(row),
+        (Some(Layout::TumorNormal), None, None) => {
+            return Err("The input is tumor-normal but no --normal-sample was given!".to_string());
         }
-        (_, normal) => Ok((tumor.to_string(), normal.map(str::to_string))),
-    }
+        (Some(Layout::TumorOnly), _, Some(_)) => {
+            return Err("--normal-sample was given but the input is tumor-only!".to_string());
+        }
+        (_, _, given) => given,
+    };
+    Ok((tumor.to_string(), normal.map(str::to_string)))
 }
 
 /// Names the 1-based line and column of a record that could not be deserialized.
@@ -564,6 +644,22 @@ mod tests {
         Err(
             "The input has no rows to take a sample name from: give --sample, and --normal-sample for tumor-normal output!"
         )
+    )]
+    #[case(Some("T|N"), Some(Layout::TumorNormal), None, None, Ok(("T", Some("N"))))]
+    #[case(Some("T|N"), Some(Layout::TumorNormal), Some("T"), Some("N"), Ok(("T", Some("N"))))]
+    #[case(
+        Some("T|N"),
+        Some(Layout::TumorNormal),
+        None,
+        Some("X"),
+        Err("Expected normal sample 'X' found 'N'!")
+    )]
+    #[case(
+        Some("T|N"),
+        Some(Layout::TumorNormal),
+        Some("X"),
+        None,
+        Err("Expected sample 'X' found 'T'!")
     )]
     #[case(None, None, Some("tumor"), None, Ok(("tumor", None)))]
     #[case(None, None, Some("tumor"), Some("normal"), Ok(("tumor", Some("normal"))))]

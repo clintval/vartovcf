@@ -23,7 +23,7 @@ struct Opt {
     #[arg(short, long)]
     sample: Option<String>,
 
-    /// The matched normal sample name, required for tumor-normal input because VarDict does not write it
+    /// The matched normal sample name; read from tumor-normal input that names it as `tumor|normal`, and required otherwise
     #[arg(long)]
     normal_sample: Option<String>,
 

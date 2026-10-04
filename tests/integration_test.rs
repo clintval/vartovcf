@@ -198,6 +198,25 @@ mod tests {
     }
 
     #[test]
+    #[rustfmt::skip]
+    fn run_end_to_end_on_tumor_normal_calls() -> Result<(), Box<dyn std::error::Error>> {
+        let output = NamedTempFile::new().expect("Cannot create temporary file!");
+        let output = output.path().to_str().unwrap();
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        cmd
+            .arg("--reference").arg("tests/tumor-normal.fa")
+            .arg("--input").arg("tests/calls.tumor-normal.var")
+            .arg("--output").arg(output)
+            .arg("--filter-low-mean-mapq").arg("30")
+            .arg("--filter-low-af").arg("0.05")
+            .arg("--filter-low-dp").arg("10")
+            .unwrap().assert().success();
+
+        assert!(diff(output, "tests/calls.tumor-normal.vcf"));
+        Ok(())
+    }
+
+    #[test]
     fn run_end_to_end_refuses_the_removed_mode_option() -> Result<(), Box<dyn std::error::Error>> {
         let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
         let assert = cmd
