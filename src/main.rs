@@ -89,6 +89,10 @@ struct Opt {
     /// Only label STRAND_BIAS when AF is below this; no AF limit when not given
     #[arg(long, value_name = "MAX_AF", requires = "filter_strand_bias")]
     filter_strand_bias_max_af: Option<f32>,
+
+    /// Label calls LOW_AF when their AF is below this; not applied when not given
+    #[arg(long, value_name = "MIN_AF")]
+    filter_low_af: Option<f32>,
 }
 
 /// Main binary entrypoint.
@@ -137,6 +141,7 @@ fn main() -> Result<(), Error> {
             strand_bias: opt.filter_strand_bias,
             strand_bias_min_odds_ratio: opt.filter_strand_bias_min_odds_ratio,
             strand_bias_max_af: opt.filter_strand_bias_max_af,
+            low_af: opt.filter_low_af,
         },
     ) {
         Ok(exit_code) => process::exit(exit_code),

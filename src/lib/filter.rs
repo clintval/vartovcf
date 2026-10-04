@@ -23,6 +23,9 @@ pub const SAME_READ_POSITION: &str = "SAME_READ_POSITION";
 /// The FILTER label for calls whose ALT reads split across strands differently from the REF reads.
 pub const STRAND_BIAS: &str = "STRAND_BIAS";
 
+/// The FILTER label for calls with a low allele frequency.
+pub const LOW_AF: &str = "LOW_AF";
+
 /// The thresholds of the FILTER labels to apply; a label without a threshold is not applied.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct FilterThresholds {
@@ -48,6 +51,8 @@ pub struct FilterThresholds {
     pub strand_bias_min_odds_ratio: Option<f32>,
     /// The allele frequency below which a strand-biased call is labelled; no limit when not given.
     pub strand_bias_max_af: Option<f32>,
+    /// The minimum allele frequency.
+    pub low_af: Option<f32>,
 }
 
 impl FilterThresholds {
@@ -60,6 +65,7 @@ impl FilterThresholds {
             || self.high_mean_mismatches.is_some()
             || self.same_read_position.is_some()
             || self.strand_bias.is_some()
+            || self.low_af.is_some()
     }
 
     /// Return the FILTER header lines of the applied labels.
@@ -108,6 +114,11 @@ impl FilterThresholds {
                 .unwrap_or_default();
             lines.push(format!(
                 r#"##FILTER=<ID={STRAND_BIAS},Description="The ALT reads split across strands differently from the REF reads: the two-sided Fisher p-value of REF and ALT reads by strand (FORMAT STRAND_BIAS_FISHER_P) is below {max_p}{odds_ratio}{af_limit}.">"#
+            ));
+        }
+        if let Some(min_af) = self.low_af {
+            lines.push(format!(
+                r#"##FILTER=<ID={LOW_AF},Description="Fraction of reads carrying the ALT allele (FORMAT AF) is below {min_af}.">"#
             ));
         }
         lines
@@ -183,6 +194,12 @@ impl FilterThresholds {
                     .is_none_or(|max_af| variant.af_value() < max_af)
         }) {
             labels.push(STRAND_BIAS);
+        }
+        if self
+            .low_af
+            .is_some_and(|min_af| variant.af_value() < min_af)
+        {
+            labels.push(LOW_AF);
         }
         labels
     }
@@ -588,6 +605,44 @@ mod tests {
             p_only.header_lines(),
             vec![
                 r#"##FILTER=<ID=STRAND_BIAS,Description="The ALT reads split across strands differently from the REF reads: the two-sided Fisher p-value of REF and ALT reads by strand (FORMAT STRAND_BIAS_FISHER_P) is below 0.01.">"#
+            ]
+        );
+    }
+
+    #[rstest]
+    #[case("G", "A", 1, vec![LOW_AF])]
+    #[case("G", "A", 2, vec![])]
+    #[case("G", "A", 5, vec![])]
+    #[case("G", "G", 1, vec![])]
+    fn test_low_af(
+        #[case] ref_allele: &'static str,
+        #[case] alt_allele: &'static str,
+        #[case] alt_depth: i32,
+        #[case] expected: Vec<&str>,
+    ) {
+        let filters = FilterThresholds {
+            low_af: Some(0.002),
+            ..Default::default()
+        };
+        assert!(filters.any());
+        let variant = TumorOnlyVariant {
+            alt_depth,
+            depth: 1000,
+            ..variant(ref_allele, alt_allele, 30.0)
+        };
+        assert_eq!(filters.labels(&variant), expected);
+    }
+
+    #[test]
+    fn test_low_af_header_line_states_the_threshold() {
+        let filters = FilterThresholds {
+            low_af: Some(0.001),
+            ..Default::default()
+        };
+        assert_eq!(
+            filters.header_lines(),
+            vec![
+                r#"##FILTER=<ID=LOW_AF,Description="Fraction of reads carrying the ALT allele (FORMAT AF) is below 0.001.">"#
             ]
         );
     }
