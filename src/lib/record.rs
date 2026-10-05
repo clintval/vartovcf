@@ -714,7 +714,7 @@ fn vcf_header(samples: &[&str], filters: &FilterThresholds) -> Header {
     header.push_record(r#"##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="Signed length of the structural variant, written only on records with a symbolic ALT allele: VarDict's own event length, negative for DEL (the deleted bases), positive for DUP (the duplicated bases) and INV (the inverted bases).">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=SVTYPE,Number=1,Type=String,Description="Structural variant type, written only on records with a symbolic ALT allele: DEL, DUP or INV.">"#.as_bytes());
     if tumor_normal {
-        header.push_record(r#"##INFO=<ID=VARDICT_STATUS,Number=1,Type=String,Description="VarDict's tumor-normal label for this allele, from per-sample allele presence, AF and VarDict's own call rules; not a statistical test. StrongSomatic: no usable normal read of the allele (VarDict removes up to three low-quality normal reads of an SNV from the normal's counts); LikelySomatic: normal AF below -V or one normal read; Germline: normal allele passes VarDict's call rules at AF at or above -V; AFDiff: normal AF at or above -V but fails VarDict's call rules; LikelyLOH: tumor AF above 1 minus -V with normal AF between 0.2 and 0.8, or tumor AF below -V; StrongLOH: only the normal has the allele; SampleSpecific: no normal record at the position; Deletion: no tumor record at the position.">"#.as_bytes());
+        header.push_record(r#"##INFO=<ID=VARDICT_STATUS,Number=A,Type=String,Description="VarDict's tumor-normal label for this allele, from where the allele is found, its AF and VarDict's own call rules (-f, -r, -q and the others); not a statistical test. StrongSomatic: the normal has no reads of the allele; LikelySomatic: normal AF below -V or a single normal read; Germline: the normal's reads of the allele pass VarDict's call rules at a normal AF at or above -V, or at a tumor AF at or above -V when the top-ranked tumor allele at the position failed the call rules; AFDiff: normal AF at or above -V with more than one read, but the normal's reads fail VarDict's call rules; LikelyLOH: tumor AF above 1 minus -V while the normal's reads pass VarDict's call rules at an AF between 0.2 and 0.8, or a tumor AF below -V when the top-ranked tumor allele at the position failed the call rules; StrongLOH: only the normal has reads of the allele, and they pass VarDict's call rules; SampleSpecific: VarDict has no normal record at the position; Deletion: VarDict has no tumor record at the position. VarDict labels an allele both samples carry before it drops up to three low-quality normal reads of it as noise, so the normal's AD and AF can count fewer reads than the label saw, and it relabels an SNV that loses them StrongSomatic. It also re-calls long indels with few reads on both samples' pooled reads, which can relabel a call Germline, even with no normal reads under -p, which lifts its -f and -r limits.">"#.as_bytes());
         header.push_record(r#"##INFO=<ID=TUMOR_NORMAL_FISHER_P,Number=A,Type=Float,Description="One-sided Fisher exact p-value that this allele's read fraction is higher in the tumor than in the normal, from each sample's ALT reads (FORMAT AD[1]) against its other reads (FORMAT DP minus AD[1]), so it compares the two samples' FORMAT AF. Computed by vartovcf, not VarDict's SSF, which is the smaller of the two one-sided p-values rounded to 5 decimals. 1 when either sample has no depth; stored as a 32-bit float, so values below about 1e-45 read 0.">"#.as_bytes());
     }
     header.push_record(r#"##FILTER=<ID=PASS,Description="The variant call has passed all filters and may be considered for downstream analysis.">"#.as_bytes());
@@ -749,6 +749,7 @@ fn vcf_header(samples: &[&str], filters: &FilterThresholds) -> Header {
 mod tests {
     use pretty_assertions::assert_eq;
     use rstest::*;
+    use rust_htslib::bcf::header::{TagLength, TagType};
     use rust_htslib::bcf::{Format, Read};
     use rust_htslib::bcf::{Reader as VcfReader, Writer as VcfWriter};
     use tempfile::NamedTempFile;
@@ -1354,7 +1355,10 @@ mod tests {
         let reader = VcfReader::from_path(file.path()).expect("Error opening tempfile!");
         let samples = reader.header().samples();
         assert_eq!(samples, vec![b"T".as_slice(), b"N".as_slice()]);
-        assert!(reader.header().info_type(b"VARDICT_STATUS").is_ok());
+        assert_eq!(
+            reader.header().info_type(b"VARDICT_STATUS").unwrap(),
+            (TagType::String, TagLength::AltAlleles)
+        );
         assert!(reader.header().info_type(b"TUMOR_NORMAL_FISHER_P").is_ok());
         assert!(reader.header().format_type(b"HICNT").is_err());
         assert!(reader.header().format_type(b"QMEAN").is_ok());
