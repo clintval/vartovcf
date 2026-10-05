@@ -1,7 +1,7 @@
 //! A library for working with VarDict/VarDictJava output.
 #![warn(missing_docs)]
 
-use ahash::AHashSet;
+use ahash::{AHashMap, AHashSet};
 use anyhow::Result;
 use csv::{Reader, ReaderBuilder, StringRecord};
 use log::warn;
@@ -148,7 +148,7 @@ where
         .build();
 
     let row_sample = row_sample.unwrap_or_default();
-    let mut seen: AHashSet<String> = AHashSet::new();
+    let mut seen = SeenRows::default();
 
     while std::mem::take(&mut peeked) || read_row(&mut reader, &mut carry, layout)? {
         if carry.get(5).is_none_or(|f| f.is_empty()) {
@@ -174,11 +174,11 @@ where
             continue;
         }
 
-        let key = format!(
-            "{}-{}-{}-{}-{}",
-            var.contig, var.start, var.end, var.ref_allele, var.alt_allele
-        );
-        if !seen.insert(key) {
+        let is_new = seen.insert(var).ok_or_else(|| {
+            let line = carry.position().map_or(0, |position| position.line());
+            format!("Expected a start and end below 4294967296 on line {line}!")
+        })?;
+        if !is_new {
             continue; // Skip this record if we have seen this variant before.
         }
 
@@ -354,6 +354,47 @@ impl<V, const N: usize> Deref for Values<V, N> {
 
     fn deref(&self) -> &[V] {
         &self.values[..self.len]
+    }
+}
+
+/// The rows seen so far, each held as a fixed-size key, for skipping exact duplicates.
+#[derive(Default)]
+struct SeenRows {
+    keys: AHashSet<RowKey>,
+    strings: AHashMap<Box<str>, u32>,
+}
+
+/// A row's contig, start, END, REF and ALT, with each string held as an id.
+#[derive(Hash, PartialEq, Eq)]
+struct RowKey {
+    contig: u32,
+    start: u32,
+    end: u32,
+    ref_allele: u32,
+    alt_allele: u32,
+}
+
+impl SeenRows {
+    /// Records a row, returning whether it is new, or `None` when a position needs more than 32 bits.
+    fn insert(&mut self, var: &TumorOnlyVariant) -> Option<bool> {
+        let key = RowKey {
+            start: var.start.try_into().ok()?,
+            end: var.end.try_into().ok()?,
+            contig: self.id(var.contig),
+            ref_allele: self.id(var.ref_allele),
+            alt_allele: self.id(var.alt_allele),
+        };
+        Some(self.keys.insert(key))
+    }
+
+    /// Returns the id of a string, giving it the next id the first time it is seen.
+    fn id(&mut self, string: &str) -> u32 {
+        if let Some(&id) = self.strings.get(string) {
+            return id;
+        }
+        let id = u32::try_from(self.strings.len()).expect("Over 2^32 distinct strings!");
+        self.strings.insert(string.into(), id);
+        id
     }
 }
 
@@ -935,6 +976,85 @@ mod tests {
             .collect();
         assert_eq!(samples, expected);
         Ok(())
+    }
+
+    fn row<'a>(
+        contig: &'a str,
+        start: u64,
+        end: u64,
+        ref_allele: &'a str,
+        alt_allele: &'a str,
+    ) -> TumorOnlyVariant<'a> {
+        TumorOnlyVariant {
+            contig,
+            start,
+            end,
+            ref_allele,
+            alt_allele,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_seen_rows_drops_the_same_row_twice() {
+        let mut seen = SeenRows::default();
+        assert_eq!(seen.insert(&row("chr1", 10, 12, "ACG", "A")), Some(true));
+        assert_eq!(seen.insert(&row("chr1", 10, 12, "ACG", "A")), Some(false));
+    }
+
+    #[rstest]
+    #[case::contig(row("chr2", 10, 12, "ACG", "A"))]
+    #[case::start(row("chr1", 11, 12, "ACG", "A"))]
+    #[case::end(row("chr1", 10, 13, "ACG", "A"))]
+    #[case::ref_allele(row("chr1", 10, 12, "ACT", "A"))]
+    #[case::alt_allele(row("chr1", 10, 12, "ACG", "<DEL>"))]
+    #[case::swapped_alleles(row("chr1", 10, 12, "A", "ACG"))]
+    fn test_seen_rows_keeps_a_row_differing_in_one_field(#[case] other: TumorOnlyVariant) {
+        let mut seen = SeenRows::default();
+        assert_eq!(seen.insert(&row("chr1", 10, 12, "ACG", "A")), Some(true));
+        assert_eq!(seen.insert(&other), Some(true));
+        assert_eq!(seen.insert(&other), Some(false));
+    }
+
+    #[test]
+    fn test_seen_rows_holds_each_distinct_string_once() {
+        let mut seen = SeenRows::default();
+        for start in 1..=100 {
+            seen.insert(&row("chr1", start, start, "A", "A"));
+            seen.insert(&row("chr1", start, start, "A", "T"));
+        }
+        assert_eq!(seen.keys.len(), 200);
+        assert_eq!(seen.strings.len(), 3);
+    }
+
+    #[test]
+    fn test_seen_rows_refuses_a_position_beyond_32_bits() {
+        let mut seen = SeenRows::default();
+        assert_eq!(seen.insert(&row("chr1", 1 << 32, 1 << 32, "A", "T")), None);
+        assert_eq!(seen.insert(&row("chr1", 1, 1 << 32, "A", "T")), None);
+    }
+
+    #[test]
+    fn test_refuses_a_position_beyond_32_bits() {
+        let rows = std::fs::read_to_string("tests/calls.var").unwrap();
+        let mut fields: Vec<&str> = rows.lines().nth(2).unwrap().split('\t').collect();
+        fields[3] = "4294967296";
+        fields[4] = "4294967296";
+        let input = format!("{}\n", fields.join("\t"));
+        let output = NamedTempFile::new().expect("Cannot create temporary file!");
+        let result = vartovcf(
+            input.as_bytes(),
+            Some(output.path().into()),
+            PathBuf::from("tests/reference.fa"),
+            None,
+            None,
+            false,
+            &FilterThresholds::default(),
+        );
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Expected a start and end below 4294967296 on line 1!"
+        );
     }
 
     #[test]
