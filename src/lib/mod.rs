@@ -429,7 +429,7 @@ fn layout_error(record: &StringRecord) -> String {
 /// Resolves the tumor and normal sample names from the first row's sample, the layout and the
 /// arguments. A tumor-normal row names both samples as `tumor|normal` when VarDict was given both
 /// names with a BED file of regions, and only the tumor otherwise. Given names, also accepted as
-/// `tumor|normal`, take the place of the input's.
+/// `tumor|normal`, take the place of a tumor-normal input's and must match a tumor-only input's.
 fn resolve_samples(
     row_sample: Option<&str>,
     layout: Option<Layout>,
@@ -447,6 +447,11 @@ fn resolve_samples(
         (Some(Layout::TumorNormal), Some(Some((tumor, normal)))) => (Some(tumor), Some(normal)),
         _ => (row_sample, None),
     };
+    if let (Some(Layout::TumorOnly), Some(given), Some(row)) = (layout, sample, row_tumor)
+        && given != row
+    {
+        return Err(format!("Expected sample '{given}' found '{row}'!"));
+    }
     let tumor = given_or_input(sample, row_tumor).ok_or("The input has no rows to take a sample name from: give --sample, and --normal-sample for tumor-normal output!")?;
     let normal = match layout {
         Some(Layout::TumorOnly) if normal_sample.is_some() => {
@@ -634,11 +639,11 @@ mod tests {
     }
 
     #[test]
-    fn test_a_given_sample_name_replaces_the_inputs() -> Result<(), Box<dyn std::error::Error>> {
-        let input = BufReader::new(File::open("tests/calls.var")?);
+    fn test_refuses_a_mismatched_tumor_only_sample() {
+        let input = BufReader::new(File::open("tests/calls.var").unwrap());
         let output = NamedTempFile::new().expect("Cannot create temporary file!");
         let reference = PathBuf::from("tests/reference.fa");
-        let exit = vartovcf(
+        let result = vartovcf(
             input,
             Some(output.path().into()),
             &reference,
@@ -646,12 +651,11 @@ mod tests {
             None,
             false,
             &FilterThresholds::default(),
-        )?;
-        assert_eq!(exit, 0);
-        use rust_htslib::bcf::{Read, Reader as VcfReader};
-        let reader = VcfReader::from_path(output.path()).expect("Error opening output file!");
-        assert_eq!(reader.header().samples(), vec![b"XXXXXXXX".as_slice()]);
-        Ok(())
+        );
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Expected sample 'XXXXXXXX' found 'dna00001'!"
+        );
     }
 
     #[rstest]
@@ -780,8 +784,20 @@ mod tests {
     #[rstest]
     #[case(Some("dna00001"), Some(Layout::TumorOnly), None, None, Ok(("dna00001", None)))]
     #[case(Some("dna00001"), Some(Layout::TumorOnly), Some("dna00001"), None, Ok(("dna00001", None)))]
-    #[case(Some("dna00001"), Some(Layout::TumorOnly), Some("XXXX"), None, Ok(("XXXX", None)))]
-    #[case(Some("dna00001"), Some(Layout::TumorOnly), Some("a|b"), None, Ok(("a|b", None)))]
+    #[case(
+        Some("dna00001"),
+        Some(Layout::TumorOnly),
+        Some("XXXX"),
+        None,
+        Err("Expected sample 'XXXX' found 'dna00001'!")
+    )]
+    #[case(
+        Some("dna00001"),
+        Some(Layout::TumorOnly),
+        Some("a|b"),
+        None,
+        Err("Expected sample 'a|b' found 'dna00001'!")
+    )]
     #[case(
         Some("dna00001"),
         Some(Layout::TumorOnly),

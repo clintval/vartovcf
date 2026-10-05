@@ -19,7 +19,7 @@ struct Opt {
     #[arg(short, long)]
     reference: PathBuf,
 
-    /// The tumor (or only) sample name, or `tumor|normal` for both; read from the input when not given, and used in place of the input's, with a warning, when it differs
+    /// The tumor (or only) sample name, or `tumor|normal` for both; read from the input when not given, checked against tumor-only input, and used in place of a tumor-normal input's, with a warning, when it differs
     #[arg(short, long)]
     sample: Option<String>,
 
