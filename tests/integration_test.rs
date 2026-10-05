@@ -189,6 +189,26 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn run_end_to_end_names_the_samples_as_given() -> Result<(), Box<dyn std::error::Error>> {
+        let rows = read_to_string("tests/calls.tumor-normal.var")?.replace("T|N\t", "T.bam|N\t");
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        let assert = cmd
+            .args(["--reference", "tests/tumor-normal.fa"])
+            .args(["--sample", "T", "--normal-sample", "N"])
+            .write_stdin(rows)
+            .assert()
+            .success();
+        let stdout = String::from_utf8(assert.get_output().stdout.clone())?;
+        let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+        assert!(stdout.contains("\tFORMAT\tT\tN\n"), "{stdout}");
+        assert!(
+            stderr.contains("The input names a sample 'T.bam'; writing it as 'T' as given."),
+            "{stderr}"
+        );
+        Ok(())
+    }
+
     /// The tumor-normal fixture's rows as VarDict writes them when it names only the tumor.
     fn tumor_normal_rows_naming_only_the_tumor() -> String {
         read_to_string("tests/calls.tumor-normal.var")

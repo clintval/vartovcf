@@ -4,6 +4,7 @@
 use ahash::AHashSet;
 use anyhow::Result;
 use csv::{Reader, ReaderBuilder, StringRecord};
+use log::warn;
 use proglog::ProgLogBuilder;
 use rust_htslib::bcf::Format;
 use rust_htslib::bcf::Writer as VcfWriter;
@@ -360,41 +361,55 @@ fn layout_error(record: &StringRecord) -> String {
 
 /// Resolves the tumor and normal sample names from the first row's sample, the layout and the
 /// arguments. A tumor-normal row names both samples as `tumor|normal` when VarDict was given both
-/// names with a BED file of regions, and only the tumor otherwise.
+/// names with a BED file of regions, and only the tumor otherwise. Given names, also accepted as
+/// `tumor|normal`, take the place of the input's.
 fn resolve_samples(
     row_sample: Option<&str>,
     layout: Option<Layout>,
     sample: Option<&str>,
     normal_sample: Option<&str>,
 ) -> Result<(String, Option<String>), String> {
+    let (sample, normal_sample) = match (sample.and_then(|name| name.split_once('|')), layout) {
+        (Some((tumor, normal)), Some(Layout::TumorNormal) | None) if normal_sample.is_none() => {
+            (Some(tumor), Some(normal))
+        }
+        _ => (sample, normal_sample),
+    };
     let (row_tumor, row_normal) = match (layout, row_sample.map(|row| row.split_once('|'))) {
         (Some(Layout::TumorNormal), Some(Some((tumor, normal)))) => (Some(tumor), Some(normal)),
         _ => (row_sample, None),
     };
-    let tumor = match (row_tumor, sample) {
-        (Some(row), Some(given)) if row != given => {
-            return Err(format!("Expected sample '{given}' found '{row}'!"));
-        }
-        (Some(row), _) => row,
-        (None, Some(given)) => given,
-        (None, None) => {
-            return Err("The input has no rows to take a sample name from: give --sample, and --normal-sample for tumor-normal output!".to_string());
-        }
-    };
-    let normal = match (layout, row_normal, normal_sample) {
-        (Some(Layout::TumorNormal), Some(row), Some(given)) if row != given => {
-            return Err(format!("Expected normal sample '{given}' found '{row}'!"));
-        }
-        (Some(Layout::TumorNormal), Some(row), _) => Some(row),
-        (Some(Layout::TumorNormal), None, None) => {
-            return Err("The input is tumor-normal but no --normal-sample was given!".to_string());
-        }
-        (Some(Layout::TumorOnly), _, Some(_)) => {
+    let tumor = given_or_input(sample, row_tumor).ok_or("The input has no rows to take a sample name from: give --sample, and --normal-sample for tumor-normal output!")?;
+    let normal = match layout {
+        Some(Layout::TumorOnly) if normal_sample.is_some() => {
             return Err("--normal-sample was given but the input is tumor-only!".to_string());
         }
-        (_, _, given) => given,
+        Some(Layout::TumorNormal) => Some(
+            given_or_input(normal_sample, row_normal)
+                .ok_or("The input is tumor-normal but no --normal-sample was given!")?,
+        ),
+        _ => normal_sample,
     };
+    if tumor.is_empty() || normal.is_some_and(str::is_empty) {
+        return Err("Sample names must not be empty!".to_string());
+    }
+    if normal == Some(tumor) {
+        return Err(format!(
+            "The tumor and normal samples need different names, but both are '{tumor}'!"
+        ));
+    }
     Ok((tumor.to_string(), normal.map(str::to_string)))
+}
+
+/// Returns the given sample name, warning when the input names the sample differently, or else
+/// the input's name.
+fn given_or_input<'a>(given: Option<&'a str>, input: Option<&'a str>) -> Option<&'a str> {
+    if let (Some(given), Some(input)) = (given, input)
+        && given != input
+    {
+        warn!("The input names a sample '{input}'; writing it as '{given}' as given.");
+    }
+    given.or(input)
 }
 
 /// Names the 1-based line and column of a record that could not be deserialized.
@@ -471,21 +486,24 @@ mod tests {
     }
 
     #[test]
-    fn test_when_incorrect_sample() {
-        let sample = "XXXXXXXX";
-        let input = BufReader::new(File::open("tests/calls.var").unwrap());
+    fn test_a_given_sample_name_replaces_the_inputs() -> Result<(), Box<dyn std::error::Error>> {
+        let input = BufReader::new(File::open("tests/calls.var")?);
         let output = NamedTempFile::new().expect("Cannot create temporary file!");
         let reference = PathBuf::from("tests/reference.fa");
-        let result = vartovcf(
+        let exit = vartovcf(
             input,
             Some(output.path().into()),
             &reference,
-            Some(sample),
+            Some("XXXXXXXX"),
             None,
             false,
             &FilterThresholds::default(),
-        );
-        assert!(result.is_err());
+        )?;
+        assert_eq!(exit, 0);
+        use rust_htslib::bcf::{Read, Reader as VcfReader};
+        let reader = VcfReader::from_path(output.path()).expect("Error opening output file!");
+        assert_eq!(reader.header().samples(), vec![b"XXXXXXXX".as_slice()]);
+        Ok(())
     }
 
     #[rstest]
@@ -614,13 +632,8 @@ mod tests {
     #[rstest]
     #[case(Some("dna00001"), Some(Layout::TumorOnly), None, None, Ok(("dna00001", None)))]
     #[case(Some("dna00001"), Some(Layout::TumorOnly), Some("dna00001"), None, Ok(("dna00001", None)))]
-    #[case(
-        Some("dna00001"),
-        Some(Layout::TumorOnly),
-        Some("XXXX"),
-        None,
-        Err("Expected sample 'XXXX' found 'dna00001'!")
-    )]
+    #[case(Some("dna00001"), Some(Layout::TumorOnly), Some("XXXX"), None, Ok(("XXXX", None)))]
+    #[case(Some("dna00001"), Some(Layout::TumorOnly), Some("a|b"), None, Ok(("a|b", None)))]
     #[case(
         Some("dna00001"),
         Some(Layout::TumorOnly),
@@ -647,19 +660,40 @@ mod tests {
     )]
     #[case(Some("T|N"), Some(Layout::TumorNormal), None, None, Ok(("T", Some("N"))))]
     #[case(Some("T|N"), Some(Layout::TumorNormal), Some("T"), Some("N"), Ok(("T", Some("N"))))]
+    #[case(Some("T|N"), Some(Layout::TumorNormal), None, Some("X"), Ok(("T", Some("X"))))]
+    #[case(Some("T|N"), Some(Layout::TumorNormal), Some("X"), None, Ok(("X", Some("N"))))]
+    #[case(Some("T.bam|N"), Some(Layout::TumorNormal), Some("T"), Some("N"), Ok(("T", Some("N"))))]
+    #[case(Some("T|N"), Some(Layout::TumorNormal), Some("A|B"), None, Ok(("A", Some("B"))))]
+    #[case(Some("T"), Some(Layout::TumorNormal), Some("A|B"), None, Ok(("A", Some("B"))))]
+    #[case(None, None, Some("A|B"), None, Ok(("A", Some("B"))))]
+    #[case(None, None, Some(""), None, Err("Sample names must not be empty!"))]
     #[case(
-        Some("T|N"),
+        Some("T"),
         Some(Layout::TumorNormal),
         None,
-        Some("X"),
-        Err("Expected normal sample 'X' found 'N'!")
+        Some(""),
+        Err("Sample names must not be empty!")
     )]
     #[case(
-        Some("T|N"),
+        Some("T|"),
         Some(Layout::TumorNormal),
-        Some("X"),
         None,
-        Err("Expected sample 'X' found 'T'!")
+        None,
+        Err("Sample names must not be empty!")
+    )]
+    #[case(
+        Some("T"),
+        Some(Layout::TumorNormal),
+        None,
+        Some("T"),
+        Err("The tumor and normal samples need different names, but both are 'T'!")
+    )]
+    #[case(
+        Some("T|T"),
+        Some(Layout::TumorNormal),
+        None,
+        None,
+        Err("The tumor and normal samples need different names, but both are 'T'!")
     )]
     #[case(None, None, Some("tumor"), None, Ok(("tumor", None)))]
     #[case(None, None, Some("tumor"), Some("normal"), Ok(("tumor", Some("normal"))))]
