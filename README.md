@@ -105,7 +105,7 @@ FILTER describes the tumor's evidence, not whether a call is somatic, so select 
 With `-p`, VarDictJava writes no reference-only rows for a pair.
 
 > [!WARNING]
-> **Known VarDictJava issue, still to be investigated:** in tumor-normal mode, at a position where VarDict's top-ranked tumor allele fails its call rules, VarDict writes no lower-ranked tumor allele, even one that passes them and that tumor-only mode would write. The loop that walks the alleles stops at the first failure instead of skipping it (`SomaticPostProcessModule.java` in VarDictJava 1.8.4, and `vardict.pl` before it), so these calls never reach `vartovcf`. How often this drops real calls has not been measured yet.
+> **Known VarDictJava issue, still to be investigated:** in tumor-normal mode VarDict walks the tumor's alleles at a position from the best-supported down and stops at the first one that fails its call rules, so it never writes the alleles ranked below that one, even ones that pass and that tumor-only mode would write. Only when the top-ranked allele itself fails does VarDict write the position's other alleles, and then only those whose reads in the normal pass its call rules, labelled Germline, LikelyLOH or StrongLOH; at a position with a passing tumor allele, alleles only the normal carries are never written. This happens upstream (`SomaticPostProcessModule.java` in VarDictJava 1.8.4, and `vardict.pl` before it), so these calls never reach `vartovcf`; how often it drops real calls has not been measured yet.
 
 ### Filters
 
