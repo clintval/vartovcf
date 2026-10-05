@@ -12,6 +12,7 @@ use rust_htslib::bcf::record::{GenotypeAllele, Numeric};
 use std::error;
 use std::fmt::Debug;
 use std::io::Read;
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
 use crate::fai::{fasta_contigs_to_vcf_header, fasta_path_to_vcf_header};
@@ -53,6 +54,14 @@ impl Layout {
         match self {
             Layout::TumorOnly => 34,
             Layout::TumorNormal => 52,
+        }
+    }
+
+    /// The number of samples in a row of this layout.
+    fn samples(&self) -> usize {
+        match self {
+            Layout::TumorOnly => 1,
+            Layout::TumorNormal => 2,
         }
     }
 
@@ -149,14 +158,15 @@ where
             Layout::TumorOnly => {
                 let call: TumorOnlyVariant =
                     carry.deserialize(None).map_err(describe_parse_error)?;
-                (vec![call], None)
+                ([call, TumorOnlyVariant::default()], None)
             }
             Layout::TumorNormal => {
                 let row: TumorNormalVariant =
                     carry.deserialize(None).map_err(describe_parse_error)?;
-                (vec![row.tumor_call(), row.normal_call()], Some(row))
+                ([row.tumor_call(), row.normal_call()], Some(row))
             }
         };
+        let calls = &calls[..layout.samples()];
         let var = &calls[0];
 
         if skip_non_variants && var.ref_allele == var.alt_allele {
@@ -176,7 +186,7 @@ where
             return Err(message.into());
         };
 
-        write_record(&mut writer, &calls, tumor_normal.as_ref(), filters)?;
+        write_record(&mut writer, calls, tumor_normal.as_ref(), filters)?;
         progress.record();
     }
 
@@ -253,10 +263,12 @@ fn write_record(
         )?;
     }
 
-    let genotypes: Vec<GenotypeAllele> = calls
-        .iter()
-        .flat_map(|call| call.gt_value(MIN_HOM_ALT_AF).iter().copied())
-        .collect();
+    let genotypes = Values::<_, 4>::collect(
+        GenotypeAllele::UnphasedMissing,
+        calls
+            .iter()
+            .flat_map(|call| call.gt_value(MIN_HOM_ALT_AF).iter().copied()),
+    );
     variant.push_genotypes(&genotypes)?;
     variant.push_format_integer(b"AD", &each_allele(calls, TumorOnlyVariant::ad_value))?;
     variant.push_format_integer(b"ADF", &each_allele(calls, TumorOnlyVariant::adf_value))?;
@@ -306,13 +318,42 @@ fn write_record(
 }
 
 /// Collects one value per sample.
-fn each<T, V>(items: &[T], value: impl Fn(&T) -> V) -> Vec<V> {
-    items.iter().map(value).collect()
+fn each<T, V: Copy + Default>(items: &[T], value: impl Fn(&T) -> V) -> Values<V, 2> {
+    Values::collect(V::default(), items.iter().map(value))
 }
 
 /// Collects one value per allele for each sample, sample after sample.
-fn each_allele<T>(items: &[T], value: impl Fn(&T) -> Vec<i32>) -> Vec<i32> {
-    items.iter().flat_map(value).collect()
+fn each_allele<T>(items: &[T], value: impl Fn(&T) -> Vec<i32>) -> Values<i32, 4> {
+    Values::collect(0, items.iter().flat_map(value))
+}
+
+/// Up to `N` values held on the stack, so writing a record allocates nothing per field.
+struct Values<V, const N: usize> {
+    values: [V; N],
+    len: usize,
+}
+
+impl<V: Copy, const N: usize> Values<V, N> {
+    /// Collects the values after a placeholder fills the unused slots.
+    fn collect(fill: V, values: impl IntoIterator<Item = V>) -> Self {
+        let mut collected = Values {
+            values: [fill; N],
+            len: 0,
+        };
+        for value in values {
+            collected.values[collected.len] = value;
+            collected.len += 1;
+        }
+        collected
+    }
+}
+
+impl<V, const N: usize> Deref for Values<V, N> {
+    type Target = [V];
+
+    fn deref(&self) -> &[V] {
+        &self.values[..self.len]
+    }
 }
 
 /// Reads the next row, refusing one whose layout differs from the first row's.
