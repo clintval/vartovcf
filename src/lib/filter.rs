@@ -146,11 +146,11 @@ impl FilterThresholds {
         lines
     }
 
-    /// Return the FILTER labels a call fails by its FORMAT values: none without an ALT allele, and
-    /// none from a value that is missing.
+    /// Return the FILTER labels a call fails by its FORMAT values: none without reads of an ALT
+    /// allele, and none from a value that is missing.
     pub fn labels(&self, variant: &TumorOnlyVariant) -> Vec<&'static str> {
         let mut labels = Vec::new();
-        if variant.ref_allele == variant.alt_allele {
+        if !variant.has_alt_reads() {
             return labels;
         }
         if self
@@ -284,7 +284,7 @@ mod tests {
     }
 
     #[test]
-    fn test_a_call_without_alt_reads_gets_only_count_labels() {
+    fn test_a_call_without_alt_reads_gets_no_labels() {
         let filters = FilterThresholds {
             near_read_end: Some(8.0),
             low_mean_mapq: Some(10.0),
@@ -305,7 +305,7 @@ mod tests {
             strand_bias_p_value: 0.0,
             ..variant("G", "A", 0.0)
         };
-        assert_eq!(filters.labels(&no_alt_reads), vec![LOW_AF, LOW_DP]);
+        assert!(filters.labels(&no_alt_reads).is_empty());
     }
 
     fn mapq_variant(

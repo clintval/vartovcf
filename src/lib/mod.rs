@@ -193,7 +193,7 @@ fn write_record(
 
     variant.set_qual(f32::missing());
 
-    if filters.any() && var.ref_allele != var.alt_allele {
+    if filters.any() && var.has_alt_reads() {
         let labels = filters.labels(var);
         if labels.is_empty() {
             variant.push_filter("PASS".as_bytes())?;
