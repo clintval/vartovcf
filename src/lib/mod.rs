@@ -303,6 +303,26 @@ mod tests {
     }
 
     #[test]
+    fn test_a_bare_zero_strand_bias_column_is_accepted() -> Result<(), Box<dyn std::error::Error>> {
+        let rows = std::fs::read_to_string("tests/calls.var")?;
+        let mut fields: Vec<&str> = rows.lines().nth(2).unwrap().split('\t').collect();
+        fields[15] = "0";
+        let input = format!("{}\n", fields.join("\t"));
+        let output = NamedTempFile::new().expect("Cannot create temporary file!");
+        let exit = vartovcf(
+            input.as_bytes(),
+            Some(output.path().into()),
+            PathBuf::from("tests/reference.fa"),
+            "dna00001",
+            &TumorOnly,
+            false,
+            &FilterThresholds::default(),
+        )?;
+        assert_eq!(exit, 0);
+        Ok(())
+    }
+
+    #[test]
     fn test_when_incorrect_sample() {
         let sample = "XXXXXXXX";
         let input = BufReader::new(File::open("tests/calls.var").unwrap());
