@@ -190,6 +190,22 @@ mod tests {
     }
 
     #[test]
+    #[rustfmt::skip]
+    fn run_end_to_end_on_tumor_normal_complex_and_sv_calls() -> Result<(), Box<dyn std::error::Error>> {
+        let output = NamedTempFile::new().expect("Cannot create temporary file!");
+        let output = output.path().to_str().unwrap();
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        cmd
+            .arg("--reference").arg("tests/tumor-normal.fa")
+            .arg("--input").arg("tests/calls.tumor-normal.edge.var")
+            .arg("--output").arg(output)
+            .unwrap().assert().success();
+
+        assert!(diff(output, "tests/calls.tumor-normal.edge.vcf"));
+        Ok(())
+    }
+
+    #[test]
     fn run_end_to_end_names_the_samples_as_given() -> Result<(), Box<dyn std::error::Error>> {
         let rows = read_to_string("tests/calls.tumor-normal.var")?.replace("T|N\t", "T.bam|N\t");
         let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
