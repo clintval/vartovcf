@@ -4,27 +4,37 @@
 /// greater than the second row's, for the table `[[a, b], [c, d]]`: R's
 /// `fisher.test(matrix(c(a, b, c, d), nrow = 2), alternative = "greater")`.
 pub fn fisher_exact_greater(a: u64, b: u64, c: u64, d: u64) -> f64 {
-    let (row, col, total) = (a + b, a + c, a + b + c + d);
-    let (row, col, total) = (row as f64, col as f64, total as f64);
-    let last = (a + b).min(a + c);
+    let (row, col, total) = ((a + b) as f64, (a + c) as f64, (a + b + c + d) as f64);
     let mode = ((row + 1.0) * (col + 1.0) / (total + 2.0)).floor();
-    let mut ln_term =
-        ln_choose(col, a as f64) + ln_choose(total - col, row - a as f64) - ln_choose(total, row);
-    let (mut ln_max, mut sum) = (ln_term, 0.0);
-    for x in a..=last {
-        let x = x as f64;
-        if ln_term > ln_max {
-            sum *= (ln_max - ln_term).exp();
-            ln_max = ln_term;
-        }
-        sum += (ln_term - ln_max).exp();
-        if x >= mode && ln_term < ln_max - 40.0 {
+    let ln_pmf =
+        |x: f64| ln_choose(col, x) + ln_choose(total - col, row - x) - ln_choose(total, row);
+    let other = d as f64 - a as f64;
+    if a as f64 > mode {
+        let upper = (a..=(a + b).min(a + c)).map(|x| x as f64);
+        let ln_ratio = |x: f64| ((col - x) * (row - x)).ln() - ((x + 1.0) * (other + x + 1.0)).ln();
+        return falling_sum(ln_pmf(a as f64), upper, ln_ratio).min(1.0);
+    }
+    let lowest = a.saturating_sub(d);
+    if a == lowest {
+        return 1.0;
+    }
+    let lower = (lowest..a).rev().map(|x| x as f64);
+    let ln_ratio = |x: f64| (x * (other + x)).ln() - ((col - x + 1.0) * (row - x + 1.0)).ln();
+    (1.0 - falling_sum(ln_pmf(a as f64 - 1.0), lower, ln_ratio)).max(0.0)
+}
+
+/// Sums terms that only fall, given the log of the first and the log ratio of each term to the
+/// next, stopping once they drop below e^-40 of the first.
+fn falling_sum(ln_first: f64, xs: impl Iterator<Item = f64>, ln_ratio: impl Fn(f64) -> f64) -> f64 {
+    let (mut ln_term, mut sum) = (ln_first, 0.0);
+    for x in xs {
+        if ln_term < ln_first - 40.0 {
             break;
         }
-        ln_term +=
-            ((col - x) * (row - x)).ln() - ((x + 1.0) * (d as f64 - a as f64 + x + 1.0)).ln();
+        sum += (ln_term - ln_first).exp();
+        ln_term += ln_ratio(x);
     }
-    (ln_max + sum.ln()).exp().min(1.0)
+    (ln_first + sum.ln()).exp()
 }
 
 /// The natural log of the binomial coefficient `n` choose `k`.
@@ -79,6 +89,15 @@ mod tests {
     #[case(1, 8103, 0, 6000, 0.5745887691435053)]
     #[case(0, 0, 0, 0, 1.0)]
     #[case(5, 0, 0, 10, 0.00033300033300033305)]
+    #[case(1, 29999, 15000, 0, 1.0)]
+    #[case(5, 95, 50, 50, 0.9999999999999948)]
+    #[case(100, 900, 500, 500, 1.0)]
+    #[case(10, 990, 300, 700, 1.0)]
+    #[case(2, 8, 5, 5, 0.9713622291021672)]
+    #[case(3, 2, 4, 1, 0.9166666666666666)]
+    #[case(250, 250, 260, 240, 0.7567260484183103)]
+    #[case(1, 0, 1, 0, 1.0)]
+    #[case(0, 5, 0, 5, 1.0)]
     fn test_fisher_exact_greater_matches_r(
         #[case] a: u64,
         #[case] b: u64,
