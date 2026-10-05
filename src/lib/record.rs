@@ -232,10 +232,10 @@ pub struct TumorOnlyVariant<'a> {
     pub variant_type: &'a str,
     /// The fraction of reads VarDict's -t removed as duplicates; VarDictJava 1.8.4 always prints 0,
     /// which parses as `None`.
-    #[serde(default, deserialize_with = "maybe_duplication_rate")]
+    #[serde(deserialize_with = "maybe_duplication_rate")]
     pub duplication_rate: Option<f32>,
     /// The details of the structural variant.
-    #[serde(default, deserialize_with = "maybe_sv_info")]
+    #[serde(deserialize_with = "maybe_sv_info")]
     pub sv_info: Option<SvInfo>,
     #[serde(default)]
     /// The number of bases VarDict moved this indel toward the -J CRISPR cut site; only with -J.
@@ -493,11 +493,12 @@ pub struct SampleColumns<'a> {
     pub alt_forward: i32,
     /// The number of reverse reads supporting the alternate allele.
     pub alt_reverse: i32,
-    /// VarDict's genotype column, `0` when VarDict has no record of this sample at the position.
+    /// VarDict's genotype column, `0` when VarDict has no reads of this allele to describe in this
+    /// sample, as in an empty block or one it filled from another allele's depth.
     pub gt: &'a str,
     /// VarDict's allele frequency of the alternate allele.
     pub af: f32,
-    /// VarDict's strand bias flags, `0` when VarDict has no record of this sample at the position.
+    /// VarDict's strand-bias flags, which no output field uses, so they are not parsed.
     pub strand_bias: &'a str,
     /// The mean distance from the variant to the nearer end of each supporting read's aligned part.
     pub mean_position_in_read: f32,
@@ -564,16 +565,16 @@ pub struct TumorNormalVariant<'a> {
     /// The type of variant this call is.
     pub variant_type: &'a str,
     /// The tumor's duplication rate, which VarDictJava 1.8.4 always prints as 0.
-    #[serde(default, deserialize_with = "maybe_duplication_rate")]
+    #[serde(deserialize_with = "maybe_duplication_rate")]
     pub tumor_duplication_rate: Option<f32>,
     /// The tumor's structural variant read counts.
-    #[serde(default, deserialize_with = "maybe_sv_info")]
+    #[serde(deserialize_with = "maybe_sv_info")]
     pub tumor_sv_info: Option<SvInfo>,
     /// The normal's duplication rate, which VarDictJava 1.8.4 always prints as 0.
-    #[serde(default, deserialize_with = "maybe_duplication_rate")]
+    #[serde(deserialize_with = "maybe_duplication_rate")]
     pub normal_duplication_rate: Option<f32>,
     /// The normal's structural variant read counts.
-    #[serde(default, deserialize_with = "maybe_sv_info")]
+    #[serde(deserialize_with = "maybe_sv_info")]
     pub normal_sv_info: Option<SvInfo>,
     /// VarDict's tumor-normal p-value, the smaller one-sided Fisher p-value rounded to 5 decimals.
     pub somatic_p_value: &'a str,
@@ -660,15 +661,6 @@ impl<'a> TumorNormalVariant<'a> {
         let (normal_alt, normal_other) = counts(&self.normal_columns);
         fisher_exact_greater(tumor_alt, tumor_other, normal_alt, normal_other) as f32
     }
-
-    /// Return the signed structural variant length from the genotype column of the first sample,
-    /// tumor then normal, with reads of this allele; VarDict blanks or borrows the other's.
-    pub fn sv_length(&self) -> Option<i32> {
-        [self.tumor_call(), self.normal_call()]
-            .into_iter()
-            .find(|call| call.has_alt_reads())?
-            .sv_length()
-    }
 }
 
 impl<'a> AbstractInterval for TumorOnlyVariant<'a> {
@@ -733,7 +725,7 @@ fn vcf_header(samples: &[&str], filters: &FilterThresholds) -> Header {
     }
     header.push_record(r#"##FORMAT=<ID=REALIGNED_FRAC_OF_DP,Number=A,Type=Float,Description="Fraction of VarDict's depth made of reads it reassigned to this ALT allele by local realignment or MNV merging (VarDict's ExtraAF, which var2vcf_valid.pl calls ADJAF). Those reads are already counted in AD[1] and AF, so this is not an adjusted AF; divided by AF it gives roughly the share of the ALT reads that realignment contributed. Rounded by VarDict to 4 decimals. Missing when no read carries the ALT allele.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=MEAN_DIST_TO_READ_END,Number=A,Type=Float,Description="Mean, over the reads carrying the ALT allele, of the 1-based distance from the variant to the nearer end of the read's aligned part, soft clips excluded. It is measured from the variant base for SNVs, the first inserted base for insertions and the first base after the gap for deletions; a Complex call is measured like the insertion or deletion it starts with, or from the last base of the block when it starts with a mismatch. Reads VarDict realigned out of soft clips contribute their clip length. Rounded by VarDict to 1 decimal. Missing when no read carries the ALT allele.">"#.as_bytes());
-    header.push_record(r#"##FORMAT=<ID=ALT_READ_POS_VARIES,Number=A,Type=Integer,Description="1 when the reads carrying the ALT allele place it at two or more distinct distances from the read end, and 0 when every one has it at the same distance, which with several reads is a common sign of an artifact. VarDict also sets it to 1 whenever it reassigns reads to the allele, as in local realignment or MNV merging, so it is 1 whenever REALIGNED_FRAC_OF_DP is above 0; otherwise a call with one ALT read is always 0. Missing when no read carries the ALT allele.">"#.as_bytes());
+    header.push_record(r#"##FORMAT=<ID=ALT_READ_POS_VARIES,Number=A,Type=Integer,Description="1 when the reads carrying the ALT allele place it at two or more distinct distances from the read end, and 0 when every one has it at the same distance, which with several reads is a common sign of an artifact. VarDict also sets it to 1 whenever it reassigns reads to the allele, as in local realignment or MNV merging, so it is 1 whenever REALIGNED_FRAC_OF_DP is above 0, and for a sample of a tumor-normal pair whose counts it derived by subtracting the other sample from both samples' pooled reads; otherwise a call with one ALT read is always 0. Missing when no read carries the ALT allele.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=QMEAN,Number=A,Type=Float,Description="Mean, over the reads carrying the ALT allele, of VarDict's per-read variant quality: the base's Phred quality for SNVs, the mean of the inserted bases for insertions, the higher of the two flanking bases for deletions, and the mean of the block's bases for Complex calls, with that flanking base averaged in when the block starts with a deletion. VarDict grows an MNV only through mismatches at least 5 above -q, so MNV values run high. Bases below -q are included and nothing is capped. Rounded by VarDict to 1 decimal. Missing when no read carries the ALT allele.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=MEAN_MAPQ,Number=A,Type=Float,Description="Arithmetic mean mapping quality of the reads carrying the ALT allele, not the RMS over all reads that the VCF specification's MQ means; uncapped, so a MAPQ of 255 (unavailable) counts as 255. Rounded by VarDict to 1 decimal. Missing when no read carries the ALT allele.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=MEAN_MISMATCHES,Number=A,Type=Float,Description="Mean, over the reads carrying the ALT allele, of each read's substitution mismatches: its NM tag minus every inserted or deleted base, and for Complex calls minus some of the mismatches VarDict folded into the allele after its first change. Includes the variant's own mismatch for SNVs and excludes soft clips; a read without an NM tag counts as 0, and reads with more than VarDict's -m mismatches (default 8) are not counted. Rounded by VarDict to 1 decimal. Missing when no read carries the ALT allele.">"#.as_bytes());
@@ -1324,27 +1316,6 @@ mod tests {
         let records = tumor_normal_records();
         let row: TumorNormalVariant = records[index].deserialize(None).unwrap();
         assert_eq!(row.tumor_normal_fisher_p_value(), expected as f32);
-    }
-
-    #[test]
-    fn test_tumor_normal_variant_sv_length_comes_from_a_sample_with_alt_reads() {
-        let row = TumorNormalVariant {
-            ref_allele: "G",
-            alt_allele: "<DEL>",
-            variant_type: "DEL",
-            tumor_columns: SampleColumns {
-                gt: "0",
-                ..Default::default()
-            },
-            normal_columns: SampleColumns {
-                gt: "G/-300",
-                depth: 30,
-                alt_depth: 4,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        assert_eq!(row.sv_length(), Some(-300));
     }
 
     #[test]

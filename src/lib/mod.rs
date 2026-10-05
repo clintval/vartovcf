@@ -55,6 +55,14 @@ impl Layout {
             Layout::TumorNormal => 52,
         }
     }
+
+    /// The fewest columns a row of this layout has.
+    fn min_columns(&self) -> usize {
+        match self {
+            Layout::TumorOnly => 38,
+            Layout::TumorNormal => 61,
+        }
+    }
 }
 
 /// The 0-based segment columns of the tumor-only and tumor-normal layouts without `--fisher`.
@@ -97,7 +105,9 @@ where
     let mut carry = StringRecord::new();
     let mut peeked = reader.read_record(&mut carry)?;
     let layout = if peeked {
-        Some(detect_layout(&carry)?)
+        let layout = detect_layout(&carry)?;
+        check_width(&carry, layout)?;
+        Some(layout)
     } else {
         None
     };
@@ -221,14 +231,16 @@ fn write_record(
 
     if VALID_SV_TYPES.contains(&var.variant_type) {
         variant.push_info_integer(b"END", &[var.end as i32])?;
-        let sv_length = tumor_normal
-            .map_or_else(|| var.sv_length(), TumorNormalVariant::sv_length)
-            .ok_or_else(|| {
-                format!(
-                    "{}:{}: cannot read the {} length from the genotype column '{}'",
-                    var.contig, var.start, var.variant_type, var.gt
-                )
-            })?;
+        let sv_call = calls
+            .iter()
+            .find(|call| call.has_alt_reads())
+            .unwrap_or(var);
+        let sv_length = sv_call.sv_length().ok_or_else(|| {
+            format!(
+                "{}:{}: cannot read the {} length from the genotype column '{}'",
+                var.contig, var.start, var.variant_type, sv_call.gt
+            )
+        })?;
         variant.push_info_integer(b"SVLEN", &[sv_length])?;
         variant.push_info_string(b"SVTYPE", &[var.variant_type.as_bytes()])?;
     }
@@ -312,11 +324,24 @@ fn read_row<R: Read>(
     if !reader.read_record(record)? {
         return Ok(false);
     }
-    if is_segment(record, layout.segment_column()) {
-        Ok(true)
-    } else {
-        Err(layout_error(record).into())
+    if !is_segment(record, layout.segment_column()) {
+        return Err(layout_error(record).into());
     }
+    check_width(record, layout)?;
+    Ok(true)
+}
+
+/// Refuses a row with fewer columns than its layout has.
+fn check_width(record: &StringRecord, layout: Layout) -> Result<(), String> {
+    if record.len() >= layout.min_columns() {
+        return Ok(());
+    }
+    let line = record.position().map_or(0, |position| position.line());
+    Err(format!(
+        "Expected at least {} columns on line {line}, found {}!",
+        layout.min_columns(),
+        record.len()
+    ))
 }
 
 /// Detects the layout of a row from the column holding its segment.
@@ -483,6 +508,58 @@ mod tests {
         )?;
         assert_eq!(exit, 0);
         Ok(())
+    }
+
+    #[rstest]
+    #[case(
+        "tests/calls.var",
+        36,
+        "Expected at least 38 columns on line 1, found 36!"
+    )]
+    #[case(
+        "tests/calls.tumor-normal.var",
+        57,
+        "Expected at least 61 columns on line 1, found 57!"
+    )]
+    fn test_refuses_a_truncated_row(
+        #[case] path: &str,
+        #[case] columns: usize,
+        #[case] message: &str,
+    ) {
+        let rows = std::fs::read_to_string(path).unwrap();
+        let fields: Vec<&str> = rows.lines().next().unwrap().split('\t').collect();
+        let input = format!("{}\n", fields[..columns].join("\t"));
+        let output = NamedTempFile::new().expect("Cannot create temporary file!");
+        let result = vartovcf(
+            input.as_bytes(),
+            Some(output.path().into()),
+            PathBuf::from("tests/reference.fa"),
+            None,
+            path.contains("tumor-normal").then_some("N"),
+            false,
+            &FilterThresholds::default(),
+        );
+        assert_eq!(result.unwrap_err().to_string(), message);
+    }
+
+    #[test]
+    fn test_an_unreadable_sv_length_names_the_genotype_column_it_read() {
+        let rows = std::fs::read_to_string("tests/calls.tumor-normal.edge.var").unwrap();
+        let input = rows.replace("A/-199", "A/A");
+        let output = NamedTempFile::new().expect("Cannot create temporary file!");
+        let result = vartovcf(
+            input.as_bytes(),
+            Some(output.path().into()),
+            PathBuf::from("tests/tumor-normal.fa"),
+            None,
+            None,
+            false,
+            &FilterThresholds::default(),
+        );
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "cK:160: cannot read the DEL length from the genotype column 'A/A'"
+        );
     }
 
     #[test]
