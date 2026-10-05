@@ -102,7 +102,10 @@ Each record has a tumor and a normal sample column with the tumor-only FORMAT fi
 
 FILTER describes the tumor's evidence, not whether a call is somatic, so select somatic calls with these, for example `bcftools view -f PASS -i 'INFO/VARDICT_STATUS ~ "Somatic" && INFO/TUMOR_NORMAL_FISHER_P < 0.05'`.
 
-Two VarDictJava behaviours affect which rows reach `vartovcf`. At a position where VarDict's top-ranked tumor allele fails its call rules, it writes no lower-ranked tumor allele, even one that passes and that tumor-only mode would write. And with `-p` it writes no reference-only rows for a pair.
+With `-p`, VarDictJava writes no reference-only rows for a pair.
+
+> [!WARNING]
+> **Known VarDictJava issue, still to be investigated:** in tumor-normal mode, at a position where VarDict's top-ranked tumor allele fails its call rules, VarDict writes no lower-ranked tumor allele, even one that passes them and that tumor-only mode would write. The loop that walks the alleles stops at the first failure instead of skipping it (`SomaticPostProcessModule.java` in VarDictJava 1.8.4, and `vardict.pl` before it), so these calls never reach `vartovcf`. How often this drops real calls has not been measured yet.
 
 ### Filters
 
