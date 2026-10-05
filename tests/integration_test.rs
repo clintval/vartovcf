@@ -258,7 +258,7 @@ mod tests {
         cmd
             .arg("--reference").arg("tests/reference.fa")
             .arg("--sample").arg("dna00001")
-            .arg("--input").arg("tests/calls.non-variants-skipped.var")
+            .arg("--input").arg("tests/calls.g.var")
             .arg("--output").arg(output)
             .arg("--skip-non-variants")
             .unwrap().assert().success();
