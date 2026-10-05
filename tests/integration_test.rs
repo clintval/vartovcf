@@ -153,6 +153,149 @@ mod tests {
 
     #[test]
     #[rustfmt::skip]
+    fn run_end_to_end_takes_the_sample_name_from_the_input() -> Result<(), Box<dyn std::error::Error>> {
+        let output = NamedTempFile::new().expect("Cannot create temporary file!");
+        let output = output.path().to_str().unwrap();
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        cmd
+            .arg("--reference").arg("tests/reference.fa")
+            .arg("--input").arg("tests/calls.var")
+            .arg("--output").arg(output)
+            .unwrap().assert().success();
+
+        assert!(diff(output, "tests/calls.vcf"));
+        Ok(())
+    }
+
+    #[test]
+    fn run_end_to_end_refuses_a_normal_sample_for_tumor_only_input()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        let assert = cmd
+            .args([
+                "--reference",
+                "tests/reference.fa",
+                "--input",
+                "tests/calls.var",
+            ])
+            .args(["--normal-sample", "normal"])
+            .assert()
+            .code(1);
+        let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+        assert!(
+            stderr.contains("--normal-sample was given but the input is tumor-only!"),
+            "{stderr}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn run_end_to_end_on_tumor_normal_complex_and_sv_calls() -> Result<(), Box<dyn std::error::Error>> {
+        let output = NamedTempFile::new().expect("Cannot create temporary file!");
+        let output = output.path().to_str().unwrap();
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        cmd
+            .arg("--reference").arg("tests/tumor-normal.fa")
+            .arg("--input").arg("tests/calls.tumor-normal.edge.var")
+            .arg("--output").arg(output)
+            .unwrap().assert().success();
+
+        assert!(diff(output, "tests/calls.tumor-normal.edge.vcf"));
+        Ok(())
+    }
+
+    #[test]
+    fn run_end_to_end_names_the_samples_as_given() -> Result<(), Box<dyn std::error::Error>> {
+        let rows = read_to_string("tests/calls.tumor-normal.var")?.replace("T|N\t", "T.bam|N\t");
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        let assert = cmd
+            .args(["--reference", "tests/tumor-normal.fa"])
+            .args(["--sample", "T", "--normal-sample", "N"])
+            .write_stdin(rows)
+            .assert()
+            .success();
+        let stdout = String::from_utf8(assert.get_output().stdout.clone())?;
+        let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+        assert!(stdout.contains("\tFORMAT\tT\tN\n"), "{stdout}");
+        assert!(
+            stderr.contains("The input names a sample 'T.bam'; writing it as 'T' as given."),
+            "{stderr}"
+        );
+        Ok(())
+    }
+
+    /// The tumor-normal fixture's rows as VarDict writes them when it names only the tumor.
+    fn tumor_normal_rows_naming_only_the_tumor() -> String {
+        read_to_string("tests/calls.tumor-normal.var")
+            .unwrap()
+            .replace("T|N\t", "T\t")
+    }
+
+    #[rstest]
+    #[case(
+        None,
+        Err("The input is tumor-normal but no --normal-sample was given!")
+    )]
+    #[case(Some("N"), Ok(()))]
+    fn run_end_to_end_needs_the_normal_sample_when_the_input_names_only_the_tumor(
+        #[case] normal_sample: Option<&str>,
+        #[case] expected: Result<(), &str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        cmd.args(["--reference", "tests/tumor-normal.fa"])
+            .write_stdin(tumor_normal_rows_naming_only_the_tumor());
+        if let Some(normal_sample) = normal_sample {
+            cmd.arg("--normal-sample").arg(normal_sample);
+        }
+        match expected {
+            Ok(()) => {
+                let assert = cmd.assert().success();
+                let stdout = String::from_utf8(assert.get_output().stdout.clone())?;
+                assert!(stdout.contains("\tFORMAT\tT\tN\n"), "{stdout}");
+            }
+            Err(message) => {
+                let assert = cmd.assert().code(1);
+                let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+                assert!(stderr.contains(message), "{stderr}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn run_end_to_end_on_tumor_normal_calls() -> Result<(), Box<dyn std::error::Error>> {
+        let output = NamedTempFile::new().expect("Cannot create temporary file!");
+        let output = output.path().to_str().unwrap();
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        cmd
+            .arg("--reference").arg("tests/tumor-normal.fa")
+            .arg("--input").arg("tests/calls.tumor-normal.var")
+            .arg("--output").arg(output)
+            .arg("--filter-low-mean-mapq").arg("30")
+            .arg("--filter-low-af").arg("0.05")
+            .arg("--filter-low-dp").arg("10")
+            .unwrap().assert().success();
+
+        assert!(diff(output, "tests/calls.tumor-normal.vcf"));
+        Ok(())
+    }
+
+    #[test]
+    fn run_end_to_end_refuses_the_removed_mode_option() -> Result<(), Box<dyn std::error::Error>> {
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        let assert = cmd
+            .args(["--reference", "tests/reference.fa", "--mode", "TumorOnly"])
+            .assert()
+            .code(1);
+        let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+        assert!(stderr.contains("unexpected argument '--mode'"), "{stderr}");
+        Ok(())
+    }
+
+    #[test]
+    #[rustfmt::skip]
     fn run_end_to_end_on_complex_calls() -> Result<(), Box<dyn std::error::Error>> {
         let output = NamedTempFile::new().expect("Cannot create temporary file!");
         let output = output.path().to_str().unwrap();

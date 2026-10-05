@@ -28,7 +28,7 @@ Or build from source with Rust 1.88 or newer, a C toolchain, and libclang (used 
 - This tool is kept lean on purpose: it converts formats, and applies FILTER labels only when asked
 - The output is compliant with the VCF v4.2 and v4.3 specifications
 - Output VCF records are unsorted and a call to `bcftools sort` is recommended
-- At this time, only tumor-only mode (`var2vcf_valid.pl`) is supported
+- Tumor-only (`var2vcf_valid.pl`) and tumor-normal (`var2vcf_paired.pl`) output are both supported, told apart from the first row
 - VarDictJava must be run with `--fisher`
 
 ### Example Usage
@@ -72,9 +72,44 @@ In pileup mode (`-p`) VarDict keeps every candidate and switches off its own cal
   | bcftools sort -Oz > candidates.vcf.gz
 ```
 
+### Tumor-normal
+
+Replace `var2vcf_paired.pl` the same way. VarDictJava writes the sample names into its output: both as `tumor|normal` when given `-N "tumor|normal"` with a BED file of regions, only the tumor's with `-R`, and without `-N` a name derived from the BAM paths, such as `T.bam|N` from relative paths or just `T` from absolute ones. `vartovcf` reads them from there, but names given with `--sample` and `--normal-sample`, or `--sample "tumor|normal"`, take their place with a warning when they differ; give them so empty input still gets a header for both samples. The `--filter-*` options are the same and test the tumor sample.
+
+```bash
+❯ vardict-java \
+    -b "tumor.bam|normal.bam" \
+    -G hg38.fa \
+    -N "dna00001|dna00002" \
+    -c1 -S2 -E3 -g4 -f0.05 \
+    --fisher \
+    calling-intervals.bed \
+  | vartovcf --reference hg38.fa --sample dna00001 --normal-sample dna00002 \
+      --filter-near-read-end 8 \
+      --filter-low-mean-mapq 10 \
+      --filter-homopolymer-indel 13 --filter-homopolymer-indel-max-af 0.275 \
+      --filter-tandem-repeat-indel 13 --filter-tandem-repeat-indel-max-af 0.2 \
+      --filter-high-mean-mismatches 5.25 \
+      --filter-same-read-position 0.35 \
+      --filter-strand-bias 0.01 --filter-strand-bias-min-odds-ratio 5 --filter-strand-bias-max-af 0.25 \
+  | bcftools sort -Oz > somatic.vcf.gz
+```
+
+Each record has a tumor and a normal sample column with the tumor-only FORMAT fields, except `HICNT`, which VarDict does not write per sample. A sample with no reads of the allele has `.` for its ALT-read statistics and a `0/0` genotype, or `./.` when it has no depth either. Two INFO fields describe the pair:
+
+- `VARDICT_STATUS`: VarDict's label for the allele, such as `StrongSomatic` or `Germline`, from where the allele is found, its AF and VarDict's own call rules rather than a statistical test; its header description gives each label's rule.
+- `TUMOR_NORMAL_FISHER_P`: the one-sided Fisher exact p-value that the allele makes up more of the tumor's reads than of the normal's.
+
+FILTER describes the tumor's evidence, not whether a call is somatic, so select somatic calls with these, for example `bcftools view -f PASS -i 'INFO/VARDICT_STATUS ~ "Somatic" && INFO/TUMOR_NORMAL_FISHER_P < 0.05'`.
+
+With `-p`, VarDictJava writes no reference-only rows for a pair.
+
+> [!WARNING]
+> **Known VarDictJava issue, still to be investigated:** in tumor-normal mode VarDict walks the tumor's alleles at a position from the best-supported down and stops at the first one that fails its call rules, so it never writes the alleles ranked below that one, even ones that pass and that tumor-only mode would write. Only when the top-ranked allele itself fails does VarDict write the position's other alleles, and then only those whose reads in the normal pass its call rules, labelled Germline, LikelyLOH or StrongLOH; at a position with a passing tumor allele, alleles only the normal carries are never written. This happens upstream (`SomaticPostProcessModule.java` in VarDictJava 1.8.4, and `vardict.pl` before it), so these calls never reach `vartovcf`; how often it drops real calls has not been measured yet.
+
 ### Filters
 
-No FILTER label is applied unless its option is given; with none given, the FILTER column is `.`. Once any label is applied, a call that fails none of them is `PASS`, and a record without an ALT allele stays `.`. Each label's threshold is written into its `##FILTER` description.
+No FILTER label is applied unless its option is given; with none given, the FILTER column is `.`. Once any label is applied, a call that fails none of them is `PASS`, and a record stays `.` when it has no ALT allele or its tumor (or only) sample has no reads of it. A label is not applied when the value it tests is missing, and for tumor-normal input every label tests the tumor sample. Each label's threshold is written into its `##FILTER` description.
 
 | Label | Option | Applied when |
 |---|---|---|
