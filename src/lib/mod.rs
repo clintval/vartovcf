@@ -108,6 +108,7 @@ where
     let mut reader = ReaderBuilder::new()
         .delimiter(b'\t')
         .has_headers(false)
+        .flexible(true)
         .from_reader(input);
 
     // Peek at the first row to learn the layout and sample before the writer emits the header.
@@ -327,7 +328,7 @@ fn each_allele<T>(items: &[T], value: impl Fn(&T) -> Vec<i32>) -> Values<i32, 4>
     Values::collect(0, items.iter().flat_map(value))
 }
 
-/// Up to `N` values held on the stack, so writing a record allocates nothing per field.
+/// Up to `N` values held on the stack, sparing a vector for each FORMAT field of each record.
 struct Values<V, const N: usize> {
     values: [V; N],
     len: usize,
@@ -436,9 +437,10 @@ fn resolve_samples(
     normal_sample: Option<&str>,
 ) -> Result<(String, Option<String>), String> {
     let (sample, normal_sample) = match (sample.and_then(|name| name.split_once('|')), layout) {
-        (Some((tumor, normal)), Some(Layout::TumorNormal) | None) if normal_sample.is_none() => {
-            (Some(tumor), Some(normal))
+        (Some(_), Some(Layout::TumorNormal) | None) if normal_sample.is_some() => {
+            return Err("Give the normal sample's name in --sample \"tumor|normal\" or in --normal-sample, not both!".to_string());
         }
+        (Some((tumor, normal)), Some(Layout::TumorNormal) | None) => (Some(tumor), Some(normal)),
         _ => (sample, normal_sample),
     };
     let (row_tumor, row_normal) = match (layout, row_sample.map(|row| row.split_once('|'))) {
@@ -456,8 +458,13 @@ fn resolve_samples(
         ),
         _ => normal_sample,
     };
-    if tumor.is_empty() || normal.is_some_and(str::is_empty) {
-        return Err("Sample names must not be empty!".to_string());
+    for name in [Some(tumor), normal].into_iter().flatten() {
+        if name.trim().is_empty() {
+            return Err("Sample names must not be empty or blank!".to_string());
+        }
+        if name.contains(['\t', '\n', '\r']) {
+            return Err("Sample names must not contain tabs or line breaks!".to_string());
+        }
     }
     if normal == Some(tumor) {
         return Err(format!(
@@ -581,6 +588,29 @@ mod tests {
             &FilterThresholds::default(),
         );
         assert_eq!(result.unwrap_err().to_string(), message);
+    }
+
+    #[test]
+    fn test_refuses_a_truncated_row_after_the_first() {
+        let rows = std::fs::read_to_string("tests/calls.var").unwrap();
+        let mut lines = rows.lines();
+        let first = lines.next().unwrap();
+        let second: Vec<&str> = lines.next().unwrap().split('\t').collect();
+        let input = format!("{first}\n{}\n", second[..36].join("\t"));
+        let output = NamedTempFile::new().expect("Cannot create temporary file!");
+        let result = vartovcf(
+            input.as_bytes(),
+            Some(output.path().into()),
+            PathBuf::from("tests/reference.fa"),
+            None,
+            None,
+            false,
+            &FilterThresholds::default(),
+        );
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Expected at least 38 columns on line 2, found 36!"
+        );
     }
 
     #[test]
@@ -784,20 +814,49 @@ mod tests {
     #[case(Some("T|N"), Some(Layout::TumorNormal), Some("A|B"), None, Ok(("A", Some("B"))))]
     #[case(Some("T"), Some(Layout::TumorNormal), Some("A|B"), None, Ok(("A", Some("B"))))]
     #[case(None, None, Some("A|B"), None, Ok(("A", Some("B"))))]
-    #[case(None, None, Some(""), None, Err("Sample names must not be empty!"))]
+    #[case(
+        None,
+        None,
+        Some(""),
+        None,
+        Err("Sample names must not be empty or blank!")
+    )]
+    #[case(
+        None,
+        None,
+        Some(" "),
+        None,
+        Err("Sample names must not be empty or blank!")
+    )]
+    #[case(
+        None,
+        None,
+        Some("T\tX"),
+        None,
+        Err("Sample names must not contain tabs or line breaks!")
+    )]
+    #[case(
+        Some("T|N"),
+        Some(Layout::TumorNormal),
+        Some("T|N"),
+        Some("N"),
+        Err(
+            "Give the normal sample's name in --sample \"tumor|normal\" or in --normal-sample, not both!"
+        )
+    )]
     #[case(
         Some("T"),
         Some(Layout::TumorNormal),
         None,
         Some(""),
-        Err("Sample names must not be empty!")
+        Err("Sample names must not be empty or blank!")
     )]
     #[case(
         Some("T|"),
         Some(Layout::TumorNormal),
         None,
         None,
-        Err("Sample names must not be empty!")
+        Err("Sample names must not be empty or blank!")
     )]
     #[case(
         Some("T"),
