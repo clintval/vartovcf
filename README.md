@@ -91,21 +91,31 @@ No FILTER label is applied unless its option is given; with none given, the FILT
 
 ### Benchmarks
 
-```bash
-❯ vartovcf --reference hs38DH.fa --sample dna00001 < test.var > /dev/null
-[2025-10-21T01:16:49Z INFO  vartovcf] Input stream: STDIN
-[2025-10-21T01:16:49Z INFO  vartovcf] Output stream: STDOUT
-[2025-10-21T01:16:49Z INFO  proglog] [main] Processed 60181 variant records
+Measured on an Apple M3 Max running macOS 26.6.2, with `vartovcf` 3.0.0 (pre-release build of 5008e5e), VarDictJava 1.8.4 and the `var2vcf_valid.pl` it ships, run by Perl 5.34.1. The input is 60,501 rows of VarDictJava `-p --fisher` output for part of a targeted panel. `vartovcf` streams its input, while `var2vcf_valid.pl` holds all of it in memory to sort it, so its peak memory is 10 times higher (184 MB against 18 MB).
 
-❯ hyperfine --warmup 5 'vartovcf -r hs38DH.fa -s dna00001 < test.var > /dev/null'
-Benchmark #1: vartovcf -r /references/hs38DH.fa -s dna00001 < test.var > /dev/null
-  Time (mean ± σ):     174.7 ms ±   1.5 ms    [User: 165.7 ms, System: 8.0 ms]
-  Range (min … max):   173.2 ms … 178.2 ms    16 runs
+```bash
+❯ vartovcf --reference hg19.fa --sample dna00001 < test.var > /dev/null
+[2026-10-05T01:04:45Z INFO  vartovcf] Input stream: STDIN
+[2026-10-05T01:04:45Z INFO  vartovcf] Output stream: STDOUT
+[2026-10-05T01:04:46Z INFO  proglog] [main] Processed 60498 variant records
+
+❯ hyperfine --warmup 5 'vartovcf -r hg19.fa -s dna00001 < test.var > /dev/null'
+Benchmark 1: vartovcf -r hg19.fa -s dna00001 < test.var > /dev/null
+  Time (mean ± σ):     153.6 ms ±   3.3 ms    [User: 147.6 ms, System: 4.7 ms]
+  Range (min … max):   148.5 ms … 160.8 ms    18 runs
 
 ❯ hyperfine --warmup 5 'var2vcf_valid.pl -N dna00001 -f 0.0 -E < test.var > /dev/null'
-Benchmark #1: var2vcf_valid.pl -N dna00001 -f 0.0 -E < test.var > /dev/null
-  Time (mean ± σ):     359.4 ms ±   2.5 ms    [User: 329.2 ms, System: 25.8 ms]
-  Range (min … max):   356.1 ms … 363.6 ms    10 runs
+Benchmark 1: var2vcf_valid.pl -N dna00001 -f 0.0 -E < test.var > /dev/null
+  Time (mean ± σ):     386.8 ms ±   9.3 ms    [User: 361.7 ms, System: 18.1 ms]
+  Range (min … max):   376.7 ms … 404.1 ms    10 runs
+
+❯ /usr/bin/time -l vartovcf -r hg19.fa -s dna00001 < test.var > /dev/null
+...
+            18399232  maximum resident set size
+
+❯ /usr/bin/time -l var2vcf_valid.pl -N dna00001 -f 0.0 -E < test.var > /dev/null
+...
+           184303616  maximum resident set size
 ```
 
 ### Development
