@@ -167,33 +167,63 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn run_end_to_end_refuses_a_normal_sample_for_tumor_only_input()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        let assert = cmd
+            .args([
+                "--reference",
+                "tests/reference.fa",
+                "--input",
+                "tests/calls.var",
+            ])
+            .args(["--normal-sample", "normal"])
+            .assert()
+            .code(1);
+        let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+        assert!(
+            stderr.contains("--normal-sample was given but the input is tumor-only!"),
+            "{stderr}"
+        );
+        Ok(())
+    }
+
+    /// The tumor-normal fixture's rows as VarDict writes them when it names only the tumor.
+    fn tumor_normal_rows_naming_only_the_tumor() -> String {
+        read_to_string("tests/calls.tumor-normal.var")
+            .unwrap()
+            .replace("T|N\t", "T\t")
+    }
+
     #[rstest]
     #[case(
-        "tests/calls.var",
-        Some("normal"),
-        "--normal-sample was given but the input is tumor-only!"
-    )]
-    #[case(
-        "tests/calls.paired.var",
         None,
-        "The input is tumor-normal but no --normal-sample was given!"
+        Err("The input is tumor-normal but no --normal-sample was given!")
     )]
-    fn run_end_to_end_refuses_a_mismatched_normal_sample(
-        #[case] input: &str,
+    #[case(Some("N"), Ok(()))]
+    fn run_end_to_end_needs_the_normal_sample_when_the_input_names_only_the_tumor(
         #[case] normal_sample: Option<&str>,
-        #[case] message: &str,
+        #[case] expected: Result<(), &str>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
-        cmd.arg("--reference")
-            .arg("tests/reference.fa")
-            .arg("--input")
-            .arg(input);
+        cmd.args(["--reference", "tests/tumor-normal.fa"])
+            .write_stdin(tumor_normal_rows_naming_only_the_tumor());
         if let Some(normal_sample) = normal_sample {
             cmd.arg("--normal-sample").arg(normal_sample);
         }
-        let assert = cmd.assert().code(1);
-        let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
-        assert!(stderr.contains(message), "{stderr}");
+        match expected {
+            Ok(()) => {
+                let assert = cmd.assert().success();
+                let stdout = String::from_utf8(assert.get_output().stdout.clone())?;
+                assert!(stdout.contains("\tFORMAT\tT\tN\n"), "{stdout}");
+            }
+            Err(message) => {
+                let assert = cmd.assert().code(1);
+                let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+                assert!(stderr.contains(message), "{stderr}");
+            }
+        }
         Ok(())
     }
 

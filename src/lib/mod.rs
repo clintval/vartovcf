@@ -556,8 +556,8 @@ mod tests {
     }
 
     fn paired_row_without_fisher() -> String {
-        let row = std::fs::read_to_string("tests/calls.paired.var").unwrap();
-        let mut fields: Vec<&str> = row.trim_end().split('\t').collect();
+        let rows = std::fs::read_to_string("tests/calls.tumor-normal.var").unwrap();
+        let mut fields: Vec<&str> = rows.lines().next().unwrap().split('\t').collect();
         fields.truncate(59);
         fields.remove(46);
         fields.remove(45);
@@ -579,7 +579,7 @@ mod tests {
     #[test]
     fn test_detect_layout() {
         let tumor_only = std::fs::read_to_string("tests/calls.var").unwrap();
-        let paired = std::fs::read_to_string("tests/calls.paired.var").unwrap();
+        let paired = std::fs::read_to_string("tests/calls.tumor-normal.var").unwrap();
         assert_eq!(
             detect_layout(&first_record(&tumor_only)),
             Ok(Layout::TumorOnly)
