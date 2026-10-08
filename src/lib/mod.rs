@@ -26,6 +26,7 @@ use crate::record::{tumor_normal_header, tumor_only_header};
 pub mod fai;
 pub mod filter;
 pub mod fisher;
+pub mod hicnt;
 pub mod io;
 pub mod record;
 
