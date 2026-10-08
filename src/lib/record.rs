@@ -13,6 +13,7 @@ use rust_htslib::bcf::Header;
 
 use crate::filter::FilterThresholds;
 use crate::fisher::fisher_exact_greater;
+use crate::hicnt::{hicnt_from_sn, parse_thousandths};
 use rust_htslib::bcf::record::{GenotypeAllele, Numeric};
 use serde::{Deserialize, Serialize, de::Error};
 
@@ -80,6 +81,19 @@ where
         "0" => Ok(None),
         _ => Ok(Some(f32::from_str(string).map_err(D::Error::custom)?)),
     }
+}
+
+/// Deserialize VarDict's SN, which it prints with at most 3 decimals, exactly as thousandths.
+fn thousandths<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let string: &str = Deserialize::deserialize(deserializer)?;
+    parse_thousandths(string).ok_or_else(|| {
+        D::Error::custom(format!(
+            "expected a number with at most 3 decimals, found '{string}'"
+        ))
+    })
 }
 
 /// An exception for when we cannot parse a string into a `SvInfo`.
@@ -510,8 +524,10 @@ pub struct SampleColumns<'a> {
     pub stdev_base_stdev: f32,
     /// The mean mapping quality of the supporting reads.
     pub mean_mapping_quality: f32,
-    /// The ratio of high- to low-quality ALT reads split at VarDict's -q.
-    pub signal_to_noise: f32,
+    /// VarDict's SN, the ratio of high- to low-quality ALT reads split at its -q, with 0.5 standing in
+    /// for no low-quality reads, held exactly in thousandths as VarDict prints it to 3 decimals.
+    #[serde(deserialize_with = "thousandths")]
+    pub signal_to_noise_thousandths: u64,
     /// Allele frequency calculated using only high quality bases.
     pub af_high_quality_bases: f32,
     /// The fraction of VarDict's depth made of reads it reassigned to this allele.
@@ -587,6 +603,7 @@ impl<'a> TumorNormalVariant<'a> {
     pub fn tumor_call(&self) -> TumorOnlyVariant<'a> {
         self.sample_call(
             &self.tumor_columns,
+            &self.normal_columns,
             self.tumor_duplication_rate,
             &self.tumor_sv_info,
         )
@@ -596,16 +613,19 @@ impl<'a> TumorNormalVariant<'a> {
     pub fn normal_call(&self) -> TumorOnlyVariant<'a> {
         self.sample_call(
             &self.normal_columns,
+            &self.tumor_columns,
             self.normal_duplication_rate,
             &self.normal_sv_info,
         )
     }
 
-    /// Return one sample's columns with this record's shared columns as a one-sample call; the
-    /// columns VarDict prints only in tumor-only mode keep their defaults.
+    /// Return one sample's columns with this record's shared columns as a one-sample call, with the
+    /// high-quality ALT reads recovered from its SN; the other columns VarDict prints only in
+    /// tumor-only mode keep their defaults.
     fn sample_call(
         &self,
         columns: &SampleColumns<'a>,
+        other: &SampleColumns<'a>,
         duplication_rate: Option<f32>,
         sv_info: &Option<SvInfo>,
     ) -> TumorOnlyVariant<'a> {
@@ -633,8 +653,9 @@ impl<'a> TumorNormalVariant<'a> {
             strand_bias_p_value: columns.strand_bias_p_value,
             strand_bias_odds_ratio: columns.strand_bias_odds_ratio,
             mean_mapping_quality: columns.mean_mapping_quality,
-            signal_to_noise: columns.signal_to_noise,
+            signal_to_noise: columns.signal_to_noise_thousandths as f32 / 1000.0,
             af_high_quality_bases: columns.af_high_quality_bases,
+            high_quality_variant_reads: self.high_quality_variant_reads(columns, other),
             af_adjusted: columns.af_adjusted,
             num_bases_3_prime_shift_for_deletions: self.num_bases_3_prime_shift_for_deletions,
             microsatellite: self.microsatellite,
@@ -648,6 +669,30 @@ impl<'a> TumorNormalVariant<'a> {
             sv_info: sv_info.clone(),
             ..Default::default()
         }
+    }
+
+    /// Return a sample's ALT reads at or above VarDict's -q, which VarDict does not print for a
+    /// tumor-normal pair, recovered from its ALT depth and SN: 0 without ALT reads, whatever SN
+    /// says, and missing when no single count reproduces SN or when SN may be the other sample's.
+    /// VarDict copies SN to the sample it fills in by subtraction when it re-calls a long indel on
+    /// both samples' pooled reads and labels it Germline, setting that sample's PSTD and QSTD to 1.
+    fn high_quality_variant_reads(&self, columns: &SampleColumns, other: &SampleColumns) -> i32 {
+        let Ok(alt_depth) = u32::try_from(columns.alt_depth) else {
+            return i32::missing();
+        };
+        if alt_depth == 0 {
+            return 0;
+        }
+        let copied = self.status == "Germline"
+            && columns.stdev_position_in_read == 1.0
+            && columns.stdev_base_stdev == 1.0
+            && columns.signal_to_noise_thousandths == other.signal_to_noise_thousandths;
+        if copied {
+            return i32::missing();
+        }
+        hicnt_from_sn(alt_depth, columns.signal_to_noise_thousandths)
+            .and_then(|hicnt| i32::try_from(hicnt).ok())
+            .unwrap_or(i32::missing())
     }
 
     /// Return the "TUMOR_NORMAL_FISHER_P" INFO field for this record: the one-sided Fisher exact
@@ -720,9 +765,13 @@ fn vcf_header(samples: &[&str], filters: &FilterThresholds) -> Header {
     header.push_record(r#"##FORMAT=<ID=STRAND_BIAS_FISHER_P,Number=A,Type=Float,Description="Two-sided Fisher exact p-value that the ALT allele's forward/reverse read split differs from REF's, from VarDict's table of REF and ALT reads by SAM strand, not a test against 50:50; its REF counts are VarDict's, including the overcount on Complex calls. Rounded by VarDict to 5 decimals, so values below 0.000005 read 0. Missing when no read carries the ALT allele.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read depth as VarDict counts it at the variant's first internal base (POS+1 for deletions), the denominator of FORMAT AF and usually of VarDict's own AF: reads with any base quality, reads whose deletion spans the base, reference-matching soft-clipped bases, reads VarDict reassigned by realignment, and N calls only under -K; overlapping mates count twice unless VarDict ran with -u or -UN, and an insertion at the same position can make it the following base's depth. REF and ALT depths need not sum to DP.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=AF,Number=A,Type=Float,Description="Fraction of reads carrying the ALT allele, AD[1] / DP, computed by vartovcf at full precision and clamped to [0, 1] because VarDict's ALT count can exceed DP; AD and DP keep the raw counts. VarDict's own AF column is rounded to 4 decimals and its denominator can differ from DP, for example at a position shared with an insertion. Missing when there is no ALT allele or DP is 0.">"#.as_bytes());
-    if !tumor_normal {
-        header.push_record(r#"##FORMAT=<ID=HICNT,Number=A,Type=Integer,Description="ALT reads whose per-read variant quality, the one QMEAN averages (the base's quality for SNVs, the better flanking base's for deletions and so on), is at least VarDict's -q; mapping quality is not considered. Missing when there is no ALT allele.">"#.as_bytes());
-    }
+    let hicnt = "ALT reads whose per-read variant quality, the one QMEAN averages (the base's quality for SNVs, the better flanking base's for deletions and so on), is at least VarDict's -q; mapping quality is not considered. Missing when there is no ALT allele.";
+    let hicnt_tumor_normal = if tumor_normal {
+        " VarDict does not print this count for a tumor-normal pair, so vartovcf recovers it from AD[1] and VarDict's SN (these reads over the ALT reads below -q, to 3 decimals): 0 when AD[1] is 0, missing unless exactly one count reproduces SN (several can once a thousand or more ALT reads fall below -q), and missing when SN may be the other sample's, as VarDict copies SN to a sample whose counts it fills in by subtraction when it re-calls a long indel on both samples' pooled reads and labels it Germline."
+    } else {
+        ""
+    };
+    header.push_record(format!(r#"##FORMAT=<ID=HICNT,Number=A,Type=Integer,Description="{hicnt}{hicnt_tumor_normal}">"#).as_bytes());
     header.push_record(r#"##FORMAT=<ID=REALIGNED_FRAC_OF_DP,Number=A,Type=Float,Description="Fraction of VarDict's depth made of reads it reassigned to this ALT allele by local realignment or MNV merging (VarDict's ExtraAF, which var2vcf_valid.pl calls ADJAF). Those reads are already counted in AD[1] and AF, so this is not an adjusted AF; divided by AF it gives roughly the share of the ALT reads that realignment contributed. Rounded by VarDict to 4 decimals. Missing when no read carries the ALT allele.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=MEAN_DIST_TO_READ_END,Number=A,Type=Float,Description="Mean, over the reads carrying the ALT allele, of the 1-based distance from the variant to the nearer end of the read's aligned part, soft clips excluded. It is measured from the variant base for SNVs, the first inserted base for insertions and the first base after the gap for deletions; a Complex call is measured like the insertion or deletion it starts with, or from the last base of the block when it starts with a mismatch. Reads VarDict realigned out of soft clips contribute their clip length. Rounded by VarDict to 1 decimal. Missing when no read carries the ALT allele.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=ALT_READ_POS_VARIES,Number=A,Type=Integer,Description="1 when the reads carrying the ALT allele place it at two or more distinct distances from the read end, and 0 when every one has it at the same distance, which with several reads is a common sign of an artifact. VarDict also sets it to 1 whenever it reassigns reads to the allele, as in local realignment or MNV merging, so it is 1 whenever REALIGNED_FRAC_OF_DP is above 0, and for a sample of a tumor-normal pair whose counts it derived by subtracting the other sample from both samples' pooled reads; otherwise a call with one ALT read is always 0. Missing when no read carries the ALT allele.">"#.as_bytes());
@@ -1306,6 +1355,60 @@ mod tests {
         }
     }
 
+    fn hicnt_records() -> Vec<csv::StringRecord> {
+        csv::ReaderBuilder::new()
+            .delimiter(b'\t')
+            .has_headers(false)
+            .from_path("tests/calls.tumor-normal.hicnt.var")
+            .expect("Cannot open the HICNT fixture!")
+            .records()
+            .collect::<Result<_, _>>()
+            .expect("Cannot read the HICNT fixture!")
+    }
+
+    #[rstest]
+    #[case::two_counts_give_the_same_sn(0, None, Some(0))]
+    #[case::alt_depth_one_above_hicnt_plus_locnt(1, Some(4), Some(0))]
+    #[case::sn_copied_to_a_sample_filled_in_by_subtraction(2, None, None)]
+    #[case::normal_sn_from_the_reference_reads(3, Some(9), Some(0))]
+    fn test_tumor_normal_variant_recovers_hicnt(
+        #[case] index: usize,
+        #[case] tumor: Option<i32>,
+        #[case] normal: Option<i32>,
+    ) {
+        let records = hicnt_records();
+        let row: TumorNormalVariant = records[index].deserialize(None).unwrap();
+        let hicnt = |call: TumorOnlyVariant| Some(call.hicnt_value()).filter(|h| !h.is_missing());
+        assert_eq!(hicnt(row.tumor_call()), tumor);
+        assert_eq!(hicnt(row.normal_call()), normal);
+    }
+
+    #[test]
+    fn test_tumor_normal_variant_reads_sn_exactly() {
+        let records = tumor_normal_records();
+        let row: TumorNormalVariant = records[3].deserialize(None).unwrap();
+        assert_eq!(row.tumor_columns.signal_to_noise_thousandths, 20_000);
+        assert_eq!(row.normal_columns.signal_to_noise_thousandths, 2_000);
+        let records = hicnt_records();
+        let row: TumorNormalVariant = records[1].deserialize(None).unwrap();
+        assert_eq!(row.tumor_columns.signal_to_noise_thousandths, 1_333);
+    }
+
+    #[test]
+    fn test_tumor_normal_variant_refuses_sn_with_more_than_3_decimals() {
+        let records = tumor_normal_records();
+        let mut fields: Vec<&str> = records[0].iter().collect();
+        fields[21] = "0.3333";
+        let record = csv::StringRecord::from(fields);
+        let error = record.deserialize::<TumorNormalVariant>(None).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("expected a number with at most 3 decimals, found '0.3333'"),
+            "{error}"
+        );
+    }
+
     #[rstest]
     #[case(0, 0.0003985065657050687)]
     #[case(8, 1.0)]
@@ -1331,7 +1434,10 @@ mod tests {
             (TagType::String, TagLength::AltAlleles)
         );
         assert!(reader.header().info_type(b"TUMOR_NORMAL_FISHER_P").is_ok());
-        assert!(reader.header().format_type(b"HICNT").is_err());
+        assert_eq!(
+            reader.header().format_type(b"HICNT").unwrap(),
+            (TagType::Integer, TagLength::AltAlleles)
+        );
         assert!(reader.header().format_type(b"QMEAN").is_ok());
     }
 }

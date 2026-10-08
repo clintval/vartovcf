@@ -95,7 +95,7 @@ Replace `var2vcf_paired.pl` the same way. VarDictJava writes the sample names in
   | bcftools sort -Oz > somatic.vcf.gz
 ```
 
-Each record has a tumor and a normal sample column with the tumor-only FORMAT fields, except `HICNT`, which VarDict does not write per sample. A sample with no reads of the allele has `.` for its ALT-read statistics and a `0/0` genotype, or `./.` when it has no depth either. Two INFO fields describe the pair:
+Each record has a tumor and a normal sample column with the tumor-only FORMAT fields. VarDict does not write `HICNT` for a pair, so `vartovcf` recovers each sample's count exactly from its `AD` and the ratio of high- to low-quality ALT reads that VarDict does write, and leaves it `.` in the rare cases that ratio cannot settle, which the header describes. Because `AD` counts ALT reads at any base quality, `HICNT` is the ALT count to compare with a depth filtered by base quality. A sample with no reads of the allele has `.` for its ALT-read statistics and a `0/0` genotype, or `./.` when it has no depth either. Two INFO fields describe the pair:
 
 - `VARDICT_STATUS`: VarDict's label for the allele, such as `StrongSomatic` or `Germline`, from where the allele is found, its AF and VarDict's own call rules rather than a statistical test; its header description gives each label's rule.
 - `TUMOR_NORMAL_FISHER_P`: the one-sided Fisher exact p-value that the allele makes up more of the tumor's reads than of the normal's.
