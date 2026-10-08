@@ -281,9 +281,7 @@ fn write_record(
     )?;
     variant.push_format_integer(b"DP", &each(calls, |call| call.depth))?;
     variant.push_format_float(b"AF", &each(calls, TumorOnlyVariant::af_value))?;
-    if tumor_normal.is_none() {
-        variant.push_format_integer(b"HICNT", &each(calls, TumorOnlyVariant::hicnt_value))?;
-    }
+    variant.push_format_integer(b"HICNT", &each(calls, TumorOnlyVariant::hicnt_value))?;
     variant.push_format_float(
         b"REALIGNED_FRAC_OF_DP",
         &each(calls, TumorOnlyVariant::realigned_frac_of_dp_value),
