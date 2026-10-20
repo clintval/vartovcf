@@ -9,6 +9,9 @@ mod tests {
     use rstest::rstest;
     use tempfile::{NamedTempFile, TempDir};
 
+    #[cfg(unix)]
+    use std::os::unix::fs::FileTypeExt;
+
     #[test]
     #[rustfmt::skip]
     fn run_end_to_end_success() -> Result<(), Box<dyn std::error::Error>> {
@@ -980,6 +983,81 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         };
         assert_eq!(status.code(), Some(1));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[rstest]
+    #[case("out.vcf")]
+    #[case("out.vcf.gz")]
+    fn run_end_to_end_writes_to_a_fifo_and_leaves_it_in_place(
+        #[case] name: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::Read;
+
+        let dir = TempDir::new()?;
+        let fifo = dir.path().join(name);
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&fifo)
+                .status()?
+                .success()
+        );
+        let reader = {
+            let fifo = fifo.clone();
+            std::thread::spawn(move || std::fs::read(fifo))
+        };
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        cmd.args([
+            "--reference",
+            "tests/reference.fa",
+            "--input",
+            "tests/calls.var",
+        ])
+        .arg("--output")
+        .arg(&fifo)
+        .arg("--tmp-dir")
+        .arg(dir.path())
+        .assert()
+        .success();
+        let bytes = reader.join().unwrap()?;
+        let text = if name.ends_with(".gz") {
+            let copy = dir.path().join("copy.vcf.gz");
+            std::fs::write(&copy, &bytes)?;
+            let mut text = String::new();
+            rust_htslib::bgzf::Reader::from_path(&copy)?.read_to_string(&mut text)?;
+            text
+        } else {
+            String::from_utf8(bytes)?
+        };
+        assert_eq!(text, read_to_string("tests/calls.vcf")?);
+        assert!(std::fs::symlink_metadata(&fifo)?.file_type().is_fifo());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[rstest]
+    #[case("/dev/null", false)]
+    #[case("/dev/stdout", true)]
+    fn run_end_to_end_writes_to_a_device(
+        #[case] output: &str,
+        #[case] captured: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        let assert = cmd
+            .args([
+                "--reference",
+                "tests/reference.fa",
+                "--input",
+                "tests/calls.var",
+            ])
+            .args(["--output", output])
+            .assert()
+            .success();
+        if captured {
+            assert.stdout(read_to_string("tests/calls.vcf")?);
+        }
+        assert!(std::path::Path::new(output).exists());
         Ok(())
     }
 }

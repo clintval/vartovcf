@@ -172,7 +172,7 @@ Each call is written once. Rows of one VarDict region that normalize to one call
 
 ### Sorting
 
-Records are sorted by contig, in the reference's order, then by POS, REF and ALT, as `bcftools sort` does, so `bcftools sort` is not needed, and they are written only once the input ends. Up to 64 MiB of records are held in memory, plus one VarDict region's rows with `--fix-leaky-mnv`, and the rest spill to `--tmp-dir`, `$TMPDIR` by default, which is cleaned up when `vartovcf` exits or fails. A SIGINT or SIGTERM stops it at its next input row and removes the output file, though output already sent to standard output stays incomplete; a second signal exits at once and leaves the temporary files.
+Records are sorted by contig, in the reference's order, then by POS, REF and ALT, as `bcftools sort` does, so `bcftools sort` is not needed, and they are written only once the input ends. Up to 64 MiB of records are held in memory, plus one VarDict region's rows with `--fix-leaky-mnv`, and the rest spill to `--tmp-dir`, `$TMPDIR` by default, which is cleaned up when `vartovcf` exits or fails. A SIGINT or SIGTERM stops it at its next input row or the next record written and removes the output file, though output already sent to standard output may end in a partial record; a second signal exits at once and leaves its temporary files and an incomplete output file.
 
 ### Benchmarks
 

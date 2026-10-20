@@ -13,7 +13,8 @@ const BGZF_EOF: [u8; 28] = [
     0x1b, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
 
-/// Where the VCF text goes. A file is created at once and removed again unless the run finishes.
+/// Where the VCF text goes. A file is created at once and, if it is a regular file, removed again
+/// unless the run finishes; a device, pipe or FIFO given as the output is only ever closed.
 pub enum Output {
     /// Standard output, for no path or `-`, which notes when its reader has gone.
     Stdout {
@@ -22,10 +23,10 @@ pub enum Output {
         /// Whether a write found the pipe closed.
         closed: bool,
     },
-    /// A plain text file.
-    Plain(PathBuf, BufWriter<File>),
-    /// A bgzipped file.
-    Bgzf(PathBuf, bgzf::Writer),
+    /// A plain text file, and whether it is a regular file.
+    Plain(PathBuf, BufWriter<File>, bool),
+    /// A bgzipped file, and whether it is a regular file.
+    Bgzf(PathBuf, bgzf::Writer, bool),
 }
 
 impl Output {
@@ -36,13 +37,19 @@ impl Output {
         };
         match path {
             Some(path) if path.as_os_str() != "-" && has_gzip_ext(&path) => {
-                bgzf::Writer::from_path(path)
-                    .map(|writer| Output::Bgzf(path.to_path_buf(), writer))
-                    .map_err(|error| describe(&error))
+                let writer = bgzf::Writer::from_path(path).map_err(|error| describe(&error))?;
+                let regular = std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file());
+                Ok(Output::Bgzf(path.to_path_buf(), writer, regular))
             }
-            Some(path) if path.as_os_str() != "-" => File::create(path)
-                .map(|file| Output::Plain(path.to_path_buf(), BufWriter::new(file)))
-                .map_err(|error| describe(&error)),
+            Some(path) if path.as_os_str() != "-" => {
+                let file = File::create(path).map_err(|error| describe(&error))?;
+                let regular = file.metadata().is_ok_and(|metadata| metadata.is_file());
+                Ok(Output::Plain(
+                    path.to_path_buf(),
+                    BufWriter::new(file),
+                    regular,
+                ))
+            }
             _ => Ok(Output::Stdout {
                 writer: BufWriter::new(std::io::stdout()),
                 closed: false,
@@ -55,9 +62,9 @@ impl Output {
         matches!(self, Output::Stdout { closed: true, .. })
     }
 
-    /// Flushes everything written and closes the output, checking each step, and removes a file
-    /// that could not be completed. A bgzipped file is closed by htslib, which does not report a
-    /// failure, so it is read back to check that it ends with the BGZF end-of-file block.
+    /// Flushes everything written and closes the output, checking each step, and removes a regular
+    /// file that could not be completed. A bgzipped regular file is closed by htslib, which does not
+    /// report a failure, so it is read back to check that it ends with the BGZF end-of-file block.
     pub fn finish(self) -> Result<(), String> {
         let describe =
             |error: &dyn std::fmt::Display| format!("Could not write the output: {error}!");
@@ -68,48 +75,60 @@ impl Output {
                     _ => Ok(()),
                 };
             }
-            Output::Plain(path, writer) => {
+            Output::Plain(path, writer, regular) => {
                 let result = writer
                     .into_inner()
                     .map_err(|error| error.into_error())
-                    .and_then(|file| file.sync_all());
-                (path, result)
+                    .and_then(|file| if regular { file.sync_all() } else { Ok(()) });
+                (regular.then_some(path), result)
             }
-            Output::Bgzf(path, mut writer) => {
+            Output::Bgzf(path, mut writer, regular) => {
                 let flushed = writer.flush();
                 drop(writer);
-                (path.clone(), flushed.and_then(|()| check_bgzf_end(&path)))
+                let result = flushed.and_then(|()| {
+                    if regular {
+                        check_bgzf_end(&path)
+                    } else {
+                        Ok(())
+                    }
+                });
+                (regular.then_some(path), result)
             }
         };
         result.map_err(|error| {
-            let _ = std::fs::remove_file(&path);
+            if let Some(path) = path {
+                let _ = std::fs::remove_file(path);
+            }
             describe(&error)
         })
     }
 
-    /// Closes the output without writing what it still buffers, and removes the file, if it is one.
+    /// Closes the output without writing what it still buffers, and removes it if it is a regular
+    /// file.
     pub fn discard(self) {
         let path = match self {
             Output::Stdout { writer, .. } => {
                 let _ = writer.into_parts();
                 return;
             }
-            Output::Plain(path, writer) => {
+            Output::Plain(path, writer, regular) => {
                 let _ = writer.into_parts();
-                path
+                regular.then_some(path)
             }
-            Output::Bgzf(path, writer) => {
+            Output::Bgzf(path, writer, regular) => {
                 drop(writer);
-                path
+                regular.then_some(path)
             }
         };
-        let _ = std::fs::remove_file(path);
+        if let Some(path) = path {
+            let _ = std::fs::remove_file(path);
+        }
     }
 }
 
 /// Checks that a closed bgzipped file ends with the BGZF end-of-file block and syncs it to disk.
 fn check_bgzf_end(path: &Path) -> std::io::Result<()> {
-    let mut file = File::options().read(true).append(true).open(path)?;
+    let mut file = File::open(path)?;
     let mut end = [0u8; BGZF_EOF.len()];
     let complete = file.seek(SeekFrom::End(-(BGZF_EOF.len() as i64))).is_ok()
         && file.read_exact(&mut end).is_ok()
@@ -128,8 +147,8 @@ impl Write for Output {
             Output::Stdout { writer, closed } => writer.write(buf).inspect_err(|error| {
                 *closed |= error.kind() == ErrorKind::BrokenPipe;
             }),
-            Output::Plain(_, writer) => writer.write(buf),
-            Output::Bgzf(_, writer) => writer.write(buf),
+            Output::Plain(_, writer, _) => writer.write(buf),
+            Output::Bgzf(_, writer, _) => writer.write(buf),
         }
     }
 
@@ -138,8 +157,8 @@ impl Write for Output {
             Output::Stdout { writer, closed } => writer.flush().inspect_err(|error| {
                 *closed |= error.kind() == ErrorKind::BrokenPipe;
             }),
-            Output::Plain(_, writer) => writer.flush(),
-            Output::Bgzf(_, writer) => writer.flush(),
+            Output::Plain(_, writer, _) => writer.flush(),
+            Output::Bgzf(_, writer, _) => writer.flush(),
         }
     }
 }
