@@ -141,7 +141,7 @@ VarDict folds some of these partials back itself and writes the rest as calls of
 
 - A row is a partial of an MNV when it lies within the MNV's span and carries the MNV's ALT bases over its own span.
 - An MNV claims a partial when it has at least `2 * child - 1` ALT reads in every sample, so an SNV on another haplotype, with about as many reads, stays a record of its own.
-- Rows are visited from the most supported down. A partial two MNVs can claim goes to the one it leaves with the fewest breaks, then to the one with more reads.
+- Rows are visited from the most supported down. When two MNVs can claim the same partial, it goes to the one where fewer of the partial's ends fall inside the MNV, since each such end needs a read end or a no-call to explain it; a tie goes to the MNV with more reads.
 
 In the example, `TGG>AAA` is written with `AD` 4 and `DP` 4. A folded record gains INFO `MNV_PARTIALS` (rows folded in) and FORMAT `MNV_PARTIAL_READS` (ALT reads added), and its other fields are combined as VarDict merges an allele's reads:
 
