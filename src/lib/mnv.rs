@@ -4,7 +4,8 @@
 //! that ends inside the MNV, has a no-call (N) there or a base below VarDict's `-q` plus 5 adds to a
 //! shorter allele instead: an SNV or a shorter MNV carrying the MNV's ALT bases over its own span.
 //! VarDict folds some of these back itself, the partials ending at the MNV's last base and the ones
-//! at its first base whose reads all end there, and writes the rest as rows of their own.
+//! at its first base whose reads end, on average, within the partial, and writes the rest as rows
+//! of their own.
 //!
 //! Partial rows are grouped with their MNV by the directional adjacency rule of UMI-tools (Smith,
 //! Heger and Sudbery 2017): a parent with `n` ALT reads can claim a sub-event with at most
@@ -88,6 +89,8 @@ pub fn fold_partials<'a>(rows: &[&[TumorOnlyVariant<'a>]]) -> Vec<Fold<'a>> {
             .find(|(_, rank)| roots[*rank].admits(rows, node))
         {
             roots[rank].take(rows, node);
+        } else if rows[node][0].ref_allele.len() > 1 {
+            roots.push(Root::new(node, rows[node]));
         }
     }
     for root in roots.iter_mut().filter(|root| !root.children.is_empty()) {
@@ -514,6 +517,16 @@ mod tests {
         assert_eq!(targets(&folds), vec![None, Some(0), None]);
         let merged = merged(&folds, 0);
         assert!(merged.calls[0].alt_depth <= merged.calls[0].depth);
+    }
+
+    #[test]
+    fn test_an_mnv_no_root_has_room_for_takes_its_own_partials() {
+        let folds = fold(&[
+            call(10, "GGG", "CAT", 100, 104),
+            call(10, "GG", "CA", 8, 104),
+            call(11, "G", "A", 3, 104),
+        ]);
+        assert_eq!(targets(&folds), vec![None, None, Some(1)]);
     }
 
     #[test]
