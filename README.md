@@ -127,7 +127,7 @@ No FILTER label is applied unless its option is given; with none given, the FILT
 
 ### Leaky MNVs
 
-VarDict grows a multi-nucleotide variant (MNV) through a read one well-called mismatch at a time, joining mismatches up to `-X` (default 2) matching bases apart. A read that ends inside the MNV, or has a no-call (N) or a base below VarDict's `-q` plus 5 there, counts toward a shorter allele instead: an SNV or a shorter MNV that carries the MNV's ALT bases over its own span. In this example, the fourth read's N leaves a shorter MNV:
+VarDict builds a multi-nucleotide variant (MNV) from a read's mismatches up to `-X` (default 2) matching bases apart. A read that ends inside the MNV, or has a no-call (N) or a low-quality base there, counts toward a shorter allele instead: an SNV or a shorter MNV carrying the MNV's ALT bases. Here the fourth read's N leaves `TG>AA` beside `TGG>AAA`:
 
 ```text
 Reference  CGTGGTT
@@ -137,15 +137,13 @@ Read 3     CGAAATT
 Read 4     CGAANTT
 ```
 
-VarDict writes `TGG>AAA` with 3 of the 4 reads and `TG>AA` with the fourth. It folds some partials back itself, the ones ending at the MNV's last base and the ones at its first base whose reads all end there, and writes the rest as rows of their own. They look like independent calls; on duplex consensus reads from a hybrid-capture panel they sit at about 1% of the MNV's reads, some of them PASS.
+VarDict folds some of these partials back itself and writes the rest as calls of their own. `--fix-leaky-mnv` folds them into their MNV with the directional adjacency rule of [UMI-tools](https://doi.org/10.1101/gr.209601.116) (Smith, Heger and Sudbery 2017), which [fgbio](https://github.com/fulcrumgenomics/fgbio) implements as `GroupReadsByUmi --strategy adjacency`:
 
-With `--fix-leaky-mnv`, these partial rows are folded back into their MNV. The rows of each VarDict region, the block VarDict writes for one target, are grouped by the directional adjacency rule of [UMI-tools](https://doi.org/10.1101/gr.209601.116) (Smith, Heger and Sudbery 2017), which [fgbio](https://github.com/fulcrumgenomics/fgbio) implements as `GroupReadsByUmi --strategy adjacency`:
+- A row is a partial of an MNV when it lies within the MNV's span and carries the MNV's ALT bases over its own span.
+- An MNV claims a partial when it has at least `2 * child - 1` ALT reads in every sample, so an SNV on another haplotype, with about as many reads, stays a record of its own.
+- Rows are visited from the most supported down. A partial two MNVs can claim goes to the one it leaves with the fewest breaks, then to the one with more reads.
 
-- A row is a sub-event of an MNV when it lies within the MNV's span and carries the MNV's ALT bases over its own span, so it changes no base the MNV leaves alone.
-- An MNV can claim a sub-event when, in every sample, it has at least `2 * child - 1` ALT reads. An SNV that shares an ALT base with an MNV but comes from another haplotype has about as many reads as the MNV or more, and stays a record of its own.
-- Rows are visited from the most to the least supported, and one that no MNV can claim stands alone. A partial that two MNVs can claim goes to the one it leaves with the fewest breaks, one for each of its ends inside the MNV, then to the one with more reads.
-
-In the example, `TG>AA` folds into `TGG>AAA`, which is written with `AD` 4 and `DP` 4. A folded record keeps the MNV's position and alleles and gains the INFO field `MNV_PARTIALS` (rows folded in) and the FORMAT field `MNV_PARTIAL_READS` (ALT reads they added). Its other fields are combined the way VarDict's own MNV merging combines an allele's reads:
+In the example, `TGG>AAA` is written with `AD` 4 and `DP` 4. A folded record gains INFO `MNV_PARTIALS` (rows folded in) and FORMAT `MNV_PARTIAL_READS` (ALT reads added), and its other fields are combined as VarDict merges an allele's reads:
 
 | Field | On a folded record |
 |---|---|
@@ -158,15 +156,13 @@ In the example, `TG>AA` folds into `TGG>AAA`, which is written with `AD` 4 and `
 | `REALIGNED_FRAC_OF_DP` | Counts the partials' reads as reassigned to the MNV |
 | `REF`, `AD[0]`, `TYPE`, `REPEAT_UNIT_*`, `VARDICT_STATUS` | The MNV's own |
 
-The fold never lets `AD[1]` exceed `DP`. VarDict counts each read's base at a position into one allele there and into that position's depth, and counts an N there into the depth alone when run with `-K`. A partial starting at the MNV's first base therefore holds reads already in its `DP`, and is folded only while its reads fit there beside the MNV's; a partial starting later holds reads VarDict counted at another position, which are added to `DP` as well as `AD[1]`, as VarDict does when it folds partials itself. A record whose `AD[1]` was within its `DP` stays so.
-
-With only a few reads, no count tells a partial from an SNV on another haplotype, so a 2-read SNV under a 4-read MNV is folded. Only substitutions take part, and only within one VarDict region. Rows are held back until their region ends, since VarDict writes a tumor-only region's positions in hash order and a partial can come before its MNV; the output keeps the input's order. Without the flag nothing is held back.
+`AD[1]` never exceeds `DP`. A partial at the MNV's first base holds reads already in its `DP`, an N counting into depth alone under VarDict's `-K`, so it folds only while its reads fit; a later partial's reads are added to both, as VarDict does when it folds partials itself. Only substitutions within one VarDict region take part, and rows are held until their region ends, since tumor-only positions arrive in hash order; the output keeps the input's order. With only a few reads a partial cannot be told from an SNV on another haplotype, so a 2-read SNV under a 4-read MNV is folded.
 
 > [!TIP]
-> On tumor-normal calls from about 1,200 hybrid-capture panel samples sequenced as duplex consensus reads, `--fix-leaky-mnv` folded 503 partials into their MNVs in 446 samples. 38 of the partials were `PASS` SNVs, 20 of them pieces of germline MNVs, that would otherwise read as mutations of their own. Each folded MNV gained a median of 4 ALT reads (at most 23) and its `AF` rose by at most 0.022, and no record's `AD[1]` came to exceed its `DP`. The 1,356 SNVs and shorter MNVs that share ALT bases with an MNV but carry about as many reads were left as records of their own.
+> On duplex consensus reads, folded partials carry about 1% of their MNV's reads, while SNVs on another haplotype carry about as many as the MNV and stay apart. Some partials are `PASS` SNVs, often pieces of germline MNVs, that would otherwise read as mutations of their own; folding them typically raises the MNV's `AF` by about 0.006.
 
 > [!WARNING]
-> **Known VarDictJava issue:** VarDict folds some partials into an MNV itself, and a partial starting after the MNV's first base is folded whenever it has fewer reads than the MNV (`tref.varsCount < vref.varsCount`, `VariationRealigner.java:335` in 1.8.4), with its reads added to the MNV's `AD` and `DP` (`:340`). An SNV on the other haplotype with slightly fewer reads than the MNV is folded in the same way: one heterozygous SNV with 849 reads went into an 857-read MNV, which VarDict wrote at an `AF` of 0.67 instead of about 0.34, with no row for the SNV. That row never reaches `vartovcf`, so `--fix-leaky-mnv` cannot undo the fold. The directional adjacency rule above, at least `2 * child - 1` reads in the MNV, would have kept the SNV apart.
+> **Known VarDictJava issue:** VarDict's own fold takes a partial starting after the MNV's first base whenever it has fewer reads than the MNV (`VariationRealigner.java:335` in 1.8.4). An SNV on another haplotype with slightly fewer reads is folded in too, which can nearly double the MNV's `AF`, and no row is written for the SNV, so `--fix-leaky-mnv` cannot undo it.
 
 ### Benchmarks
 
