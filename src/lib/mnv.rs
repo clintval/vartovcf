@@ -7,8 +7,8 @@
 //! at its first base whose reads all end there, and writes the rest as rows of their own.
 //!
 //! Partial rows are grouped with their MNV by the directional adjacency rule of UMI-tools (Smith,
-//! Heger and Sudbery 2017), which fgbio's `GroupReadsByUmi --strategy adjacency` also implements: a
-//! parent with `n` ALT reads can claim a sub-event with at most `(n + 1) / 2` of them.
+//! Heger and Sudbery 2017): a parent with `n` ALT reads can claim a sub-event with at most
+//! `(n + 1) / 2` of them.
 
 use rust_htslib::bcf::record::Numeric;
 

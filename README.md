@@ -137,7 +137,7 @@ Read 3     CGAAATT
 Read 4     CGAANTT
 ```
 
-VarDict folds some of these partials back itself and writes the rest as calls of their own. `--fix-leaky-mnv` folds them into their MNV with the directional adjacency rule of [UMI-tools](https://doi.org/10.1101/gr.209601.116) (Smith, Heger and Sudbery 2017), which [fgbio](https://github.com/fulcrumgenomics/fgbio) implements as `GroupReadsByUmi --strategy adjacency`:
+VarDict folds some of these partials back itself and writes the rest as calls of their own. `--fix-leaky-mnv` folds them into their MNV with the directional adjacency rule of [UMI-tools](https://doi.org/10.1101/gr.209601.116) (Smith, Heger and Sudbery 2017):
 
 - A row is a partial of an MNV when it lies within the MNV's span and carries the MNV's ALT bases over its own span.
 - An MNV claims a partial when it has at least `2 * child - 1` ALT reads in every sample, so an SNV on another haplotype, with about as many reads, stays a record of its own.
