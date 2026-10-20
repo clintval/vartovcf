@@ -28,6 +28,7 @@ Or build from source with Rust 1.88 or newer, a C toolchain, and libclang (used 
 - This tool is kept lean on purpose: it converts formats, and applies FILTER labels only when asked
 - The output is compliant with the VCF v4.2 and v4.3 specifications
 - Output VCF records are unsorted and a call to `bcftools sort` is recommended
+- Records are normalized against `--reference` as `bcftools norm -f` does, and every allele is written uppercase, see [Normalization](#normalization)
 - Tumor-only (`var2vcf_valid.pl`) and tumor-normal (`var2vcf_paired.pl`) output are both supported, told apart from the first row
 - When asked, the partial rows VarDict writes for a multi-nucleotide variant (MNV) are folded back into it, see [Leaky MNVs](#leaky-mnvs)
 - VarDictJava must be run with `--fisher`
@@ -156,13 +157,19 @@ In the example, `TGG>AAA` is written with `AD` 4 and `DP` 4. A folded record gai
 | `REALIGNED_FRAC_OF_DP` | Counts the partials' reads as reassigned to the MNV |
 | `REF`, `AD[0]`, `TYPE`, `REPEAT_UNIT_*`, `VARDICT_STATUS` | The MNV's own |
 
-Folding never pushes `AD[1]` above `DP`, though a VarDict row already above it stays so. Only substitutions within one VarDict region are folded. With few reads a partial cannot be told from an SNV on another haplotype, so a 2-read SNV under a 4-read MNV is folded.
+Folding never pushes `AD[1]` above `DP`, though a VarDict row already above it stays so. Only substitutions within one VarDict region are folded, and when regions overlap, a partial folded in one is not written again from another. With few reads a partial cannot be told from an SNV on another haplotype, so a 2-read SNV under a 4-read MNV is folded.
 
 > [!TIP]
 > On duplex consensus reads, folded partials carry about 1% of their MNV's reads, while SNVs on another haplotype carry about as many as the MNV and stay apart. Some partials are `PASS` SNVs, often pieces of germline MNVs, that would otherwise read as mutations of their own; folding them typically raises the MNV's `AF` by about 0.006.
 
 > [!WARNING]
 > **Known VarDictJava issue:** VarDict's own fold takes a partial starting after the MNV's first base whenever it has fewer reads than the MNV (`VariationRealigner.java:335` in 1.8.4). An SNV on another haplotype with slightly fewer reads is folded in too, which can nearly double the MNV's `AF`, and no row is written for the SNV, so `--fix-leaky-mnv` cannot undo it.
+
+### Normalization
+
+Every record is normalized against `--reference`, which must be the FASTA VarDict was run with: an indel moves to its left-most position and alleles are trimmed to one shared base, as `bcftools norm -f` does, so `bcftools norm` is not needed. A REF allele that differs from the reference is an error. Alleles are written uppercase even where the reference is soft-masked, unlike `bcftools norm` ([samtools/bcftools#2606](https://github.com/samtools/bcftools/issues/2606)). Reference-only rows and symbolic structural variants are not moved.
+
+VarDict writes a call once per BED region that holds it, so overlapping regions repeat calls, and VarDict can place one indel at two positions in a repeat. A record that normalizes to a call already written is dropped, keeping the first.
 
 ### Benchmarks
 

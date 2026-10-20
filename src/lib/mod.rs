@@ -13,16 +13,18 @@ use std::error;
 use std::fmt::Debug;
 use std::io::Read;
 use std::ops::Deref;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::fai::{fasta_contigs_to_vcf_header, fasta_path_to_vcf_header};
 use crate::filter::FilterThresholds;
 use crate::io::has_gzip_ext;
 use crate::mnv::{Fold, Merged, fold_partials};
+use crate::normalize::{Normalized, normalize};
 use crate::record::MIN_HOM_ALT_AF;
 use crate::record::TumorNormalVariant;
 use crate::record::TumorOnlyVariant;
 use crate::record::{tumor_normal_fisher_p_value, tumor_normal_header, tumor_only_header};
+use crate::reference::Reference;
 
 pub mod fai;
 pub mod filter;
@@ -30,7 +32,9 @@ pub mod fisher;
 pub mod hicnt;
 pub mod io;
 pub mod mnv;
+pub mod normalize;
 pub mod record;
+pub mod reference;
 
 /// The structural variant types VarDict writes, which are the values of the `SVTYPE` INFO field.
 pub const VALID_SV_TYPES: &[&str] = &["DEL", "DUP", "INV"];
@@ -80,37 +84,35 @@ impl Layout {
 /// The 0-based segment columns of the tumor-only and tumor-normal layouts without `--fisher`.
 const NO_FISHER_SEGMENT_COLUMNS: [usize; 2] = [32, 48];
 
-/// Runs the tool `vartovcf` on an input VAR file and writes the records to an output VCF file.
+/// What `vartovcf` reads and writes, and how it converts the rows.
+#[derive(Clone, Debug, Default)]
+pub struct Options<'a> {
+    /// The output VCF file, or standard output when `None`.
+    pub output: Option<PathBuf>,
+    /// The indexed FASTA reference VarDict was run with.
+    pub reference: PathBuf,
+    /// The tumor (or only) sample name, read from the input when not given.
+    pub sample: Option<&'a str>,
+    /// The matched normal sample name, required for tumor-normal input that does not name it.
+    pub normal_sample: Option<&'a str>,
+    /// Skip non-variant sites (where ref_allele == alt_allele).
+    pub skip_non_variants: bool,
+    /// Fold the partial rows of each MNV back into it, see [`mnv`].
+    pub fix_leaky_mnv: bool,
+    /// The FILTER labels to apply.
+    pub filters: FilterThresholds,
+}
+
+/// Runs the tool `vartovcf` on an input VAR file or stream and writes the records to a VCF file.
 ///
-/// # Arguments
+/// Each VarDict region's rows are parsed and, when asked, their leaky MNV partials folded, both in
+/// VarDict's own coordinates; each record is then normalized against the reference and written
+/// unless an earlier record normalized to the same call.
 ///
-/// * `input` - The input VAR file or stream
-/// * `output` - The output VCF file or stream
-/// * `fasta` - The reference sequence FASTA file, must be indexed
-/// * `sample` - The tumor (or only) sample name, read from the input when not given
-/// * `normal_sample` - The matched normal sample name, required for tumor-normal input
-/// * `skip_non_variants` - Skip non-variant sites (where ref_allele == alt_allele)
-/// * `fix_leaky_mnv` - Fold the partial rows of each MNV back into it, see [`mnv`]
-///
-/// # Returns
-///
-/// Returns the result of the execution with an integer exit code for success (0).
-///
-#[allow(clippy::too_many_arguments)]
-pub fn vartovcf<I, R>(
-    input: I,
-    output: Option<PathBuf>,
-    fasta: R,
-    sample: Option<&str>,
-    normal_sample: Option<&str>,
-    skip_non_variants: bool,
-    fix_leaky_mnv: bool,
-    filters: &FilterThresholds,
-) -> Result<i32, Box<dyn error::Error>>
-where
-    I: Read,
-    R: AsRef<Path> + Debug,
-{
+/// Returns the exit code for success (0).
+pub fn vartovcf<I: Read>(input: I, options: &Options) -> Result<i32, Box<dyn error::Error>> {
+    let reference = Reference::from_path(&options.reference)?;
+
     let mut reader = ReaderBuilder::new()
         .delimiter(b'\t')
         .has_headers(false)
@@ -128,33 +130,46 @@ where
         None
     };
     let row_sample = peeked.then(|| carry.get(0).unwrap_or_default().to_string());
-    let (sample, normal_sample) =
-        resolve_samples(row_sample.as_deref(), layout, sample, normal_sample)?;
+    let (sample, normal_sample) = resolve_samples(
+        row_sample.as_deref(),
+        layout,
+        options.sample,
+        options.normal_sample,
+    )?;
     let layout = layout.unwrap_or(Layout::TumorOnly);
 
+    let filters = &options.filters;
     let mut header = match &normal_sample {
-        Some(normal_sample) => tumor_normal_header(&sample, normal_sample, filters, fix_leaky_mnv),
-        None => tumor_only_header(&sample, filters, fix_leaky_mnv),
+        Some(normal_sample) => {
+            tumor_normal_header(&sample, normal_sample, filters, options.fix_leaky_mnv)
+        }
+        None => tumor_only_header(&sample, filters, options.fix_leaky_mnv),
     };
 
-    fasta_contigs_to_vcf_header(&fasta, &mut header);
-    fasta_path_to_vcf_header(&fasta, &mut header).expect("Adding FASTA path to header failed!");
+    fasta_contigs_to_vcf_header(&options.reference, &mut header);
+    fasta_path_to_vcf_header(&options.reference, &mut header)
+        .expect("Adding FASTA path to header failed!");
 
-    let mut writer = match output {
-        Some(output) => VcfWriter::from_path(&output, &header, !has_gzip_ext(&output), Format::Vcf),
+    let writer = match &options.output {
+        Some(output) => VcfWriter::from_path(output, &header, !has_gzip_ext(output), Format::Vcf),
         None => VcfWriter::from_stdout(&header, true, Format::Vcf),
     }
     .expect("Could not build a VCF writer!");
 
-    let progress = ProgLogBuilder::new()
-        .name("main")
-        .verb("Processed")
-        .noun("variant records")
-        .unit(100_000)
-        .build();
+    let mut sink = Sink {
+        writer,
+        reference,
+        seen: SeenRows::default(),
+        filters,
+        progress: ProgLogBuilder::new()
+            .name("main")
+            .verb("Processed")
+            .noun("variant records")
+            .unit(100_000)
+            .build(),
+    };
 
     let row_sample = row_sample.unwrap_or_default();
-    let mut seen = SeenRows::default();
     let mut region: Vec<StringRecord> = Vec::new();
 
     while std::mem::take(&mut peeked) || read_row(&mut reader, &mut carry, layout)? {
@@ -166,16 +181,8 @@ where
         let calls = &calls[..layout.samples()];
         let var = &calls[0];
 
-        if skip_non_variants && var.ref_allele == var.alt_allele {
+        if options.skip_non_variants && var.ref_allele == var.alt_allele {
             continue;
-        }
-
-        let is_new = seen.insert(var).ok_or_else(|| {
-            let line = carry.position().map_or(0, |position| position.line());
-            format!("Expected a start and end below 4294967296 on line {line}!")
-        })?;
-        if !is_new {
-            continue; // Skip this record if we have seen this variant before.
         }
 
         if var.sample != row_sample {
@@ -183,9 +190,8 @@ where
             return Err(message.into());
         };
 
-        if !fix_leaky_mnv {
-            write_record(&mut writer, calls, status, filters, None)?;
-            progress.record();
+        if !options.fix_leaky_mnv {
+            sink.write(calls, status, None)?;
             continue;
         }
 
@@ -194,12 +200,12 @@ where
             .last()
             .is_some_and(|last| last.get(column) != carry.get(column))
         {
-            write_region(&mut writer, &region, layout, filters, &progress)?;
+            sink.write_region(&region, layout)?;
             region.clear();
         }
         region.push(carry.clone());
     }
-    write_region(&mut writer, &region, layout, filters, &progress)?;
+    sink.write_region(&region, layout)?;
 
     Ok(0)
 }
@@ -222,35 +228,63 @@ fn parse_row(
     })
 }
 
-/// Writes the rows of one VarDict region, a block it writes together for one target, with the
-/// partial rows of each MNV folded into it; VarDict orders a tumor-only region's positions by hash,
-/// so a partial row can come before or after its MNV.
-fn write_region(
-    writer: &mut VcfWriter,
-    region: &[StringRecord],
-    layout: Layout,
-    filters: &FilterThresholds,
-    progress: &proglog::ProgLog,
-) -> Result<(), Box<dyn error::Error>> {
-    let rows = region
-        .iter()
-        .map(|record| parse_row(record, layout))
-        .collect::<Result<Vec<_>, _>>()?;
-    let calls: Vec<&[TumorOnlyVariant]> = rows
-        .iter()
-        .map(|(calls, _)| &calls[..layout.samples()])
-        .collect();
-    for ((row_calls, (_, status)), fold) in calls.iter().zip(&rows).zip(fold_partials(&calls)) {
-        match fold {
-            Fold::Keep => write_record(writer, row_calls, *status, filters, None)?,
-            Fold::Into(_) => continue,
-            Fold::Merged(merged) => {
-                write_record(writer, &merged.calls, *status, filters, Some(&merged))?
+/// Normalizes records and writes each one unless an earlier record normalized to the same call.
+struct Sink<'r> {
+    writer: VcfWriter,
+    reference: Reference,
+    seen: SeenRows,
+    filters: &'r FilterThresholds,
+    progress: proglog::ProgLog,
+}
+
+impl Sink<'_> {
+    /// Normalizes a record and writes it unless an earlier record normalized to the same call.
+    fn write(
+        &mut self,
+        calls: &[TumorOnlyVariant],
+        status: Option<&str>,
+        merged: Option<&Merged>,
+    ) -> Result<(), Box<dyn error::Error>> {
+        let normalized = normalize(&mut self.reference, &calls[0])?;
+        if !self.seen.insert(calls[0].contig, &normalized)? {
+            return Ok(());
+        }
+        let calls: Vec<TumorOnlyVariant> =
+            calls.iter().map(|call| normalized.apply(call)).collect();
+        write_record(&mut self.writer, &calls, status, self.filters, merged)?;
+        self.progress.record();
+        Ok(())
+    }
+
+    /// Writes the rows of one VarDict region, a block it writes together for one target, with the
+    /// partial rows of each MNV folded into it; VarDict orders a tumor-only region's positions by
+    /// hash, so a partial row can come before or after its MNV. A folded partial counts as written,
+    /// so a later region that writes it alone, as an overlapping region can, does not write it again.
+    fn write_region(
+        &mut self,
+        region: &[StringRecord],
+        layout: Layout,
+    ) -> Result<(), Box<dyn error::Error>> {
+        let rows = region
+            .iter()
+            .map(|record| parse_row(record, layout))
+            .collect::<Result<Vec<_>, _>>()?;
+        let calls: Vec<&[TumorOnlyVariant]> = rows
+            .iter()
+            .map(|(calls, _)| &calls[..layout.samples()])
+            .collect();
+        for ((row_calls, (_, status)), fold) in calls.iter().zip(&rows).zip(fold_partials(&calls)) {
+            match fold {
+                Fold::Keep => self.write(row_calls, *status, None)?,
+                Fold::Into(_) => {
+                    let normalized = normalize(&mut self.reference, &row_calls[0])?;
+                    self.seen.insert(row_calls[0].contig, &normalized)?;
+                }
+                Fold::Merged(merged) => self.write(&merged.calls, *status, Some(&merged))?,
             }
         }
-        progress.record();
+        Ok(())
     }
-    Ok(())
 }
 
 /// Writes one VCF record with a sample column per call, the tumor (or only) sample first; FILTER and
@@ -423,14 +457,14 @@ impl<V, const N: usize> Deref for Values<V, N> {
     }
 }
 
-/// The rows seen so far, each held as a fixed-size key, for skipping exact duplicates.
+/// The calls written so far, each held as a fixed-size key, for skipping a call written before.
 #[derive(Default)]
 struct SeenRows {
     keys: AHashSet<RowKey>,
     strings: AHashMap<Box<str>, u32>,
 }
 
-/// A row's contig, start, END, REF and ALT, with each string held as an id.
+/// A call's contig, start, END, REF and ALT, with each string held as an id.
 #[derive(Hash, PartialEq, Eq)]
 struct RowKey {
     contig: u32,
@@ -441,16 +475,22 @@ struct RowKey {
 }
 
 impl SeenRows {
-    /// Records a row, returning whether it is new, or `None` when a position needs more than 32 bits.
-    fn insert(&mut self, var: &TumorOnlyVariant) -> Option<bool> {
-        let key = RowKey {
-            start: var.start.try_into().ok()?,
-            end: var.end.try_into().ok()?,
-            contig: self.id(var.contig),
-            ref_allele: self.id(var.ref_allele),
-            alt_allele: self.id(var.alt_allele),
+    /// Records a normalized call, returning whether it is new; a position needs to fit in 32 bits.
+    fn insert(&mut self, contig: &str, call: &Normalized) -> Result<bool, String> {
+        let (Ok(start), Ok(end)) = (call.start.try_into(), call.end.try_into()) else {
+            return Err(format!(
+                "Expected a start and end below 4294967296, found {contig}:{}-{}!",
+                call.start, call.end
+            ));
         };
-        Some(self.keys.insert(key))
+        let key = RowKey {
+            start,
+            end,
+            contig: self.id(contig),
+            ref_allele: self.id(&call.ref_allele),
+            alt_allele: self.id(&call.alt_allele),
+        };
+        Ok(self.keys.insert(key))
     }
 
     /// Returns the id of a string, giving it the next id the first time it is seen.
@@ -638,13 +678,12 @@ mod tests {
         let reference = PathBuf::from("tests/reference.fa");
         let exit = vartovcf(
             input,
-            Some(output.path().into()),
-            &reference,
-            Some(sample),
-            None,
-            false,
-            false,
-            &FilterThresholds::default(),
+            &Options {
+                output: Some(output.path().into()),
+                reference: reference.clone(),
+                sample: Some(sample),
+                ..Default::default()
+            },
         )?;
         assert_eq!(exit, 0);
         assert!(diff(output.path().to_str().unwrap(), "tests/calls.vcf"));
@@ -660,13 +699,12 @@ mod tests {
         let output = NamedTempFile::new().expect("Cannot create temporary file!");
         let exit = vartovcf(
             input.as_bytes(),
-            Some(output.path().into()),
-            PathBuf::from("tests/reference.fa"),
-            Some("dna00001"),
-            None,
-            false,
-            false,
-            &FilterThresholds::default(),
+            &Options {
+                output: Some(output.path().into()),
+                reference: PathBuf::from("tests/reference.fa"),
+                sample: Some("dna00001"),
+                ..Default::default()
+            },
         )?;
         assert_eq!(exit, 0);
         Ok(())
@@ -694,13 +732,12 @@ mod tests {
         let output = NamedTempFile::new().expect("Cannot create temporary file!");
         let result = vartovcf(
             input.as_bytes(),
-            Some(output.path().into()),
-            PathBuf::from("tests/reference.fa"),
-            None,
-            path.contains("tumor-normal").then_some("N"),
-            false,
-            false,
-            &FilterThresholds::default(),
+            &Options {
+                output: Some(output.path().into()),
+                reference: PathBuf::from("tests/reference.fa"),
+                normal_sample: path.contains("tumor-normal").then_some("N"),
+                ..Default::default()
+            },
         );
         assert_eq!(result.unwrap_err().to_string(), message);
     }
@@ -715,13 +752,11 @@ mod tests {
         let output = NamedTempFile::new().expect("Cannot create temporary file!");
         let result = vartovcf(
             input.as_bytes(),
-            Some(output.path().into()),
-            PathBuf::from("tests/reference.fa"),
-            None,
-            None,
-            false,
-            false,
-            &FilterThresholds::default(),
+            &Options {
+                output: Some(output.path().into()),
+                reference: PathBuf::from("tests/reference.fa"),
+                ..Default::default()
+            },
         );
         assert_eq!(
             result.unwrap_err().to_string(),
@@ -736,13 +771,11 @@ mod tests {
         let output = NamedTempFile::new().expect("Cannot create temporary file!");
         let result = vartovcf(
             input.as_bytes(),
-            Some(output.path().into()),
-            PathBuf::from("tests/tumor-normal.fa"),
-            None,
-            None,
-            false,
-            false,
-            &FilterThresholds::default(),
+            &Options {
+                output: Some(output.path().into()),
+                reference: PathBuf::from("tests/tumor-normal.fa"),
+                ..Default::default()
+            },
         );
         assert_eq!(
             result.unwrap_err().to_string(),
@@ -757,13 +790,12 @@ mod tests {
         let reference = PathBuf::from("tests/reference.fa");
         let result = vartovcf(
             input,
-            Some(output.path().into()),
-            &reference,
-            Some("XXXXXXXX"),
-            None,
-            false,
-            false,
-            &FilterThresholds::default(),
+            &Options {
+                output: Some(output.path().into()),
+                reference: reference.clone(),
+                sample: Some("XXXXXXXX"),
+                ..Default::default()
+            },
         );
         assert_eq!(
             result.unwrap_err().to_string(),
@@ -782,13 +814,12 @@ mod tests {
         let reference = PathBuf::from("tests/reference.fa");
         let result = vartovcf(
             input,
-            Some(output.path().into()),
-            &reference,
-            Some("dna00001"),
-            None,
-            false,
-            false,
-            &FilterThresholds::default(),
+            &Options {
+                output: Some(output.path().into()),
+                reference: reference.clone(),
+                sample: Some("dna00001"),
+                ..Default::default()
+            },
         );
         assert_eq!(
             result.unwrap_err().to_string(),
@@ -805,13 +836,12 @@ mod tests {
         let reference = PathBuf::from("tests/reference.fa");
         let result = vartovcf(
             input,
-            Some(output.path().into()),
-            &reference,
-            Some("dna00001"),
-            None,
-            false,
-            false,
-            &FilterThresholds::default(),
+            &Options {
+                output: Some(output.path().into()),
+                reference: reference.clone(),
+                sample: Some("dna00001"),
+                ..Default::default()
+            },
         );
         assert_eq!(
             result.unwrap_err().to_string(),
@@ -827,13 +857,12 @@ mod tests {
         let reference = PathBuf::from("tests/reference.fa");
         let result = vartovcf(
             input,
-            Some(output.path().into()),
-            &reference,
-            Some("dna00001"),
-            None,
-            false,
-            false,
-            &FilterThresholds::default(),
+            &Options {
+                output: Some(output.path().into()),
+                reference: reference.clone(),
+                sample: Some("dna00001"),
+                ..Default::default()
+            },
         );
         assert_eq!(
             result.unwrap_err().to_string(),
@@ -1033,13 +1062,13 @@ mod tests {
         let reference = PathBuf::from("tests/reference.fa");
         let exit = vartovcf(
             "".as_bytes(),
-            Some(output.path().into()),
-            &reference,
-            Some("tumor"),
-            normal_sample,
-            false,
-            false,
-            &FilterThresholds::default(),
+            &Options {
+                output: Some(output.path().into()),
+                reference: reference.clone(),
+                sample: Some("tumor"),
+                normal_sample,
+                ..Default::default()
+            },
         )?;
         assert_eq!(exit, 0);
         use rust_htslib::bcf::{Read, Reader as VcfReader};
@@ -1065,13 +1094,13 @@ mod tests {
         let output = NamedTempFile::new().expect("Cannot create temporary file!");
         vartovcf(
             input,
-            Some(output.path().into()),
-            PathBuf::from("tests/reference.fa"),
-            Some("dna00001"),
-            None,
-            false,
-            fix_leaky_mnv,
-            &FilterThresholds::default(),
+            &Options {
+                output: Some(output.path().into()),
+                reference: PathBuf::from("tests/reference.fa"),
+                sample: Some("dna00001"),
+                fix_leaky_mnv,
+                ..Default::default()
+            },
         )?;
         use rust_htslib::bcf::{Read, Reader as VcfReader};
         let mut reader = VcfReader::from_path(output.path()).expect("Error opening output file!");
@@ -1087,28 +1116,29 @@ mod tests {
         Ok(())
     }
 
-    fn row<'a>(
-        contig: &'a str,
+    fn row(
+        contig: &'static str,
         start: u64,
         end: u64,
-        ref_allele: &'a str,
-        alt_allele: &'a str,
-    ) -> TumorOnlyVariant<'a> {
-        TumorOnlyVariant {
-            contig,
+        ref_allele: &str,
+        alt_allele: &str,
+    ) -> (&'static str, Normalized) {
+        let call = Normalized {
             start,
             end,
-            ref_allele,
-            alt_allele,
-            ..Default::default()
-        }
+            ref_allele: ref_allele.to_string(),
+            alt_allele: alt_allele.to_string(),
+            indel_3p_shift: None,
+        };
+        (contig, call)
     }
 
     #[test]
-    fn test_seen_rows_drops_the_same_row_twice() {
+    fn test_seen_rows_drops_the_same_call_twice() {
         let mut seen = SeenRows::default();
-        assert_eq!(seen.insert(&row("chr1", 10, 12, "ACG", "A")), Some(true));
-        assert_eq!(seen.insert(&row("chr1", 10, 12, "ACG", "A")), Some(false));
+        let (contig, call) = row("chr1", 10, 12, "ACG", "A");
+        assert_eq!(seen.insert(contig, &call), Ok(true));
+        assert_eq!(seen.insert(contig, &call), Ok(false));
     }
 
     #[rstest]
@@ -1118,33 +1148,45 @@ mod tests {
     #[case::ref_allele(row("chr1", 10, 12, "ACT", "A"))]
     #[case::alt_allele(row("chr1", 10, 12, "ACG", "<DEL>"))]
     #[case::swapped_alleles(row("chr1", 10, 12, "A", "ACG"))]
-    fn test_seen_rows_keeps_a_row_differing_in_one_field(#[case] other: TumorOnlyVariant) {
+    fn test_seen_rows_keeps_a_call_differing_in_one_field(
+        #[case] other: (&'static str, Normalized),
+    ) {
         let mut seen = SeenRows::default();
-        assert_eq!(seen.insert(&row("chr1", 10, 12, "ACG", "A")), Some(true));
-        assert_eq!(seen.insert(&other), Some(true));
-        assert_eq!(seen.insert(&other), Some(false));
+        let (contig, call) = row("chr1", 10, 12, "ACG", "A");
+        assert_eq!(seen.insert(contig, &call), Ok(true));
+        assert_eq!(seen.insert(other.0, &other.1), Ok(true));
+        assert_eq!(seen.insert(other.0, &other.1), Ok(false));
     }
 
     #[test]
     fn test_seen_rows_holds_each_distinct_string_once() {
         let mut seen = SeenRows::default();
         for start in 1..=100 {
-            seen.insert(&row("chr1", start, start, "A", "A"));
-            seen.insert(&row("chr1", start, start, "A", "T"));
+            for alt_allele in ["A", "T"] {
+                let (contig, call) = row("chr1", start, start, "A", alt_allele);
+                seen.insert(contig, &call).unwrap();
+            }
         }
         assert_eq!(seen.keys.len(), 200);
         assert_eq!(seen.strings.len(), 3);
     }
 
-    #[test]
-    fn test_seen_rows_refuses_a_position_beyond_32_bits() {
+    #[rstest]
+    #[case(1 << 32, 1 << 32)]
+    #[case(1, 1 << 32)]
+    fn test_seen_rows_refuses_a_position_beyond_32_bits(#[case] start: u64, #[case] end: u64) {
         let mut seen = SeenRows::default();
-        assert_eq!(seen.insert(&row("chr1", 1 << 32, 1 << 32, "A", "T")), None);
-        assert_eq!(seen.insert(&row("chr1", 1, 1 << 32, "A", "T")), None);
+        let (contig, call) = row("chr1", start, end, "A", "T");
+        assert_eq!(
+            seen.insert(contig, &call),
+            Err(format!(
+                "Expected a start and end below 4294967296, found chr1:{start}-{end}!"
+            ))
+        );
     }
 
     #[test]
-    fn test_refuses_a_position_beyond_32_bits() {
+    fn test_refuses_a_position_beyond_the_reference() {
         let rows = std::fs::read_to_string("tests/calls.var").unwrap();
         let mut fields: Vec<&str> = rows.lines().nth(2).unwrap().split('\t').collect();
         fields[3] = "4294967296";
@@ -1153,17 +1195,15 @@ mod tests {
         let output = NamedTempFile::new().expect("Cannot create temporary file!");
         let result = vartovcf(
             input.as_bytes(),
-            Some(output.path().into()),
-            PathBuf::from("tests/reference.fa"),
-            None,
-            None,
-            false,
-            false,
-            &FilterThresholds::default(),
+            &Options {
+                output: Some(output.path().into()),
+                reference: PathBuf::from("tests/reference.fa"),
+                ..Default::default()
+            },
         );
         assert_eq!(
             result.unwrap_err().to_string(),
-            "Expected a start and end below 4294967296 on line 1!"
+            "Position chr1:4294967296 is beyond the end of chr1, which has 4000 bases in the reference: give --reference the FASTA VarDict was run with!"
         );
     }
 
@@ -1175,13 +1215,13 @@ mod tests {
         let reference = PathBuf::from("tests/reference.fa");
         let exit = vartovcf(
             input,
-            Some(output.path().into()),
-            &reference,
-            Some(sample),
-            None,
-            true,
-            false,
-            &FilterThresholds::default(),
+            &Options {
+                output: Some(output.path().into()),
+                reference: reference.clone(),
+                sample: Some(sample),
+                skip_non_variants: true,
+                ..Default::default()
+            },
         )?;
         assert_eq!(exit, 0);
 
