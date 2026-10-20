@@ -23,6 +23,62 @@ pub fn fisher_exact_greater(a: u64, b: u64, c: u64, d: u64) -> f64 {
     (1.0 - falling_sum(ln_pmf(a as f64 - 1.0), lower, ln_ratio)).max(0.0)
 }
 
+/// Return the two-sided Fisher exact p-value of the table `[[a, b], [c, d]]`, summing the probability
+/// of every table at most as likely as the observed one, as R's
+/// `fisher.test(matrix(c(a, b, c, d), nrow = 2))` and VarDict do. Tables are walked out from the most
+/// likely one by the ratio of each one's probability to its neighbour's, and each direction stops once
+/// they fall below e^-40 of the observed table's.
+pub fn fisher_exact_two_sided(a: u64, b: u64, c: u64, d: u64) -> f64 {
+    let lowest = (a + b).saturating_sub(b + d);
+    let highest = (a + b).min(a + c);
+    if lowest == highest {
+        return 1.0;
+    }
+    let (row, col, total) = ((a + b) as f64, (a + c) as f64, (a + b + c + d) as f64);
+    let other = d as f64 - a as f64;
+    let up = |x: u64| {
+        let x = x as f64;
+        (col - x) * (row - x) / ((x + 1.0) * (other + x + 1.0))
+    };
+    let down = |x: u64| {
+        let x = x as f64;
+        x * (other + x) / ((col - x + 1.0) * (row - x + 1.0))
+    };
+    let mode = (((row + 1.0) * (col + 1.0) / (total + 2.0)).floor() as u64).clamp(lowest, highest);
+    let observed: f64 = if a > mode {
+        (mode..a).map(up).product()
+    } else {
+        (a + 1..=mode).rev().map(down).product()
+    };
+    let (cut, floor) = (observed * (1.0 + 1e-7), observed * (-40.0f64).exp());
+    let mut sum = 0.0;
+    let mut term = 1.0;
+    for x in mode..=highest {
+        if x > mode {
+            term *= up(x - 1);
+        }
+        if term <= cut {
+            sum += term;
+            if term < floor {
+                break;
+            }
+        }
+    }
+    term = 1.0;
+    for x in (lowest..mode).rev() {
+        term *= down(x + 1);
+        if term <= cut {
+            sum += term;
+            if term < floor {
+                break;
+            }
+        }
+    }
+    let ln_mode = ln_choose(col, mode as f64) + ln_choose(total - col, row - mode as f64)
+        - ln_choose(total, row);
+    (sum.ln() + ln_mode).exp().min(1.0)
+}
+
 /// Sums terms that only fall, given the log of the first and the log ratio of each term to the
 /// next, stopping once they drop below e^-40 of the first.
 fn falling_sum(ln_first: f64, xs: impl Iterator<Item = f64>, ln_ratio: impl Fn(f64) -> f64) -> f64 {
@@ -76,7 +132,7 @@ mod tests {
     #[case(10, 20, 0, 30, 0.0003985065657050687)]
     #[case(10, 20, 1, 30, 0.0023583749216316376)]
     #[case(15, 15, 15, 15, 0.6017271810907904)]
-    #[case(30, 0, 15, 15, 2.916066847916421e-06)]
+    #[case(30, 0, 15, 15, 2.916066847916421e-6)]
     #[case(10, 20, 3, 27, 0.028733136666041024)]
     #[case(0, 30, 15, 15, 1.0)]
     #[case(1, 30, 15, 15, 0.9999992829343817)]
@@ -109,6 +165,33 @@ mod tests {
         assert!(
             (p - expected).abs() <= expected * 1e-9,
             "fisher_exact_greater({a}, {b}, {c}, {d}) = {p}, expected {expected}"
+        );
+    }
+
+    #[rstest]
+    #[case(10, 20, 0, 30, 0.0007970131314101378)]
+    #[case(15, 15, 15, 15, 1.0)]
+    #[case(30, 0, 15, 15, 5.832133695832847e-6)]
+    #[case(2, 8, 5, 5, 0.3498452012383899)]
+    #[case(0, 0, 0, 0, 1.0)]
+    #[case(5, 0, 0, 10, 0.0003330003330003333)]
+    #[case(400, 7704, 0, 6000, 1.2381362928097139e-98)]
+    #[case(250, 250, 260, 240, 0.5691584133790845)]
+    #[case(1, 0, 1, 0, 1.0)]
+    #[case(3001, 5130, 1, 0, 0.3691588785046731)]
+    #[case(120, 80, 300, 310, 0.009009766390911122)]
+    #[case(2766, 5280, 60, 10, 1.3801714731710278e-18)]
+    fn test_fisher_exact_two_sided_matches_r(
+        #[case] a: u64,
+        #[case] b: u64,
+        #[case] c: u64,
+        #[case] d: u64,
+        #[case] expected: f64,
+    ) {
+        let p = fisher_exact_two_sided(a, b, c, d);
+        assert!(
+            (p - expected).abs() <= expected * 1e-9,
+            "fisher_exact_two_sided({a}, {b}, {c}, {d}) = {p}, expected {expected}"
         );
     }
 

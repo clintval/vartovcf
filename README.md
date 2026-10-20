@@ -29,6 +29,7 @@ Or build from source with Rust 1.88 or newer, a C toolchain, and libclang (used 
 - The output is compliant with the VCF v4.2 and v4.3 specifications
 - Output VCF records are unsorted and a call to `bcftools sort` is recommended
 - Tumor-only (`var2vcf_valid.pl`) and tumor-normal (`var2vcf_paired.pl`) output are both supported, told apart from the first row
+- When asked, the partial rows VarDict writes for a multi-nucleotide variant (MNV) are folded back into it, see [Leaky MNVs](#leaky-mnvs)
 - VarDictJava must be run with `--fisher`
 
 ### Example Usage
@@ -123,6 +124,45 @@ No FILTER label is applied unless its option is given; with none given, the FILT
 | `LOW_AF` | `--filter-low-af <MIN_AF>` | `AF` is below the threshold, useful when VarDict runs with `-p`, which ignores its own `-f` |
 | `LOW_QMEAN` | `--filter-low-qmean <MIN_QMEAN>` | `QMEAN` is below the threshold, useful when VarDict runs with `-p`, which keeps calls failing its own `-q` |
 | `LOW_DP` | `--filter-low-dp <MIN_DP>` | `DP` is below the threshold |
+
+### Leaky MNVs
+
+VarDict builds a multi-nucleotide variant (MNV) from a read's mismatches up to `-X` (default 2) matching bases apart. A read that ends inside the MNV, or has a no-call (N) or a low-quality base there, counts toward a shorter allele instead: an SNV or a shorter MNV carrying the MNV's ALT bases. Here the fourth read's N leaves `TG>AA` beside `TGG>AAA`:
+
+```text
+Reference  CGTGGTT
+Read 1     CGAAATT
+Read 2     CGAAATT
+Read 3     CGAAATT
+Read 4     CGAANTT
+```
+
+VarDict folds some of these partials back itself and writes the rest as calls of their own. `--fix-leaky-mnv` folds them into their MNV with the directional adjacency rule of [UMI-tools](https://doi.org/10.1101/gr.209601.116) (Smith, Heger and Sudbery 2017):
+
+- A row is a partial of an MNV when it lies within the MNV's span and carries the MNV's ALT bases over its own span.
+- An MNV claims a partial when it has at least `2 * child - 1` ALT reads in every sample, so an SNV on another haplotype, with about as many reads, stays a record of its own.
+- Rows are visited from the most supported down. When two MNVs can claim the same partial, it goes to the one where fewer of the partial's ends fall inside the MNV, since each such end needs a read end or a no-call to explain it; a tie goes to the MNV with more reads.
+
+In the example, `TGG>AAA` is written with `AD` 4 and `DP` 4. A folded record gains INFO `MNV_PARTIALS` (rows folded in) and FORMAT `MNV_PARTIAL_READS` (ALT reads added), and its other fields are combined as VarDict merges an allele's reads:
+
+| Field | On a folded record |
+|---|---|
+| `AD[1]`, `ADF[1]`, `ADR[1]`, `HICNT` | The sums over the MNV and its partials |
+| `DP` | The MNV's, plus the reads of partials starting after `POS` |
+| `AF`, `GT`, `FILTER`, `TUMOR_NORMAL_FISHER_P` | Recomputed from the sums |
+| `STRAND_BIAS_FISHER_P` | Recomputed by vartovcf from the REF and summed ALT strand counts |
+| `QMEAN`, `MEAN_MAPQ`, `MEAN_MISMATCHES`, `MEAN_DIST_TO_READ_END` | Means over all the ALT reads, each partial's reads measured at its own bases |
+| `ALT_READ_POS_VARIES` | 1 when any row's is, or the rows' `MEAN_DIST_TO_READ_END` differ |
+| `REALIGNED_FRAC_OF_DP` | Counts the partials' reads as reassigned to the MNV |
+| `REF`, `AD[0]`, `TYPE`, `REPEAT_UNIT_*`, `VARDICT_STATUS` | The MNV's own |
+
+Folding never pushes `AD[1]` above `DP`, though a VarDict row already above it stays so. Only substitutions within one VarDict region are folded. With few reads a partial cannot be told from an SNV on another haplotype, so a 2-read SNV under a 4-read MNV is folded.
+
+> [!TIP]
+> On duplex consensus reads, folded partials carry about 1% of their MNV's reads, while SNVs on another haplotype carry about as many as the MNV and stay apart. Some partials are `PASS` SNVs, often pieces of germline MNVs, that would otherwise read as mutations of their own; folding them typically raises the MNV's `AF` by about 0.006.
+
+> [!WARNING]
+> **Known VarDictJava issue:** VarDict's own fold takes a partial starting after the MNV's first base whenever it has fewer reads than the MNV (`VariationRealigner.java:335` in 1.8.4). An SNV on another haplotype with slightly fewer reads is folded in too, which can nearly double the MNV's `AF`, and no row is written for the SNV, so `--fix-leaky-mnv` cannot undo it.
 
 ### Benchmarks
 
