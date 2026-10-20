@@ -162,6 +162,12 @@ The fold never lets `AD[1]` exceed `DP`. VarDict counts each read's base at a po
 
 With only a few reads, no count tells a partial from an SNV on another haplotype, so a 2-read SNV under a 4-read MNV is folded. Only substitutions take part, and only within one VarDict region. Rows are held back until their region ends, since VarDict writes a tumor-only region's positions in hash order and a partial can come before its MNV; the output keeps the input's order. Without the flag nothing is held back.
 
+> [!TIP]
+> On tumor-normal calls from about 1,200 hybrid-capture panel samples sequenced as duplex consensus reads, `--fix-leaky-mnv` folded 503 partials into their MNVs in 446 samples. 38 of the partials were `PASS` SNVs, 20 of them pieces of germline MNVs, that would otherwise read as mutations of their own. Each folded MNV gained a median of 4 ALT reads (at most 23) and its `AF` rose by at most 0.022, and no record's `AD[1]` came to exceed its `DP`. The 1,356 SNVs and shorter MNVs that share ALT bases with an MNV but carry about as many reads were left as records of their own.
+
+> [!WARNING]
+> **Known VarDictJava issue:** VarDict folds some partials into an MNV itself, and a partial starting after the MNV's first base is folded whenever it has fewer reads than the MNV (`tref.varsCount < vref.varsCount`, `VariationRealigner.java:335` in 1.8.4), with its reads added to the MNV's `AD` and `DP` (`:340`). An SNV on the other haplotype with slightly fewer reads than the MNV is folded in the same way: one heterozygous SNV with 849 reads went into an 857-read MNV, which VarDict wrote at an `AF` of 0.67 instead of about 0.34, with no row for the SNV. That row never reaches `vartovcf`, so `--fix-leaky-mnv` cannot undo the fold. The directional adjacency rule above, at least `2 * child - 1` reads in the MNV, would have kept the SNV apart.
+
 ### Benchmarks
 
 Measured on an Apple M3 Max running macOS 26.6.2, with `vartovcf` 3.0.0 (pre-release build of 5008e5e), VarDictJava 1.8.4 and the `var2vcf_valid.pl` it ships, run by Perl 5.34.1. The input is 60,501 rows of VarDictJava `-p --fisher` output for part of a targeted panel. `vartovcf` streams its input, while `var2vcf_valid.pl` holds all of it in memory to sort it, so its peak memory is 10 times higher (184 MB against 18 MB).
