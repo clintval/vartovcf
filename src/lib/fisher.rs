@@ -25,21 +25,58 @@ pub fn fisher_exact_greater(a: u64, b: u64, c: u64, d: u64) -> f64 {
 
 /// Return the two-sided Fisher exact p-value of the table `[[a, b], [c, d]]`, summing the probability
 /// of every table at most as likely as the observed one, as R's
-/// `fisher.test(matrix(c(a, b, c, d), nrow = 2))` and VarDict do.
+/// `fisher.test(matrix(c(a, b, c, d), nrow = 2))` and VarDict do. Tables are walked out from the most
+/// likely one by the ratio of each one's probability to its neighbour's, and each direction stops once
+/// they fall below e^-40 of the observed table's.
 pub fn fisher_exact_two_sided(a: u64, b: u64, c: u64, d: u64) -> f64 {
-    let (row, col, total) = ((a + b) as f64, (a + c) as f64, (a + b + c + d) as f64);
-    let ln_pmf = |x: u64| {
-        ln_choose(col, x as f64) + ln_choose(total - col, row - x as f64) - ln_choose(total, row)
-    };
     let lowest = (a + b).saturating_sub(b + d);
     let highest = (a + b).min(a + c);
-    let observed = ln_pmf(a) + (1.0 + 1e-7f64).ln();
-    let p: f64 = (lowest..=highest)
-        .map(ln_pmf)
-        .filter(|&ln_p| ln_p <= observed)
-        .map(f64::exp)
-        .sum();
-    p.min(1.0)
+    if lowest == highest {
+        return 1.0;
+    }
+    let (row, col, total) = ((a + b) as f64, (a + c) as f64, (a + b + c + d) as f64);
+    let other = d as f64 - a as f64;
+    let up = |x: u64| {
+        let x = x as f64;
+        (col - x) * (row - x) / ((x + 1.0) * (other + x + 1.0))
+    };
+    let down = |x: u64| {
+        let x = x as f64;
+        x * (other + x) / ((col - x + 1.0) * (row - x + 1.0))
+    };
+    let mode = (((row + 1.0) * (col + 1.0) / (total + 2.0)).floor() as u64).clamp(lowest, highest);
+    let observed: f64 = if a > mode {
+        (mode..a).map(up).product()
+    } else {
+        (a + 1..=mode).rev().map(down).product()
+    };
+    let (cut, floor) = (observed * (1.0 + 1e-7), observed * (-40.0f64).exp());
+    let mut sum = 0.0;
+    let mut term = 1.0;
+    for x in mode..=highest {
+        if x > mode {
+            term *= up(x - 1);
+        }
+        if term <= cut {
+            sum += term;
+            if term < floor {
+                break;
+            }
+        }
+    }
+    term = 1.0;
+    for x in (lowest..mode).rev() {
+        term *= down(x + 1);
+        if term <= cut {
+            sum += term;
+            if term < floor {
+                break;
+            }
+        }
+    }
+    let ln_mode = ln_choose(col, mode as f64) + ln_choose(total - col, row - mode as f64)
+        - ln_choose(total, row);
+    (sum.ln() + ln_mode).exp().min(1.0)
 }
 
 /// Sums terms that only fall, given the log of the first and the log ratio of each term to the
