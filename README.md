@@ -156,7 +156,7 @@ In the example, `TGG>AAA` is written with `AD` 4 and `DP` 4. A folded record gai
 | `REALIGNED_FRAC_OF_DP` | Counts the partials' reads as reassigned to the MNV |
 | `REF`, `AD[0]`, `TYPE`, `REPEAT_UNIT_*`, `VARDICT_STATUS` | The MNV's own |
 
-`AD[1]` never exceeds `DP`. A partial at the MNV's first base holds reads already in its `DP`, an N counting into depth alone under VarDict's `-K`, so it folds only while its reads fit; a later partial's reads are added to both, as VarDict does when it folds partials itself. Only substitutions within one VarDict region take part, and rows are held until their region ends, since tumor-only positions arrive in hash order; the output keeps the input's order. With only a few reads a partial cannot be told from an SNV on another haplotype, so a 2-read SNV under a 4-read MNV is folded.
+A folded record's `AD[1]` never exceeds its `DP`. Only substitutions within one VarDict region are folded. With few reads a partial cannot be told from an SNV on another haplotype, so a 2-read SNV under a 4-read MNV is folded.
 
 > [!TIP]
 > On duplex consensus reads, folded partials carry about 1% of their MNV's reads, while SNVs on another haplotype carry about as many as the MNV and stay apart. Some partials are `PASS` SNVs, often pieces of germline MNVs, that would otherwise read as mutations of their own; folding them typically raises the MNV's `AF` by about 0.006.
