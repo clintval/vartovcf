@@ -870,7 +870,8 @@ mod tests {
                 Some(blocks) => format!("trap '' XFSZ; ulimit -f {blocks}; exec \"$0\" \"$@\""),
                 None => "exec \"$0\" \"$@\"".to_string(),
             };
-            let mut child = std::process::Command::new("bash")
+            let mut command = std::process::Command::new("bash");
+            command
                 .args(["-c", &script])
                 .arg(assert_cmd::cargo::cargo_bin(env!("CARGO_PKG_NAME")))
                 .args(["--reference", "tests/reference.fa", "--sample", "dna00001"])
@@ -879,8 +880,12 @@ mod tests {
                 .arg("--tmp-dir")
                 .arg(dir.path())
                 .stdin(Stdio::piped())
-                .stderr(Stdio::null())
-                .spawn()?;
+                .stderr(Stdio::null());
+            if limit.is_some() {
+                // The file size limit would also cut short a coverage build's profile of this run.
+                command.env("LLVM_PROFILE_FILE", "/dev/null");
+            }
+            let mut child = command.spawn()?;
             child.stdin.take().unwrap().write_all(rows.as_bytes())?;
             Ok(child.wait()?.code())
         };
