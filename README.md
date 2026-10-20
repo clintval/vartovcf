@@ -157,7 +157,7 @@ In the example, `TGG>AAA` is written with `AD` 4 and `DP` 4. A folded record gai
 | `REALIGNED_FRAC_OF_DP` | Counts the partials' reads as reassigned to the MNV |
 | `REF`, `AD[0]`, `TYPE`, `REPEAT_UNIT_*`, `VARDICT_STATUS` | The MNV's own |
 
-Folding never pushes `AD[1]` above `DP`, though a VarDict row already above it stays so. Only substitutions within one VarDict region are folded. When regions overlap, a partial folded in one is not written again from another, and a partial another region already wrote is not folded, so no read is counted twice. With few reads a partial cannot be told from an SNV on another haplotype, so a 2-read SNV under a 4-read MNV is folded.
+Folding never pushes `AD[1]` above `DP`, though a VarDict row already above it stays so. Only substitutions within one VarDict region are folded. When regions overlap, a partial folded in one is not written again from another, and a partial another region already wrote is not folded, so no read is counted twice. A partial only a later region writes, beside an MNV an earlier region already wrote, is dropped, so its reads are counted nowhere. With few reads a partial cannot be told from an SNV on another haplotype, so a 2-read SNV under a 4-read MNV is folded.
 
 > [!TIP]
 > On duplex consensus reads, folded partials carry about 1% of their MNV's reads, while SNVs on another haplotype carry about as many as the MNV and stay apart. Some partials are `PASS` SNVs, often pieces of germline MNVs, that would otherwise read as mutations of their own; folding them typically raises the MNV's `AF` by about 0.006.
@@ -169,7 +169,7 @@ Folding never pushes `AD[1]` above `DP`, though a VarDict row already above it s
 
 Every record is normalized against `--reference`, which must be the FASTA VarDict was run with: an indel moves to its left-most position and alleles are trimmed to one shared base, as `bcftools norm -f` does, so `bcftools norm` is not needed. A REF allele that differs from the reference is an error. Alleles are written uppercase even where the reference is soft-masked, unlike `bcftools norm` ([samtools/bcftools#2606](https://github.com/samtools/bcftools/issues/2606)). Reference-only rows and symbolic structural variants are not moved.
 
-Each call is written once. Rows of one VarDict region that normalize to one call, such as one indel VarDict placed at two positions in a repeat, hold different reads of it, and the row with the most ALT reads is written. Overlapping BED regions repeat calls, and the first region's record is written.
+Each call is written once. Rows of one VarDict region that normalize to one call, such as one indel VarDict placed at two positions in a repeat, hold different reads of it, and the row with the most ALT reads in the tumor (or only) sample is written, then the most in all samples, then the most depth, so the choice never depends on row order. Overlapping BED regions repeat calls, and the first region's record is written. A region's rows are held until it ends, so memory grows with the largest VarDict region.
 
 ### Benchmarks
 

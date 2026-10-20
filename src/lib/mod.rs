@@ -9,6 +9,7 @@ use proglog::ProgLogBuilder;
 use rust_htslib::bcf::Format;
 use rust_htslib::bcf::Writer as VcfWriter;
 use rust_htslib::bcf::record::{GenotypeAllele, Numeric};
+use std::cmp::Reverse;
 use std::error;
 use std::fmt::Debug;
 use std::io::Read;
@@ -177,15 +178,13 @@ pub fn vartovcf<I: Read>(input: I, options: &Options) -> Result<i32, Box<dyn err
             continue; // If the 5th field is empty, it's a record we need to avoid deserializing.
         }
 
-        let (calls, _) = parse_row(&carry, layout)?;
-        let var = &calls[0];
-
-        if options.skip_non_variants && var.ref_allele.eq_ignore_ascii_case(var.alt_allele) {
+        let field = |index: usize| carry.get(index).unwrap_or_default();
+        if options.skip_non_variants && field(5).eq_ignore_ascii_case(field(6)) {
             continue;
         }
 
-        if var.sample != row_sample {
-            let message = format!("Expected sample '{}' found '{}'!", row_sample, var.sample);
+        if field(0) != row_sample {
+            let message = format!("Expected sample '{}' found '{}'!", row_sample, field(0));
             return Err(message.into());
         };
 
@@ -197,11 +196,20 @@ pub fn vartovcf<I: Read>(input: I, options: &Options) -> Result<i32, Box<dyn err
             sink.write_region(&region, layout, options.fix_leaky_mnv)?;
             region.clear();
         }
-        region.push(carry.clone());
+        region.push(compact(&carry));
     }
     sink.write_region(&region, layout, options.fix_leaky_mnv)?;
 
     Ok(0)
+}
+
+/// Copies a row into a record holding only its fields and position, as a region's rows are held
+/// until the region ends.
+fn compact(record: &StringRecord) -> StringRecord {
+    let mut copy = StringRecord::with_capacity(record.as_slice().len(), record.len());
+    copy.extend(record.iter());
+    copy.set_position(record.position().cloned());
+    copy
 }
 
 /// Parses a row into its calls, one per sample with the tumor (or only) sample first and a default
@@ -236,23 +244,24 @@ impl Sink<'_> {
     /// once; VarDict orders a tumor-only region's positions by hash, so rows can come in any order.
     ///
     /// When asked, the partial rows of each MNV are folded into it first. Rows of the region that
-    /// normalize to one call hold different reads of it, and the one with the most ALT reads is
-    /// written. A call an earlier region wrote, or folded as a partial, is not written again, and is
-    /// not folded into an MNV here, so its reads are never counted twice.
+    /// normalize to one call hold different reads of it, and the best supported is written, by
+    /// [`Support`]. A call an earlier region wrote, or folded as a partial, is not written again,
+    /// and is not folded into an MNV here, so its reads are never counted twice.
     fn write_region(
         &mut self,
         region: &[StringRecord],
         layout: Layout,
         fix_leaky_mnv: bool,
     ) -> Result<(), Box<dyn error::Error>> {
-        let rows = region
-            .iter()
-            .map(|record| parse_row(record, layout))
-            .collect::<Result<Vec<_>, _>>()?;
-        let calls: Vec<&[TumorOnlyVariant]> = rows
-            .iter()
-            .map(|(calls, _)| &calls[..layout.samples()])
-            .collect();
+        let samples = layout.samples();
+        let mut parsed: Vec<TumorOnlyVariant> = Vec::with_capacity(region.len() * samples);
+        let mut statuses: Vec<Option<&str>> = Vec::with_capacity(region.len());
+        for record in region {
+            let (row_calls, status) = parse_row(record, layout)?;
+            parsed.extend(row_calls.into_iter().take(samples));
+            statuses.push(status);
+        }
+        let calls: Vec<&[TumorOnlyVariant]> = parsed.chunks(samples).collect();
         let normalized = calls
             .iter()
             .map(|row| normalize(&mut self.reference, &row[0]))
@@ -268,18 +277,18 @@ impl Sink<'_> {
             vec![Fold::Keep; calls.len()]
         };
 
-        let mut best: AHashMap<CallKey, (usize, i64)> = AHashMap::new();
+        let mut best: AHashMap<CallKey, (usize, Support)> = AHashMap::new();
         for (row, fold) in folds.iter().enumerate() {
-            let reads = match fold {
+            let support = match fold {
                 _ if written[row] => continue,
-                Fold::Keep => alt_reads(calls[row]),
-                Fold::Merged(merged) => alt_reads(&merged.calls),
+                Fold::Keep => Support::new(calls[row], &calls[row][0]),
+                Fold::Merged(merged) => Support::new(&merged.calls, &calls[row][0]),
                 Fold::Into(_) => continue,
             };
             let key = CallKey::new(calls[row][0].contig, &normalized[row]);
-            let entry = best.entry(key).or_insert((row, reads));
-            if reads > entry.1 {
-                *entry = (row, reads);
+            let entry = best.entry(key).or_insert((row, support));
+            if support < entry.1 {
+                *entry = (row, support);
             }
         }
 
@@ -299,7 +308,7 @@ impl Sink<'_> {
             write_record(
                 &mut self.writer,
                 &row_calls,
-                rows[row].1,
+                statuses[row],
                 self.filters,
                 merged,
             )?;
@@ -312,9 +321,32 @@ impl Sink<'_> {
     }
 }
 
-/// The ALT reads of a record's calls, summed over its samples.
-fn alt_reads(calls: &[TumorOnlyVariant]) -> i64 {
-    calls.iter().map(|call| call.alt_depth.max(0) as i64).sum()
+/// How well a record supports its call, ordered best first: the most ALT reads in the tumor (or
+/// only) sample, then in all samples, then the most depth in the tumor, then VarDict's lowest
+/// position, REF and ALT for the row, so the choice never depends on the order of the rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Support<'a> {
+    tumor_reads: Reverse<i64>,
+    reads: Reverse<i64>,
+    tumor_depth: Reverse<i64>,
+    start: u64,
+    ref_allele: &'a str,
+    alt_allele: &'a str,
+}
+
+impl<'a> Support<'a> {
+    /// The support of a record with these calls, written for a row with this tumor call.
+    fn new(calls: &[TumorOnlyVariant], row: &TumorOnlyVariant<'a>) -> Self {
+        let reads = |call: &TumorOnlyVariant| call.alt_depth.max(0) as i64;
+        Support {
+            tumor_reads: Reverse(reads(&calls[0])),
+            reads: Reverse(calls.iter().map(reads).sum()),
+            tumor_depth: Reverse(calls[0].depth.max(0) as i64),
+            start: row.start,
+            ref_allele: row.ref_allele,
+            alt_allele: row.alt_allele,
+        }
+    }
 }
 
 /// A normalized call's contig, start, END, REF and ALT, which no two written records share.
