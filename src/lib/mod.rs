@@ -6,25 +6,28 @@ use anyhow::Result;
 use csv::{Reader, ReaderBuilder, StringRecord};
 use log::warn;
 use proglog::ProgLogBuilder;
-use rust_htslib::bcf::Format;
-use rust_htslib::bcf::Writer as VcfWriter;
+use rust_htslib::bcf::header::HeaderView;
 use rust_htslib::bcf::record::{GenotypeAllele, Numeric};
+use rust_htslib::bcf::{Format, Header, Record, Writer as VcfWriter};
 use std::error;
 use std::fmt::Debug;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::ops::Deref;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::fai::{fasta_contigs_to_vcf_header, fasta_path_to_vcf_header};
 use crate::filter::FilterThresholds;
-use crate::io::has_gzip_ext;
 use crate::mnv::{Fold, Merged, fold_partials};
 use crate::normalize::{Normalized, normalize};
+use crate::output::Output;
 use crate::record::MIN_HOM_ALT_AF;
 use crate::record::TumorNormalVariant;
 use crate::record::TumorOnlyVariant;
 use crate::record::{tumor_normal_fisher_p_value, tumor_normal_header, tumor_only_header};
 use crate::reference::Reference;
+use crate::sort::{RecordSorter, SortKey, resolve_tmp_dir};
 
 pub mod fai;
 pub mod filter;
@@ -33,8 +36,10 @@ pub mod hicnt;
 pub mod io;
 pub mod mnv;
 pub mod normalize;
+pub mod output;
 pub mod record;
 pub mod reference;
+pub mod sort;
 
 /// The structural variant types VarDict writes, which are the values of the `SVTYPE` INFO field.
 pub const VALID_SV_TYPES: &[&str] = &["DEL", "DUP", "INV"];
@@ -101,16 +106,57 @@ pub struct Options<'a> {
     pub fix_leaky_mnv: bool,
     /// The FILTER labels to apply.
     pub filters: FilterThresholds,
+    /// The directory to spill records to while sorting, resolved by [`sort::resolve_tmp_dir`].
+    pub tmp_dir: Option<PathBuf>,
+    /// Set to a signal's number when one asks the run to stop.
+    pub signal: Option<&'a AtomicUsize>,
 }
 
 /// Runs the tool `vartovcf` on an input VAR file or stream and writes the records to a VCF file.
 ///
 /// Each VarDict region's rows are parsed and, when asked, their leaky MNV partials folded, both in
-/// VarDict's own coordinates; each record is then normalized against the reference and written
-/// unless an earlier record normalized to the same call.
+/// VarDict's own coordinates; each record is then normalized against the reference and sorted, and
+/// each call is written once, after the input ends.
 ///
-/// Returns the exit code for success (0).
+/// Returns the exit code: 0 for success, also when standard output's reader closes it early, or 128
+/// plus the signal that stopped the run, after removing its temporary files and output file.
 pub fn vartovcf<I: Read>(input: I, options: &Options) -> Result<i32, Box<dyn error::Error>> {
+    let tmp_dir = resolve_tmp_dir(options.tmp_dir.as_deref())?;
+    let mut output = Output::create(options.output.as_deref())?;
+    let signal = || {
+        options
+            .signal
+            .map_or(0, |signal| signal.load(Ordering::Relaxed))
+    };
+    match convert(input, options, &tmp_dir, &mut output, &signal) {
+        Ok(true) => {
+            output.finish()?;
+            Ok(0)
+        }
+        Ok(false) => {
+            output.discard();
+            Ok(128 + signal() as i32)
+        }
+        Err(_) if output.is_closed_pipe() => {
+            output.discard();
+            Ok(0)
+        }
+        Err(error) => {
+            output.discard();
+            Err(error)
+        }
+    }
+}
+
+/// Converts the input's rows into sorted VCF text in the output, returning false when a signal
+/// stopped the run first.
+fn convert<I: Read>(
+    input: I,
+    options: &Options,
+    tmp_dir: &Path,
+    output: &mut Output,
+    signal: &dyn Fn() -> usize,
+) -> Result<bool, Box<dyn error::Error>> {
     let reference = Reference::from_path(&options.reference)?;
 
     let mut reader = ReaderBuilder::new()
@@ -119,7 +165,7 @@ pub fn vartovcf<I: Read>(input: I, options: &Options) -> Result<i32, Box<dyn err
         .flexible(true)
         .from_reader(input);
 
-    // Peek at the first row to learn the layout and sample before the writer emits the header.
+    // Peek at the first row to learn the layout and sample before the header is made.
     let mut carry = StringRecord::new();
     let mut peeked = reader.read_record(&mut carry)?;
     let layout = if peeked {
@@ -149,16 +195,12 @@ pub fn vartovcf<I: Read>(input: I, options: &Options) -> Result<i32, Box<dyn err
     fasta_contigs_to_vcf_header(&options.reference, &mut header);
     fasta_path_to_vcf_header(&options.reference, &mut header)
         .expect("Adding FASTA path to header failed!");
-
-    let writer = match &options.output {
-        Some(output) => VcfWriter::from_path(output, &header, !has_gzip_ext(output), Format::Vcf),
-        None => VcfWriter::from_stdout(&header, true, Format::Vcf),
-    }
-    .expect("Could not build a VCF writer!");
+    let (header, header_text) = render_header(&header, tmp_dir)?;
 
     let mut sink = Sink {
-        writer,
+        header,
         reference,
+        sorter: RecordSorter::new(tmp_dir)?,
         seen: SeenRows::default(),
         filters,
         progress: ProgLogBuilder::new()
@@ -173,6 +215,9 @@ pub fn vartovcf<I: Read>(input: I, options: &Options) -> Result<i32, Box<dyn err
     let mut region: Vec<StringRecord> = Vec::new();
 
     while std::mem::take(&mut peeked) || read_row(&mut reader, &mut carry, layout)? {
+        if signal() != 0 {
+            return Ok(false);
+        }
         if carry.get(5).is_none_or(|f| f.is_empty()) {
             continue; // If the 5th field is empty, it's a record we need to avoid deserializing.
         }
@@ -194,14 +239,32 @@ pub fn vartovcf<I: Read>(input: I, options: &Options) -> Result<i32, Box<dyn err
             .last()
             .is_some_and(|last| last.get(column) != carry.get(column))
         {
-            sink.write_region(&region, layout, options.fix_leaky_mnv)?;
+            sink.add_region(&region, layout, options.fix_leaky_mnv)?;
             region.clear();
         }
         region.push(carry.clone());
     }
-    sink.write_region(&region, layout, options.fix_leaky_mnv)?;
+    sink.add_region(&region, layout, options.fix_leaky_mnv)?;
 
-    Ok(0)
+    output
+        .write_all(&header_text)
+        .map_err(|error| format!("Could not write the output: {error}!"))?;
+    Ok(sink.sorter.write_to(output, &|| signal() != 0)?.is_some())
+}
+
+/// Returns a view of a header to build records with, and the header as VCF text, which it renders
+/// through a temporary file in `tmp_dir`.
+fn render_header(
+    header: &Header,
+    tmp_dir: &Path,
+) -> Result<(Arc<HeaderView>, Vec<u8>), Box<dyn error::Error>> {
+    let file = tempfile::NamedTempFile::new_in(tmp_dir)
+        .map_err(|error| format!("Could not use the temporary directory {tmp_dir:?}: {error}!"))?;
+    let view = {
+        let writer = VcfWriter::from_path(file.path(), header, true, Format::Vcf)?;
+        Arc::new(writer.header().clone())
+    };
+    Ok((view, std::fs::read(file.path())?))
 }
 
 /// Parses a row into its calls, one per sample with the tumor (or only) sample first and a default
@@ -222,24 +285,26 @@ fn parse_row(
     })
 }
 
-/// Normalizes records and writes each call once.
+/// Normalizes records and adds each call once to the sort.
 struct Sink<'r> {
-    writer: VcfWriter,
+    header: Arc<HeaderView>,
     reference: Reference,
+    sorter: RecordSorter,
     seen: SeenRows,
     filters: &'r FilterThresholds,
     progress: proglog::ProgLog,
 }
 
 impl Sink<'_> {
-    /// Writes the rows of one VarDict region, a block it writes together for one target, each call
+    /// Adds the rows of one VarDict region, a block it writes together for one target, each call
     /// once; VarDict orders a tumor-only region's positions by hash, so rows can come in any order.
     ///
     /// When asked, the partial rows of each MNV are folded into it first. Rows of the region that
     /// normalize to one call hold different reads of it, and the one with the most ALT reads is
-    /// written. A call an earlier region wrote, or folded as a partial, is not written again, and is
-    /// not folded into an MNV here, so its reads are never counted twice.
-    fn write_region(
+    /// added. A substitution an earlier region added, or folded as a partial, is not added again,
+    /// and is not folded into an MNV here, so its reads are never counted twice; any other call an
+    /// earlier region added is dropped after the sort, where the two sit side by side.
+    fn add_region(
         &mut self,
         region: &[StringRecord],
         layout: Layout,
@@ -296,20 +361,45 @@ impl Sink<'_> {
                 .iter()
                 .map(|call| normalized[row].apply(call))
                 .collect();
-            write_record(
-                &mut self.writer,
-                &row_calls,
-                rows[row].1,
-                self.filters,
-                merged,
-            )?;
+            let record = build_record(&self.header, &row_calls, rows[row].1, self.filters, merged)?;
+            let line = record.to_vcf_string()?;
+            self.sorter
+                .push(sort_key(&record, &normalized[row]), line.as_bytes())?;
             self.progress.record();
         }
         for (row, call) in calls.iter().zip(&normalized) {
-            self.seen.insert(row[0].contig, call)?;
+            if is_substitution(call) {
+                self.seen.insert(row[0].contig, call)?;
+            }
         }
         Ok(())
     }
+}
+
+/// The sort key of a record, which is also what makes two records the same call.
+fn sort_key<'n>(record: &Record, call: &'n Normalized) -> SortKey<'n> {
+    let alt_allele = if call.ref_allele == call.alt_allele {
+        &[][..]
+    } else {
+        call.alt_allele.as_bytes()
+    };
+    SortKey {
+        rid: record.rid().unwrap_or_default(),
+        pos: call.start - 1,
+        ref_allele: call.ref_allele.as_bytes(),
+        alt_allele,
+        end: call.end,
+    }
+}
+
+/// Whether a normalized call substitutes bases, as only a substitution can be a leaky MNV's partial.
+fn is_substitution(call: &Normalized) -> bool {
+    call.ref_allele.len() == call.alt_allele.len()
+        && call.ref_allele != call.alt_allele
+        && call
+            .alt_allele
+            .bytes()
+            .all(|base| base.is_ascii_alphabetic())
 }
 
 /// The ALT reads of a record's calls, summed over its samples.
@@ -340,19 +430,19 @@ impl<'n> CallKey<'n> {
     }
 }
 
-/// Writes one VCF record with a sample column per call, the tumor (or only) sample first; FILTER and
+/// Builds one VCF record with a sample column per call, the tumor (or only) sample first; FILTER and
 /// the site's INFO come from the first call, and a tumor-normal record carries its VARDICT_STATUS.
-fn write_record(
-    writer: &mut VcfWriter,
+fn build_record(
+    header: &Arc<HeaderView>,
     calls: &[TumorOnlyVariant],
     status: Option<&str>,
     filters: &FilterThresholds,
     merged: Option<&Merged>,
-) -> Result<(), Box<dyn error::Error>> {
+) -> Result<Record, Box<dyn error::Error>> {
     let var = &calls[0];
-    let rid = writer.header().name2rid(var.contig.as_bytes()).unwrap();
+    let rid = header.name2rid(var.contig.as_bytes())?;
 
-    let mut variant = writer.empty_record();
+    let mut variant = header.empty_record();
     variant.set_rid(Some(rid));
     variant.set_pos(var.start as i64 - 1);
     variant.set_alleles(&[
@@ -467,8 +557,7 @@ fn write_record(
         variant.push_format_integer(b"SV_DISCORDANT_READS", &each(&counts, |count| count.1))?;
     }
 
-    writer.write(&variant)?;
-    Ok(())
+    Ok(variant)
 }
 
 /// Collects one value per sample.
@@ -510,7 +599,7 @@ impl<V, const N: usize> Deref for Values<V, N> {
     }
 }
 
-/// The calls written so far, each held as a fixed-size key, for skipping a call written before.
+/// The substitutions added so far, each held as a fixed-size key, for skipping one added before.
 #[derive(Default)]
 struct SeenRows {
     keys: AHashSet<RowKey>,

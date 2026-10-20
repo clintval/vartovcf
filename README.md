@@ -16,7 +16,7 @@ Install with the Conda or Mamba package manager after setting your [Bioconda cha
 ❯ mamba install vartovcf
 ```
 
-Or build from source with Rust 1.88 or newer, a C toolchain, and libclang (used by `bindgen` to generate the htslib bindings):
+Or build from source with Rust 1.89 or newer, a C toolchain, and libclang (used by `bindgen` to generate the htslib bindings):
 
 ```bash
 ❯ cargo install --locked --git https://github.com/clintval/vartovcf
@@ -24,10 +24,9 @@ Or build from source with Rust 1.88 or newer, a C toolchain, and libclang (used 
 
 ### Features
 
-- Unlike the Perl script bundled with VarDict, this tool streams record-by-record
+- Unlike the Perl script bundled with VarDict, which holds every record in memory to sort them, this tool sorts in bounded memory beyond one VarDict region's rows, see [Sorting](#sorting)
 - This tool is kept lean on purpose: it converts formats, and applies FILTER labels only when asked
 - The output is compliant with the VCF v4.2 and v4.3 specifications
-- Output VCF records are unsorted and a call to `bcftools sort` is recommended
 - Records are normalized against `--reference` as `bcftools norm -f` does, and every allele is written uppercase, see [Normalization](#normalization)
 - Tumor-only (`var2vcf_valid.pl`) and tumor-normal (`var2vcf_paired.pl`) output are both supported, told apart from the first row
 - When asked, the partial rows VarDict writes for a multi-nucleotide variant (MNV) are folded back into it, see [Leaky MNVs](#leaky-mnvs)
@@ -53,7 +52,7 @@ Replace the call to `var2vcf_valid.pl` with `vartovcf` in a typical VarDictJava 
       --filter-high-mean-mismatches 5.25 \
       --filter-same-read-position 0.35 \
       --filter-strand-bias 0.01 --filter-strand-bias-min-odds-ratio 5 --filter-strand-bias-max-af 0.25 \
-  | bcftools sort -Oz > variants.vcf.gz
+      --output variants.vcf.gz
 ```
 
 In pileup mode (`-p`) VarDict keeps every candidate and switches off its own call rules. Add `LOW_AF`, `LOW_QMEAN` and `LOW_DP` to mark the candidates its `-f` and `-q` rules would have dropped, here with VarDict's defaults (`-f` as given, `-q 22.5`):
@@ -71,7 +70,7 @@ In pileup mode (`-p`) VarDict keeps every candidate and switches off its own cal
       --filter-low-af 0.05 \
       --filter-low-qmean 22.5 \
       --filter-low-dp 3 \
-  | bcftools sort -Oz > candidates.vcf.gz
+      --output candidates.vcf.gz
 ```
 
 ### Tumor-normal
@@ -94,7 +93,7 @@ Replace `var2vcf_paired.pl` the same way. VarDictJava writes the sample names in
       --filter-high-mean-mismatches 5.25 \
       --filter-same-read-position 0.35 \
       --filter-strand-bias 0.01 --filter-strand-bias-min-odds-ratio 5 --filter-strand-bias-max-af 0.25 \
-  | bcftools sort -Oz > somatic.vcf.gz
+      --output somatic.vcf.gz
 ```
 
 Each record has a tumor and a normal sample column with the tumor-only FORMAT fields. VarDict does not write `HICNT` for a pair, so `vartovcf` recovers each sample's count exactly from its `AD` and the ratio of high- to low-quality ALT reads that VarDict does write, and leaves it `.` in the rare cases that ratio cannot settle, which the header describes. Because `AD` counts ALT reads at any base quality, `HICNT` is the ALT count to compare with a depth filtered by base quality. A sample with no reads of the allele has `.` for its ALT-read statistics and a `0/0` genotype, or `./.` when it has no depth either. Two INFO fields describe the pair:
@@ -171,9 +170,13 @@ Every record is normalized against `--reference`, which must be the FASTA VarDic
 
 Each call is written once. Rows of one VarDict region that normalize to one call, such as one indel VarDict placed at two positions in a repeat, hold different reads of it, and the row with the most ALT reads is written. Overlapping BED regions repeat calls, and the first region's record is written.
 
+### Sorting
+
+Records are sorted by contig, in the reference's order, then by POS, REF and ALT, as `bcftools sort` does, so `bcftools sort` is not needed, and they are written only once the input ends. Up to 64 MiB of records are held in memory and the rest spill to `--tmp-dir`, `$TMPDIR` by default, which is cleaned up when `vartovcf` exits or fails. A SIGINT or SIGTERM stops it at its next input row and removes the output file, though output already sent to standard output stays incomplete; a second signal exits at once and leaves the temporary files.
+
 ### Benchmarks
 
-Measured on an Apple M3 Max running macOS 26.6.2, with `vartovcf` 3.0.0 (pre-release build of 5008e5e), VarDictJava 1.8.4 and the `var2vcf_valid.pl` it ships, run by Perl 5.34.1. The input is 60,501 rows of VarDictJava `-p --fisher` output for part of a targeted panel. `vartovcf` streams its input, while `var2vcf_valid.pl` holds all of it in memory to sort it, so its peak memory is 10 times higher (184 MB against 18 MB).
+Measured on an Apple M3 Max running macOS 26.6.2, with `vartovcf` 3.0.0 (pre-release build of 5008e5e), VarDictJava 1.8.4 and the `var2vcf_valid.pl` it ships, run by Perl 5.34.1. The input is 60,501 rows of VarDictJava `-p --fisher` output for part of a targeted panel. `var2vcf_valid.pl` holds all of its input in memory to sort it, so its peak memory was 10 times that of `vartovcf` 3.0.0, which wrote its records unsorted (184 MB against 18 MB).
 
 ```bash
 ❯ vartovcf --reference hg19.fa --sample dna00001 < test.var > /dev/null
