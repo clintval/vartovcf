@@ -18,16 +18,18 @@ use std::path::{Path, PathBuf};
 use crate::fai::{fasta_contigs_to_vcf_header, fasta_path_to_vcf_header};
 use crate::filter::FilterThresholds;
 use crate::io::has_gzip_ext;
+use crate::mnv::{Fold, Merged, fold_partials};
 use crate::record::MIN_HOM_ALT_AF;
 use crate::record::TumorNormalVariant;
 use crate::record::TumorOnlyVariant;
-use crate::record::{tumor_normal_header, tumor_only_header};
+use crate::record::{tumor_normal_fisher_p_value, tumor_normal_header, tumor_only_header};
 
 pub mod fai;
 pub mod filter;
 pub mod fisher;
 pub mod hicnt;
 pub mod io;
+pub mod mnv;
 pub mod record;
 
 /// The structural variant types VarDict writes, which are the values of the `SVTYPE` INFO field.
@@ -88,11 +90,13 @@ const NO_FISHER_SEGMENT_COLUMNS: [usize; 2] = [32, 48];
 /// * `sample` - The tumor (or only) sample name, read from the input when not given
 /// * `normal_sample` - The matched normal sample name, required for tumor-normal input
 /// * `skip_non_variants` - Skip non-variant sites (where ref_allele == alt_allele)
+/// * `fix_leaky_mnv` - Fold the partial rows of each MNV back into it, see [`mnv`]
 ///
 /// # Returns
 ///
 /// Returns the result of the execution with an integer exit code for success (0).
 ///
+#[allow(clippy::too_many_arguments)]
 pub fn vartovcf<I, R>(
     input: I,
     output: Option<PathBuf>,
@@ -100,6 +104,7 @@ pub fn vartovcf<I, R>(
     sample: Option<&str>,
     normal_sample: Option<&str>,
     skip_non_variants: bool,
+    fix_leaky_mnv: bool,
     filters: &FilterThresholds,
 ) -> Result<i32, Box<dyn error::Error>>
 where
@@ -128,8 +133,8 @@ where
     let layout = layout.unwrap_or(Layout::TumorOnly);
 
     let mut header = match &normal_sample {
-        Some(normal_sample) => tumor_normal_header(&sample, normal_sample, filters),
-        None => tumor_only_header(&sample, filters),
+        Some(normal_sample) => tumor_normal_header(&sample, normal_sample, filters, fix_leaky_mnv),
+        None => tumor_only_header(&sample, filters, fix_leaky_mnv),
     };
 
     fasta_contigs_to_vcf_header(&fasta, &mut header);
@@ -150,24 +155,14 @@ where
 
     let row_sample = row_sample.unwrap_or_default();
     let mut seen = SeenRows::default();
+    let mut region: Vec<StringRecord> = Vec::new();
 
     while std::mem::take(&mut peeked) || read_row(&mut reader, &mut carry, layout)? {
         if carry.get(5).is_none_or(|f| f.is_empty()) {
             continue; // If the 5th field is empty, it's a record we need to avoid deserializing.
         }
 
-        let (calls, tumor_normal) = match layout {
-            Layout::TumorOnly => {
-                let call: TumorOnlyVariant =
-                    carry.deserialize(None).map_err(describe_parse_error)?;
-                ([call, TumorOnlyVariant::default()], None)
-            }
-            Layout::TumorNormal => {
-                let row: TumorNormalVariant =
-                    carry.deserialize(None).map_err(describe_parse_error)?;
-                ([row.tumor_call(), row.normal_call()], Some(row))
-            }
-        };
+        let (calls, status) = parse_row(&carry, layout)?;
         let calls = &calls[..layout.samples()];
         let var = &calls[0];
 
@@ -188,20 +183,84 @@ where
             return Err(message.into());
         };
 
-        write_record(&mut writer, calls, tumor_normal.as_ref(), filters)?;
-        progress.record();
+        if !fix_leaky_mnv {
+            write_record(&mut writer, calls, status, filters, None)?;
+            progress.record();
+            continue;
+        }
+
+        let column = layout.segment_column();
+        if region
+            .last()
+            .is_some_and(|last| last.get(column) != carry.get(column))
+        {
+            write_region(&mut writer, &region, layout, filters, &progress)?;
+            region.clear();
+        }
+        region.push(carry.clone());
     }
+    write_region(&mut writer, &region, layout, filters, &progress)?;
 
     Ok(0)
 }
 
+/// Parses a row into its calls, one per sample with the tumor (or only) sample first and a default
+/// call filling the second slot of a tumor-only row, and its tumor-normal VARDICT_STATUS.
+fn parse_row(
+    record: &StringRecord,
+    layout: Layout,
+) -> Result<([TumorOnlyVariant<'_>; 2], Option<&str>), String> {
+    Ok(match layout {
+        Layout::TumorOnly => {
+            let call: TumorOnlyVariant = record.deserialize(None).map_err(describe_parse_error)?;
+            ([call, TumorOnlyVariant::default()], None)
+        }
+        Layout::TumorNormal => {
+            let row: TumorNormalVariant = record.deserialize(None).map_err(describe_parse_error)?;
+            ([row.tumor_call(), row.normal_call()], Some(row.status))
+        }
+    })
+}
+
+/// Writes the rows of one VarDict region, a block it writes together for one target, with the
+/// partial rows of each MNV folded into it; VarDict orders a tumor-only region's positions by hash,
+/// so a partial row can come before or after its MNV.
+fn write_region(
+    writer: &mut VcfWriter,
+    region: &[StringRecord],
+    layout: Layout,
+    filters: &FilterThresholds,
+    progress: &proglog::ProgLog,
+) -> Result<(), Box<dyn error::Error>> {
+    let rows = region
+        .iter()
+        .map(|record| parse_row(record, layout))
+        .collect::<Result<Vec<_>, _>>()?;
+    let calls: Vec<&[TumorOnlyVariant]> = rows
+        .iter()
+        .map(|(calls, _)| &calls[..layout.samples()])
+        .collect();
+    for ((row_calls, (_, status)), fold) in calls.iter().zip(&rows).zip(fold_partials(&calls)) {
+        match fold {
+            Fold::Keep => write_record(writer, row_calls, *status, filters, None)?,
+            Fold::Into(_) => continue,
+            Fold::Merged(merged) => {
+                write_record(writer, &merged.calls, *status, filters, Some(&merged))?
+            }
+        }
+        progress.record();
+    }
+    Ok(())
+}
+
 /// Writes one VCF record with a sample column per call, the tumor (or only) sample first; FILTER and
-/// the site's INFO come from the first call.
+/// the site's INFO come from the first call, and a tumor-normal record carries its VARDICT_STATUS.
 fn write_record(
     writer: &mut VcfWriter,
     calls: &[TumorOnlyVariant],
-    tumor_normal: Option<&TumorNormalVariant>,
+    status: Option<&str>,
     filters: &FilterThresholds,
+    merged: Option<&Merged>,
 ) -> Result<(), Box<dyn error::Error>> {
     let var = &calls[0];
     let rid = writer.header().name2rid(var.contig.as_bytes()).unwrap();
@@ -257,12 +316,16 @@ fn write_record(
         variant.push_info_string(b"SVTYPE", &[var.variant_type.as_bytes()])?;
     }
 
-    if let Some(row) = tumor_normal {
-        variant.push_info_string(b"VARDICT_STATUS", &[row.status.as_bytes()])?;
+    if let (Some(status), [tumor, normal]) = (status, calls) {
+        variant.push_info_string(b"VARDICT_STATUS", &[status.as_bytes()])?;
         variant.push_info_float(
             b"TUMOR_NORMAL_FISHER_P",
-            &[row.tumor_normal_fisher_p_value()],
+            &[tumor_normal_fisher_p_value(tumor, normal)],
         )?;
+    }
+
+    if let Some(merged) = merged {
+        variant.push_info_integer(b"MNV_PARTIALS", &[merged.partials as i32])?;
     }
 
     let genotypes = Values::<_, 4>::collect(
@@ -303,6 +366,10 @@ fn write_record(
         b"MEAN_MISMATCHES",
         &each(calls, TumorOnlyVariant::mean_mismatches_value),
     )?;
+
+    if let Some(merged) = merged {
+        variant.push_format_integer(b"MNV_PARTIAL_READS", &merged.partial_reads)?;
+    }
 
     if let Some(counts) = calls
         .iter()
@@ -576,6 +643,7 @@ mod tests {
             Some(sample),
             None,
             false,
+            false,
             &FilterThresholds::default(),
         )?;
         assert_eq!(exit, 0);
@@ -596,6 +664,7 @@ mod tests {
             PathBuf::from("tests/reference.fa"),
             Some("dna00001"),
             None,
+            false,
             false,
             &FilterThresholds::default(),
         )?;
@@ -630,6 +699,7 @@ mod tests {
             None,
             path.contains("tumor-normal").then_some("N"),
             false,
+            false,
             &FilterThresholds::default(),
         );
         assert_eq!(result.unwrap_err().to_string(), message);
@@ -649,6 +719,7 @@ mod tests {
             PathBuf::from("tests/reference.fa"),
             None,
             None,
+            false,
             false,
             &FilterThresholds::default(),
         );
@@ -670,6 +741,7 @@ mod tests {
             None,
             None,
             false,
+            false,
             &FilterThresholds::default(),
         );
         assert_eq!(
@@ -689,6 +761,7 @@ mod tests {
             &reference,
             Some("XXXXXXXX"),
             None,
+            false,
             false,
             &FilterThresholds::default(),
         );
@@ -714,6 +787,7 @@ mod tests {
             Some("dna00001"),
             None,
             false,
+            false,
             &FilterThresholds::default(),
         );
         assert_eq!(
@@ -736,6 +810,7 @@ mod tests {
             Some("dna00001"),
             None,
             false,
+            false,
             &FilterThresholds::default(),
         );
         assert_eq!(
@@ -756,6 +831,7 @@ mod tests {
             &reference,
             Some("dna00001"),
             None,
+            false,
             false,
             &FilterThresholds::default(),
         );
@@ -962,6 +1038,7 @@ mod tests {
             Some("tumor"),
             normal_sample,
             false,
+            false,
             &FilterThresholds::default(),
         )?;
         assert_eq!(exit, 0);
@@ -974,6 +1051,39 @@ mod tests {
             .map(|sample| String::from_utf8_lossy(sample).to_string())
             .collect();
         assert_eq!(samples, expected);
+        Ok(())
+    }
+
+    #[rstest]
+    #[case(false, 11)]
+    #[case(true, 7)]
+    fn test_only_the_flag_folds_leaky_mnv_partials(
+        #[case] fix_leaky_mnv: bool,
+        #[case] expected: usize,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let input = BufReader::new(File::open("tests/calls.leaky-mnv.var")?);
+        let output = NamedTempFile::new().expect("Cannot create temporary file!");
+        vartovcf(
+            input,
+            Some(output.path().into()),
+            PathBuf::from("tests/reference.fa"),
+            Some("dna00001"),
+            None,
+            false,
+            fix_leaky_mnv,
+            &FilterThresholds::default(),
+        )?;
+        use rust_htslib::bcf::{Read, Reader as VcfReader};
+        let mut reader = VcfReader::from_path(output.path()).expect("Error opening output file!");
+        assert_eq!(
+            reader.header().info_type(b"MNV_PARTIALS").is_ok(),
+            fix_leaky_mnv
+        );
+        assert_eq!(
+            reader.header().format_type(b"MNV_PARTIAL_READS").is_ok(),
+            fix_leaky_mnv
+        );
+        assert_eq!(reader.records().count(), expected);
         Ok(())
     }
 
@@ -1048,6 +1158,7 @@ mod tests {
             None,
             None,
             false,
+            false,
             &FilterThresholds::default(),
         );
         assert_eq!(
@@ -1069,6 +1180,7 @@ mod tests {
             Some(sample),
             None,
             true,
+            false,
             &FilterThresholds::default(),
         )?;
         assert_eq!(exit, 0);

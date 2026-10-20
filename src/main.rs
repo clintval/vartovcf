@@ -39,6 +39,10 @@ struct Opt {
     #[arg(long)]
     skip_non_variants: bool,
 
+    /// Fold the partial rows VarDict writes for a multi-nucleotide variant (MNV), from reads that end, have a no-call (N) or a low-quality base inside it, back into the MNV; see the README
+    #[arg(long)]
+    fix_leaky_mnv: bool,
+
     /// Label calls NEAR_READ_END when their mean distance to the nearer read end is below this; not applied when not given
     #[arg(long, value_name = "MIN_MEAN_DIST")]
     filter_near_read_end: Option<f32>,
@@ -130,6 +134,7 @@ fn main() -> Result<(), Error> {
         opt.sample.as_deref(),
         opt.normal_sample.as_deref(),
         opt.skip_non_variants,
+        opt.fix_leaky_mnv,
         &FilterThresholds {
             near_read_end: opt.filter_near_read_end,
             low_mean_mapq: opt.filter_low_mean_mapq,

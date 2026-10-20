@@ -29,6 +29,7 @@ Or build from source with Rust 1.88 or newer, a C toolchain, and libclang (used 
 - The output is compliant with the VCF v4.2 and v4.3 specifications
 - Output VCF records are unsorted and a call to `bcftools sort` is recommended
 - Tumor-only (`var2vcf_valid.pl`) and tumor-normal (`var2vcf_paired.pl`) output are both supported, told apart from the first row
+- When asked, the partial rows VarDict writes for a multi-nucleotide variant (MNV) are folded back into it, see [Leaky MNVs](#leaky-mnvs)
 - VarDictJava must be run with `--fisher`
 
 ### Example Usage
@@ -123,6 +124,43 @@ No FILTER label is applied unless its option is given; with none given, the FILT
 | `LOW_AF` | `--filter-low-af <MIN_AF>` | `AF` is below the threshold, useful when VarDict runs with `-p`, which ignores its own `-f` |
 | `LOW_QMEAN` | `--filter-low-qmean <MIN_QMEAN>` | `QMEAN` is below the threshold, useful when VarDict runs with `-p`, which keeps calls failing its own `-q` |
 | `LOW_DP` | `--filter-low-dp <MIN_DP>` | `DP` is below the threshold |
+
+### Leaky MNVs
+
+VarDict grows a multi-nucleotide variant (MNV) through a read one well-called mismatch at a time, joining mismatches up to `-X` (default 2) matching bases apart. A read that ends inside the MNV, or has a no-call (N) or a base below VarDict's `-q` plus 5 there, counts toward a shorter allele instead: an SNV or a shorter MNV that carries the MNV's ALT bases over its own span. In this example, the fourth read's N leaves a shorter MNV:
+
+```text
+Reference  CGTGGTT
+Read 1     CGAAATT
+Read 2     CGAAATT
+Read 3     CGAAATT
+Read 4     CGAANTT
+```
+
+VarDict writes `TGG>AAA` with 3 of the 4 reads and `TG>AA` with the fourth. It folds some partials back itself, the ones ending at the MNV's last base and the ones at its first base whose reads all end there, and writes the rest as rows of their own. They look like independent calls; on duplex consensus reads from a hybrid-capture panel they sit at about 1% of the MNV's reads, some of them PASS.
+
+With `--fix-leaky-mnv`, these partial rows are folded back into their MNV. The rows of each VarDict region, the block VarDict writes for one target, are grouped by the directional adjacency rule of [UMI-tools](https://doi.org/10.1101/gr.209601.116) (Smith, Heger and Sudbery 2017), which [fgbio](https://github.com/fulcrumgenomics/fgbio) implements as `GroupReadsByUmi --strategy adjacency`:
+
+- A row is a sub-event of an MNV when it lies within the MNV's span and carries the MNV's ALT bases over its own span, so it changes no base the MNV leaves alone.
+- An MNV can claim a sub-event when, in every sample, it has at least `2 * child - 1` ALT reads. An SNV that shares an ALT base with an MNV but comes from another haplotype has about as many reads as the MNV or more, and stays a record of its own.
+- Rows are visited from the most to the least supported, and one that no MNV can claim stands alone. A partial that two MNVs can claim goes to the one it leaves with the fewest breaks, one for each of its ends inside the MNV, then to the one with more reads.
+
+In the example, `TG>AA` folds into `TGG>AAA`, which is written with `AD` 4 and `DP` 4. A folded record keeps the MNV's position and alleles and gains the INFO field `MNV_PARTIALS` (rows folded in) and the FORMAT field `MNV_PARTIAL_READS` (ALT reads they added). Its other fields are combined the way VarDict's own MNV merging combines an allele's reads:
+
+| Field | On a folded record |
+|---|---|
+| `AD[1]`, `ADF[1]`, `ADR[1]`, `HICNT` | The sums over the MNV and its partials |
+| `DP` | The MNV's, plus the reads of partials starting after `POS` |
+| `AF`, `GT`, `FILTER`, `TUMOR_NORMAL_FISHER_P` | Recomputed from the sums |
+| `STRAND_BIAS_FISHER_P` | Recomputed by vartovcf from the REF and summed ALT strand counts |
+| `QMEAN`, `MEAN_MAPQ`, `MEAN_MISMATCHES`, `MEAN_DIST_TO_READ_END` | Means over all the ALT reads, each partial's reads measured at its own bases |
+| `ALT_READ_POS_VARIES` | 1 when any row's is, or the rows' `MEAN_DIST_TO_READ_END` differ |
+| `REALIGNED_FRAC_OF_DP` | Counts the partials' reads as reassigned to the MNV |
+| `REF`, `AD[0]`, `TYPE`, `REPEAT_UNIT_*`, `VARDICT_STATUS` | The MNV's own |
+
+The fold never lets `AD[1]` exceed `DP`. VarDict counts each read's base at a position into one allele there and into that position's depth, and counts an N there into the depth alone when run with `-K`. A partial starting at the MNV's first base therefore holds reads already in its `DP`, and is folded only while its reads fit there beside the MNV's; a partial starting later holds reads VarDict counted at another position, which are added to `DP` as well as `AD[1]`, as VarDict does when it folds partials itself. A record whose `AD[1]` was within its `DP` stays so.
+
+With only a few reads, no count tells a partial from an SNV on another haplotype, so a 2-read SNV under a 4-read MNV is folded. Only substitutions take part, and only within one VarDict region. Rows are held back until their region ends, since VarDict writes a tumor-only region's positions in hash order and a partial can come before its MNV; the output keeps the input's order. Without the flag nothing is held back.
 
 ### Benchmarks
 

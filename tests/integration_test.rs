@@ -299,6 +299,44 @@ mod tests {
     }
 
     #[test]
+    #[rustfmt::skip]
+    fn run_end_to_end_folds_leaky_mnv_partials() -> Result<(), Box<dyn std::error::Error>> {
+        let output = NamedTempFile::new().expect("Cannot create temporary file!");
+        let output = output.path().to_str().unwrap();
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        cmd
+            .arg("--reference").arg("tests/reference.fa")
+            .arg("--sample").arg("dna00001")
+            .arg("--input").arg("tests/calls.leaky-mnv.var")
+            .arg("--output").arg(output)
+            .arg("--fix-leaky-mnv")
+            .arg("--filter-strand-bias").arg("0.01")
+            .arg("--filter-low-af").arg("0.02")
+            .unwrap().assert().success();
+
+        assert!(diff(output, "tests/calls.leaky-mnv.vcf"));
+        Ok(())
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn run_end_to_end_folds_tumor_normal_leaky_mnv_partials() -> Result<(), Box<dyn std::error::Error>> {
+        let output = NamedTempFile::new().expect("Cannot create temporary file!");
+        let output = output.path().to_str().unwrap();
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        cmd
+            .arg("--reference").arg("tests/tumor-normal.fa")
+            .arg("--normal-sample").arg("N")
+            .arg("--input").arg("tests/calls.tumor-normal.leaky-mnv.var")
+            .arg("--output").arg(output)
+            .arg("--fix-leaky-mnv")
+            .unwrap().assert().success();
+
+        assert!(diff(output, "tests/calls.tumor-normal.leaky-mnv.vcf"));
+        Ok(())
+    }
+
+    #[test]
     fn run_end_to_end_refuses_the_removed_mode_option() -> Result<(), Box<dyn std::error::Error>> {
         let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
         let assert = cmd
