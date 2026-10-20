@@ -177,11 +177,10 @@ pub fn vartovcf<I: Read>(input: I, options: &Options) -> Result<i32, Box<dyn err
             continue; // If the 5th field is empty, it's a record we need to avoid deserializing.
         }
 
-        let (calls, status) = parse_row(&carry, layout)?;
-        let calls = &calls[..layout.samples()];
+        let (calls, _) = parse_row(&carry, layout)?;
         let var = &calls[0];
 
-        if options.skip_non_variants && var.ref_allele == var.alt_allele {
+        if options.skip_non_variants && var.ref_allele.eq_ignore_ascii_case(var.alt_allele) {
             continue;
         }
 
@@ -190,22 +189,17 @@ pub fn vartovcf<I: Read>(input: I, options: &Options) -> Result<i32, Box<dyn err
             return Err(message.into());
         };
 
-        if !options.fix_leaky_mnv {
-            sink.write(calls, status, None)?;
-            continue;
-        }
-
         let column = layout.segment_column();
         if region
             .last()
             .is_some_and(|last| last.get(column) != carry.get(column))
         {
-            sink.write_region(&region, layout)?;
+            sink.write_region(&region, layout, options.fix_leaky_mnv)?;
             region.clear();
         }
         region.push(carry.clone());
     }
-    sink.write_region(&region, layout)?;
+    sink.write_region(&region, layout, options.fix_leaky_mnv)?;
 
     Ok(0)
 }
@@ -228,7 +222,7 @@ fn parse_row(
     })
 }
 
-/// Normalizes records and writes each one unless an earlier record normalized to the same call.
+/// Normalizes records and writes each call once.
 struct Sink<'r> {
     writer: VcfWriter,
     reference: Reference,
@@ -238,32 +232,18 @@ struct Sink<'r> {
 }
 
 impl Sink<'_> {
-    /// Normalizes a record and writes it unless an earlier record normalized to the same call.
-    fn write(
-        &mut self,
-        calls: &[TumorOnlyVariant],
-        status: Option<&str>,
-        merged: Option<&Merged>,
-    ) -> Result<(), Box<dyn error::Error>> {
-        let normalized = normalize(&mut self.reference, &calls[0])?;
-        if !self.seen.insert(calls[0].contig, &normalized)? {
-            return Ok(());
-        }
-        let calls: Vec<TumorOnlyVariant> =
-            calls.iter().map(|call| normalized.apply(call)).collect();
-        write_record(&mut self.writer, &calls, status, self.filters, merged)?;
-        self.progress.record();
-        Ok(())
-    }
-
-    /// Writes the rows of one VarDict region, a block it writes together for one target, with the
-    /// partial rows of each MNV folded into it; VarDict orders a tumor-only region's positions by
-    /// hash, so a partial row can come before or after its MNV. A folded partial counts as written,
-    /// so a later region that writes it alone, as an overlapping region can, does not write it again.
+    /// Writes the rows of one VarDict region, a block it writes together for one target, each call
+    /// once; VarDict orders a tumor-only region's positions by hash, so rows can come in any order.
+    ///
+    /// When asked, the partial rows of each MNV are folded into it first. Rows of the region that
+    /// normalize to one call hold different reads of it, and the one with the most ALT reads is
+    /// written. A call an earlier region wrote, or folded as a partial, is not written again, and is
+    /// not folded into an MNV here, so its reads are never counted twice.
     fn write_region(
         &mut self,
         region: &[StringRecord],
         layout: Layout,
+        fix_leaky_mnv: bool,
     ) -> Result<(), Box<dyn error::Error>> {
         let rows = region
             .iter()
@@ -273,17 +253,90 @@ impl Sink<'_> {
             .iter()
             .map(|(calls, _)| &calls[..layout.samples()])
             .collect();
-        for ((row_calls, (_, status)), fold) in calls.iter().zip(&rows).zip(fold_partials(&calls)) {
-            match fold {
-                Fold::Keep => self.write(row_calls, *status, None)?,
-                Fold::Into(_) => {
-                    let normalized = normalize(&mut self.reference, &row_calls[0])?;
-                    self.seen.insert(row_calls[0].contig, &normalized)?;
-                }
-                Fold::Merged(merged) => self.write(&merged.calls, *status, Some(&merged))?,
+        let normalized = calls
+            .iter()
+            .map(|row| normalize(&mut self.reference, &row[0]))
+            .collect::<Result<Vec<_>, _>>()?;
+        let written: Vec<bool> = calls
+            .iter()
+            .zip(&normalized)
+            .map(|(row, call)| self.seen.contains(row[0].contig, call))
+            .collect();
+        let folds = if fix_leaky_mnv {
+            fold_partials(&calls, &written)
+        } else {
+            vec![Fold::Keep; calls.len()]
+        };
+
+        let mut best: AHashMap<CallKey, (usize, i64)> = AHashMap::new();
+        for (row, fold) in folds.iter().enumerate() {
+            let reads = match fold {
+                _ if written[row] => continue,
+                Fold::Keep => alt_reads(calls[row]),
+                Fold::Merged(merged) => alt_reads(&merged.calls),
+                Fold::Into(_) => continue,
+            };
+            let key = CallKey::new(calls[row][0].contig, &normalized[row]);
+            let entry = best.entry(key).or_insert((row, reads));
+            if reads > entry.1 {
+                *entry = (row, reads);
             }
         }
+
+        for (row, fold) in folds.iter().enumerate() {
+            let key = CallKey::new(calls[row][0].contig, &normalized[row]);
+            if best.get(&key).is_none_or(|&(chosen, _)| chosen != row) {
+                continue;
+            }
+            let (row_calls, merged) = match fold {
+                Fold::Merged(merged) => (&merged.calls[..], Some(merged)),
+                _ => (calls[row], None),
+            };
+            let row_calls: Vec<TumorOnlyVariant> = row_calls
+                .iter()
+                .map(|call| normalized[row].apply(call))
+                .collect();
+            write_record(
+                &mut self.writer,
+                &row_calls,
+                rows[row].1,
+                self.filters,
+                merged,
+            )?;
+            self.progress.record();
+        }
+        for (row, call) in calls.iter().zip(&normalized) {
+            self.seen.insert(row[0].contig, call)?;
+        }
         Ok(())
+    }
+}
+
+/// The ALT reads of a record's calls, summed over its samples.
+fn alt_reads(calls: &[TumorOnlyVariant]) -> i64 {
+    calls.iter().map(|call| call.alt_depth.max(0) as i64).sum()
+}
+
+/// A normalized call's contig, start, END, REF and ALT, which no two written records share.
+#[derive(Hash, PartialEq, Eq)]
+struct CallKey<'n> {
+    contig: &'n str,
+    start: u64,
+    end: u64,
+    ref_allele: &'n str,
+    alt_allele: &'n str,
+}
+
+impl<'n> CallKey<'n> {
+    /// The key of a normalized call on a contig.
+    fn new(contig: &'n str, call: &'n Normalized) -> Self {
+        CallKey {
+            contig,
+            start: call.start,
+            end: call.end,
+            ref_allele: &call.ref_allele,
+            alt_allele: &call.alt_allele,
+        }
     }
 }
 
@@ -491,6 +544,24 @@ impl SeenRows {
             alt_allele: self.id(&call.alt_allele),
         };
         Ok(self.keys.insert(key))
+    }
+
+    /// Whether a normalized call was recorded.
+    fn contains(&self, contig: &str, call: &Normalized) -> bool {
+        let (Ok(start), Ok(end)) = (call.start.try_into(), call.end.try_into()) else {
+            return false;
+        };
+        let id = |string: &str| self.strings.get(string).copied();
+        match (id(contig), id(&call.ref_allele), id(&call.alt_allele)) {
+            (Some(contig), Some(ref_allele), Some(alt_allele)) => self.keys.contains(&RowKey {
+                contig,
+                start,
+                end,
+                ref_allele,
+                alt_allele,
+            }),
+            _ => false,
+        }
     }
 
     /// Returns the id of a string, giving it the next id the first time it is seen.

@@ -52,7 +52,7 @@ pub fn normalize(reference: &mut Reference, call: &TumorOnlyVariant) -> Result<N
         alt_allele: uppercase(call.alt_allele),
         indel_3p_shift: None,
     };
-    if call.ref_allele == call.alt_allele
+    if call.ref_allele.eq_ignore_ascii_case(call.alt_allele)
         || !is_sequence(call.ref_allele)
         || !is_sequence(call.alt_allele)
     {
@@ -242,6 +242,7 @@ mod tests {
     #[case::soft_masked_padding_is_uppercase("GcaaaaT", 5, "AA", "A", (2, "CA", "C"))]
     #[case::lowercase_alleles_are_uppercased("GCAAAAT", 5, "aa", "a", (2, "CA", "C"))]
     #[case::reference_only_is_unchanged("GCAAAAT", 3, "a", "a", (3, "A", "A"))]
+    #[case::reference_only_in_mixed_case_is_unchanged("GCAAAAT", 3, "A", "a", (3, "A", "A"))]
     #[case::symbolic_is_unchanged("GCAAAAT", 2, "C", "<DEL>", (2, "C", "<DEL>"))]
     fn test_normalize(
         #[case] sequence: &str,

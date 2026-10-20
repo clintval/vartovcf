@@ -45,6 +45,10 @@ impl Reference {
 
     /// Returns the uppercase bases of a contig over the 0-based, half-open range `start..end`.
     pub fn bases(&mut self, contig: &str, start: u64, end: u64) -> Result<&[u8], String> {
+        if start >= end {
+            self.length(contig)?;
+            return Ok(&[]);
+        }
         let held = self.start..self.start + self.bases.len() as u64;
         if self.contig != contig || start < held.start || end > held.end {
             self.fetch(contig, start, end)?;
@@ -68,10 +72,9 @@ impl Reference {
     /// Holds the window of a contig around `start..end`.
     fn fetch(&mut self, contig: &str, start: u64, end: u64) -> Result<(), String> {
         let length = self.length(contig)?;
-        if end > length || start >= end {
+        if end > length {
             return Err(format!(
-                "Position {contig}:{} is beyond the end of {contig}, which has {length} bases in the reference: give --reference the FASTA VarDict was run with!",
-                end.max(start + 1)
+                "Position {contig}:{end} is beyond the end of {contig}, which has {length} bases in the reference: give --reference the FASTA VarDict was run with!"
             ));
         }
         let from = start.saturating_sub(FLANK);
@@ -202,6 +205,9 @@ pub(crate) mod tests {
         assert_eq!(reference.base("c2", 0).unwrap(), b'T');
         assert_eq!(reference.bases("c1", 0, 12).unwrap(), b"ACGTACGTNNAC");
         assert_eq!(reference.length("c2").unwrap(), 8);
+        assert_eq!(reference.bases("c1", 4, 4).unwrap(), b"");
+        assert_eq!(reference.bases("c2", 4, 4).unwrap(), b"");
+        assert!(reference.bases("c9", 4, 4).is_err());
     }
 
     #[test]

@@ -438,6 +438,81 @@ mod tests {
         Ok(())
     }
 
+    /// The CHROM, POS, REF, ALT and the first sample's AD of each record converted from some rows.
+    fn records(rows: &str, args: &[&str]) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        let assert = cmd
+            .args(["--reference", "tests/reference.fa"])
+            .args(args)
+            .write_stdin(rows)
+            .assert()
+            .success();
+        let vcf = String::from_utf8(assert.get_output().stdout.clone())?;
+        Ok(vcf
+            .lines()
+            .filter(|line| !line.starts_with('#'))
+            .map(|line| {
+                let fields: Vec<&str> = line.split('\t').collect();
+                let ad = fields[9].split(':').nth(1).unwrap_or_default();
+                format!(
+                    "{} {} {} {} {ad}",
+                    fields[0], fields[1], fields[3], fields[4]
+                )
+            })
+            .collect())
+    }
+
+    #[rstest]
+    #[case::partial_first(false, true, vec!["chr1 1101 G A .,105"])]
+    #[case::mnv_first(true, true, vec!["chr1 1101 G A .,105"])]
+    #[case::partial_first_without_the_fold(false, false, vec!["chr1 1101 G A .,100"])]
+    #[case::mnv_first_without_the_fold(true, false, vec!["chr1 1101 G A .,100"])]
+    fn run_end_to_end_writes_rows_that_normalize_to_one_call_once(
+        #[case] reversed: bool,
+        #[case] fix_leaky_mnv: bool,
+        #[case] expected: Vec<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let rows = read_to_string("tests/calls.leaky-mnv.same-call.var")?;
+        let rows: String = if reversed {
+            rows.lines().rev().map(|line| format!("{line}\n")).collect()
+        } else {
+            rows
+        };
+        let args: &[&str] = if fix_leaky_mnv {
+            &["--fix-leaky-mnv"]
+        } else {
+            &[]
+        };
+        assert_eq!(records(&rows, args)?, expected);
+        Ok(())
+    }
+
+    #[rstest]
+    #[case::partial_written_by_an_earlier_region(
+        "tests/calls.leaky-mnv.partial-first.var",
+        vec!["chr1 1100 G C 300,5", "chr1 1100 GG CA .,101"]
+    )]
+    #[case::partial_folded_by_an_earlier_region(
+        "tests/calls.leaky-mnv.three-regions.var",
+        vec!["chr1 1100 GG CA .,100"]
+    )]
+    fn run_end_to_end_never_counts_a_partial_twice(
+        #[case] input: &str,
+        #[case] expected: Vec<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let rows = read_to_string(input)?;
+        assert_eq!(records(&rows, &["--fix-leaky-mnv"])?, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn run_end_to_end_keeps_a_reference_only_row_in_mixed_case()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let rows = read_to_string("tests/calls.mixed-case.var")?;
+        assert_eq!(records(&rows, &[])?, vec!["chr1 1100 G . 300"]);
+        Ok(())
+    }
+
     #[rstest]
     #[case(
         "tests/tumor-normal.fa",
