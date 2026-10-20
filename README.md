@@ -24,7 +24,7 @@ Or build from source with Rust 1.89 or newer, a C toolchain, and libclang (used 
 
 ### Features
 
-- Unlike the Perl script bundled with VarDict, which holds every record in memory to sort them, this tool sorts in bounded memory beyond one VarDict region's rows, see [Sorting](#sorting)
+- Unlike the Perl script bundled with VarDict, which holds every record in memory to sort them, this tool sorts in bounded memory, see [Sorting](#sorting)
 - This tool is kept lean on purpose: it converts formats, and applies FILTER labels only when asked
 - The output is compliant with the VCF v4.2 and v4.3 specifications
 - Records are normalized against `--reference` as `bcftools norm -f` does, and every allele is written uppercase, see [Normalization](#normalization)
@@ -156,7 +156,7 @@ In the example, `TGG>AAA` is written with `AD` 4 and `DP` 4. A folded record gai
 | `REALIGNED_FRAC_OF_DP` | Counts the partials' reads as reassigned to the MNV |
 | `REF`, `AD[0]`, `TYPE`, `REPEAT_UNIT_*`, `VARDICT_STATUS` | The MNV's own |
 
-Folding never pushes `AD[1]` above `DP`, though a VarDict row already above it stays so. Only substitutions within one VarDict region are folded. When regions overlap, a partial folded in one is not written again from another, and a partial another region already wrote is not folded, so no read is counted twice. With few reads a partial cannot be told from an SNV on another haplotype, so a 2-read SNV under a 4-read MNV is folded.
+Folding never pushes `AD[1]` above `DP`, though a VarDict row already above it stays so. Only substitutions within one VarDict region are folded. When regions overlap, a partial folded in one is not written again from another, and a partial another region already wrote is not folded, so no read is counted twice. A partial only a later region writes, beside an MNV an earlier region already wrote, is dropped, so its reads are counted nowhere. With few reads a partial cannot be told from an SNV on another haplotype, so a 2-read SNV under a 4-read MNV is folded.
 
 > [!TIP]
 > On duplex consensus reads, folded partials carry about 1% of their MNV's reads, while SNVs on another haplotype carry about as many as the MNV and stay apart. Some partials are `PASS` SNVs, often pieces of germline MNVs, that would otherwise read as mutations of their own; folding them typically raises the MNV's `AF` by about 0.006.
@@ -168,11 +168,11 @@ Folding never pushes `AD[1]` above `DP`, though a VarDict row already above it s
 
 Every record is normalized against `--reference`, which must be the FASTA VarDict was run with: an indel moves to its left-most position and alleles are trimmed to one shared base, as `bcftools norm -f` does, so `bcftools norm` is not needed. A REF allele that differs from the reference is an error. Alleles are written uppercase even where the reference is soft-masked, unlike `bcftools norm` ([samtools/bcftools#2606](https://github.com/samtools/bcftools/issues/2606)). Reference-only rows and symbolic structural variants are not moved.
 
-Each call is written once. Rows of one VarDict region that normalize to one call, such as one indel VarDict placed at two positions in a repeat, hold different reads of it, and the row with the most ALT reads is written. Overlapping BED regions repeat calls, and the first region's record is written.
+Each call is written once. Rows of one VarDict region that normalize to one call, such as one indel VarDict placed at two positions in a repeat, hold different reads of it, and the row with the most ALT reads in the tumor (or only) sample is written, then the most in all samples, then the most depth, so the choice never depends on row order. Overlapping BED regions repeat calls, and the first region's record is written. With `--fix-leaky-mnv`, a region's rows are held until it ends, so memory grows with the largest VarDict region.
 
 ### Sorting
 
-Records are sorted by contig, in the reference's order, then by POS, REF and ALT, as `bcftools sort` does, so `bcftools sort` is not needed, and they are written only once the input ends. Up to 64 MiB of records are held in memory and the rest spill to `--tmp-dir`, `$TMPDIR` by default, which is cleaned up when `vartovcf` exits or fails. A SIGINT or SIGTERM stops it at its next input row and removes the output file, though output already sent to standard output stays incomplete; a second signal exits at once and leaves the temporary files.
+Records are sorted by contig, in the reference's order, then by POS, REF and ALT, as `bcftools sort` does, so `bcftools sort` is not needed, and they are written only once the input ends. Up to 64 MiB of records are held in memory, plus one VarDict region's rows with `--fix-leaky-mnv`, and the rest spill to `--tmp-dir`, `$TMPDIR` by default, which is cleaned up when `vartovcf` exits or fails. A SIGINT or SIGTERM stops it at its next input row and removes the output file, though output already sent to standard output stays incomplete; a second signal exits at once and leaves the temporary files.
 
 ### Benchmarks
 

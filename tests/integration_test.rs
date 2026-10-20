@@ -440,9 +440,14 @@ mod tests {
 
     /// The CHROM, POS, REF, ALT and the first sample's AD of each record converted from some rows.
     fn records(rows: &str, args: &[&str]) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        let reference = if rows.starts_with("T|N") {
+            "tests/tumor-normal.fa"
+        } else {
+            "tests/reference.fa"
+        };
         let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
         let assert = cmd
-            .args(["--reference", "tests/reference.fa"])
+            .args(["--reference", reference])
             .args(args)
             .write_stdin(rows)
             .assert()
@@ -484,6 +489,26 @@ mod tests {
             &[]
         };
         assert_eq!(records(&rows, args)?, expected);
+        Ok(())
+    }
+
+    #[rstest]
+    #[case::the_most_depth_wins_a_tie_of_reads(
+        "tests/calls.same-call.tie.var",
+        vec!["chr1 1153 C CA 300,20"]
+    )]
+    #[case::the_tumor_reads_decide_before_the_normal_reads(
+        "tests/calls.tumor-normal.same-call.var",
+        vec!["cL 21 CA C 270,50"]
+    )]
+    fn run_end_to_end_chooses_among_rows_of_one_call_whatever_their_order(
+        #[case] input: &str,
+        #[case] expected: Vec<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let rows = read_to_string(input)?;
+        let reversed: String = rows.lines().rev().map(|line| format!("{line}\n")).collect();
+        assert_eq!(records(&rows, &[])?, expected);
+        assert_eq!(records(&reversed, &[])?, expected);
         Ok(())
     }
 

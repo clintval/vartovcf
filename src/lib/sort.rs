@@ -4,15 +4,18 @@ use std::path::{Path, PathBuf};
 
 use spillsort::{Config, Merged, Sorter, key};
 
+use crate::record::TumorOnlyVariant;
+
 /// The most memory the records being sorted are held in before they spill to the temporary
 /// directory; `spillsort` peaks at about a quarter more.
 pub const MAX_BYTES: usize = 64 << 20;
 
-/// Records sorted by contig, in the header's order, then POS, REF, ALT and END. Records with equal
-/// keys keep the order they were added in, and only the first of them is written.
+/// Records sorted by contig, in the header's order, then POS, REF, ALT and END, the call they make.
+/// Of the records of one call, only the first by [`Rank`] is written.
 pub struct RecordSorter {
     sorter: Sorter,
     key: Vec<u8>,
+    value: Vec<u8>,
 }
 
 /// The sort key of a record: its contig's index in the header, its 0-based POS, REF, ALT, empty
@@ -31,6 +34,38 @@ pub struct SortKey<'a> {
     pub end: u64,
 }
 
+/// Which record of a call is written, ordered best first: the first VarDict region's, then the most
+/// ALT reads in the tumor (or only) sample, then in all samples, then the most depth in the tumor,
+/// then VarDict's lowest position, REF and ALT for the row, so the choice never depends on the order
+/// of the rows within a region.
+#[derive(Clone, Copy, Debug)]
+pub struct Rank<'a> {
+    region: u64,
+    tumor_reads: u64,
+    reads: u64,
+    tumor_depth: u64,
+    start: u64,
+    ref_allele: &'a [u8],
+    alt_allele: &'a [u8],
+}
+
+impl<'a> Rank<'a> {
+    /// The rank of a record with these calls from the region with this ordinal, written for a row
+    /// with this tumor call.
+    pub fn new(region: u64, calls: &[TumorOnlyVariant], row: &TumorOnlyVariant<'a>) -> Self {
+        let reads = |call: &TumorOnlyVariant| call.alt_depth.max(0) as u64;
+        Rank {
+            region,
+            tumor_reads: reads(&calls[0]),
+            reads: calls.iter().map(reads).sum(),
+            tumor_depth: calls[0].depth.max(0) as u64,
+            start: row.start,
+            ref_allele: row.ref_allele.as_bytes(),
+            alt_allele: row.alt_allele.as_bytes(),
+        }
+    }
+}
+
 impl RecordSorter {
     /// Makes a sorter that spills to a private directory inside `tmp_dir`.
     pub fn new(tmp_dir: &Path) -> Result<Self, String> {
@@ -39,18 +74,34 @@ impl RecordSorter {
         Ok(RecordSorter {
             sorter,
             key: Vec::new(),
+            value: Vec::new(),
         })
     }
 
-    /// Adds a record's VCF line under its key.
-    pub fn push(&mut self, key: SortKey, line: &[u8]) -> Result<(), String> {
-        self.encode(key);
-        self.sorter.push(&self.key, line).map_err(describe)
+    /// Adds a record's VCF line under the call it makes, ranked against the call's other records.
+    pub fn push(&mut self, call: SortKey, rank: Rank, line: &[u8]) -> Result<(), String> {
+        self.key.clear();
+        key::push_uint(&mut self.key, call.rid);
+        key::push_uint(&mut self.key, call.pos);
+        key::push_bytes(&mut self.key, call.ref_allele);
+        key::push_bytes(&mut self.key, call.alt_allele);
+        key::push_uint(&mut self.key, call.end);
+        let call_length = u32::try_from(self.key.len()).map_err(|_| describe_length())?;
+        key::push_uint(&mut self.key, rank.region);
+        key::push_uint(&mut self.key, u64::MAX - rank.tumor_reads);
+        key::push_uint(&mut self.key, u64::MAX - rank.reads);
+        key::push_uint(&mut self.key, u64::MAX - rank.tumor_depth);
+        key::push_uint(&mut self.key, rank.start);
+        key::push_bytes(&mut self.key, rank.ref_allele);
+        key::push_bytes(&mut self.key, rank.alt_allele);
+        self.value.clear();
+        self.value.extend_from_slice(&call_length.to_le_bytes());
+        self.value.extend_from_slice(line);
+        self.sorter.push(&self.key, &self.value).map_err(describe)
     }
 
-    /// Writes each record's line in order, skipping a record whose key an earlier record had, and
-    /// checking `stop` between records; returns how many lines were written, or `None` if `stop`
-    /// returned true.
+    /// Writes the line of the first record of each call in order, checking `stop` between records;
+    /// returns how many lines were written, or `None` if `stop` returned true.
     pub fn write_to(
         self,
         out: &mut impl Write,
@@ -59,35 +110,34 @@ impl RecordSorter {
         let mut merged: Merged = self.sorter.finish().map_err(describe)?;
         let mut previous: Vec<u8> = Vec::new();
         let mut written = 0;
-        while let Some((key, line)) = merged.next_record().map_err(describe)? {
+        while let Some((key, value)) = merged.next_record().map_err(describe)? {
             if stop() {
                 return Ok(None);
             }
-            if previous == key {
+            let (call_length, line) = value.split_at(4);
+            let call_length = u32::from_le_bytes(call_length.try_into().unwrap()) as usize;
+            let call = &key[..call_length];
+            if previous == call {
                 continue;
             }
             previous.clear();
-            previous.extend_from_slice(key);
+            previous.extend_from_slice(call);
             out.write_all(line)
                 .map_err(|error| format!("Could not write the output: {error}!"))?;
             written += 1;
         }
         Ok(Some(written))
     }
-
-    fn encode(&mut self, record: SortKey) {
-        self.key.clear();
-        key::push_uint(&mut self.key, record.rid);
-        key::push_uint(&mut self.key, record.pos);
-        key::push_bytes(&mut self.key, record.ref_allele);
-        key::push_bytes(&mut self.key, record.alt_allele);
-        key::push_uint(&mut self.key, record.end);
-    }
 }
 
 /// Describes an error from sorting the output records.
 fn describe(error: spillsort::Error) -> String {
     format!("Could not sort the output records: {error}!")
+}
+
+/// Describes a record whose call is too long to sort.
+fn describe_length() -> String {
+    "Could not sort the output records: a call's alleles are 4 GiB or longer!".to_string()
 }
 
 /// Resolves the directory to spill sorted records to: `tmp_dir` when given, else a non-empty
@@ -131,11 +181,32 @@ mod tests {
         }
     }
 
+    fn rank(region: u64, tumor_reads: u64, tumor_depth: u64, start: u64) -> Rank<'static> {
+        Rank {
+            region,
+            tumor_reads,
+            reads: tumor_reads,
+            tumor_depth,
+            start,
+            ref_allele: b"A",
+            alt_allele: b"C",
+        }
+    }
+
     fn sorted(records: &[(SortKey, &str)]) -> String {
+        ranked(
+            &records
+                .iter()
+                .map(|(key, line)| (*key, rank(0, 0, 0, 0), *line))
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    fn ranked(records: &[(SortKey, Rank, &str)]) -> String {
         let dir = TempDir::new().unwrap();
         let mut sorter = RecordSorter::new(dir.path()).unwrap();
-        for (key, line) in records {
-            sorter.push(*key, line.as_bytes()).unwrap();
+        for (key, rank, line) in records {
+            sorter.push(*key, *rank, line.as_bytes()).unwrap();
         }
         let mut out = Vec::new();
         sorter.write_to(&mut out, &|| false).unwrap();
@@ -170,6 +241,19 @@ mod tests {
     }
 
     #[test]
+    fn test_writes_the_first_regions_best_supported_record_of_a_call() {
+        let call = key(0, 100, "A", "C");
+        let lines = ranked(&[
+            (call, rank(2, 90, 100, 1), "later region\n"),
+            (call, rank(1, 5, 100, 1), "fewer tumor reads\n"),
+            (call, rank(1, 50, 100, 3), "less depth\n"),
+            (call, rank(1, 50, 400, 7), "later position\n"),
+            (call, rank(1, 50, 400, 3), "best\n"),
+        ]);
+        assert_eq!(lines, "best\n");
+    }
+
+    #[test]
     fn test_symbolic_alleles_with_different_ends_are_both_written() {
         let short = SortKey {
             end: 200,
@@ -189,7 +273,9 @@ mod tests {
         let mut sorter = RecordSorter::new(dir.path()).unwrap();
         let line = vec![b'x'; 1 << 16];
         for pos in (0..2048u64).rev() {
-            sorter.push(key(0, pos, "A", "C"), &line).unwrap();
+            sorter
+                .push(key(0, pos, "A", "C"), rank(0, 0, 0, 0), &line)
+                .unwrap();
         }
         assert!(sorter.sorter.runs() > 0);
         let mut out = Vec::new();
@@ -201,7 +287,9 @@ mod tests {
     fn test_stops_when_asked() {
         let dir = TempDir::new().unwrap();
         let mut sorter = RecordSorter::new(dir.path()).unwrap();
-        sorter.push(key(0, 1, "A", "C"), b"line\n").unwrap();
+        sorter
+            .push(key(0, 1, "A", "C"), rank(0, 0, 0, 0), b"line\n")
+            .unwrap();
         let mut out = Vec::new();
         assert_eq!(sorter.write_to(&mut out, &|| true).unwrap(), None);
         assert!(out.is_empty());

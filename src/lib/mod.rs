@@ -27,7 +27,7 @@ use crate::record::TumorNormalVariant;
 use crate::record::TumorOnlyVariant;
 use crate::record::{tumor_normal_fisher_p_value, tumor_normal_header, tumor_only_header};
 use crate::reference::Reference;
-use crate::sort::{RecordSorter, SortKey, resolve_tmp_dir};
+use crate::sort::{Rank, RecordSorter, SortKey, resolve_tmp_dir};
 
 pub mod fai;
 pub mod filter;
@@ -212,6 +212,9 @@ fn convert<I: Read>(
     };
 
     let row_sample = row_sample.unwrap_or_default();
+    let column = layout.segment_column();
+    let mut segment = String::new();
+    let mut ordinal: u64 = 0;
     let mut region: Vec<StringRecord> = Vec::new();
 
     while std::mem::take(&mut peeked) || read_row(&mut reader, &mut carry, layout)? {
@@ -222,29 +225,31 @@ fn convert<I: Read>(
             continue; // If the 5th field is empty, it's a record we need to avoid deserializing.
         }
 
-        let (calls, _) = parse_row(&carry, layout)?;
-        let var = &calls[0];
-
-        if options.skip_non_variants && var.ref_allele.eq_ignore_ascii_case(var.alt_allele) {
+        let field = |index: usize| carry.get(index).unwrap_or_default();
+        if options.skip_non_variants && field(5).eq_ignore_ascii_case(field(6)) {
             continue;
         }
 
-        if var.sample != row_sample {
-            let message = format!("Expected sample '{}' found '{}'!", row_sample, var.sample);
+        if field(0) != row_sample {
+            let message = format!("Expected sample '{}' found '{}'!", row_sample, field(0));
             return Err(message.into());
         };
 
-        let column = layout.segment_column();
-        if region
-            .last()
-            .is_some_and(|last| last.get(column) != carry.get(column))
-        {
-            sink.add_region(&region, layout, options.fix_leaky_mnv)?;
+        if field(column) != segment {
+            sink.add_region(&region, layout, ordinal)?;
             region.clear();
+            ordinal += 1;
+            segment.clear();
+            segment.push_str(field(column));
         }
-        region.push(carry.clone());
+        if options.fix_leaky_mnv {
+            region.push(compact(&carry));
+        } else {
+            let (calls, status) = parse_row(&carry, layout)?;
+            sink.add(&calls[..layout.samples()], status, None, ordinal)?;
+        }
     }
-    sink.add_region(&region, layout, options.fix_leaky_mnv)?;
+    sink.add_region(&region, layout, ordinal)?;
 
     output
         .write_all(&header_text)
@@ -285,7 +290,7 @@ fn parse_row(
     })
 }
 
-/// Normalizes records and adds each call once to the sort.
+/// Normalizes records and adds them to the sort, which writes each call once.
 struct Sink<'r> {
     header: Arc<HeaderView>,
     reference: Reference,
@@ -296,28 +301,63 @@ struct Sink<'r> {
 }
 
 impl Sink<'_> {
-    /// Adds the rows of one VarDict region, a block it writes together for one target, each call
-    /// once; VarDict orders a tumor-only region's positions by hash, so rows can come in any order.
+    /// Normalizes a record of the region with this ordinal and adds it to the sort, ranked against
+    /// other records of its call: the first region's records first, then the best supported, by
+    /// [`Rank`], so the sort writes the one each call keeps.
+    fn add(
+        &mut self,
+        calls: &[TumorOnlyVariant],
+        status: Option<&str>,
+        merged: Option<&Merged>,
+        region: u64,
+    ) -> Result<(), Box<dyn error::Error>> {
+        let normalized = normalize(&mut self.reference, &calls[0])?;
+        self.add_normalized(calls, &normalized, status, merged, region, &calls[0])
+    }
+
+    /// Adds a record already normalized, ranked by its calls and by the row it was written for.
+    fn add_normalized(
+        &mut self,
+        calls: &[TumorOnlyVariant],
+        normalized: &Normalized,
+        status: Option<&str>,
+        merged: Option<&Merged>,
+        region: u64,
+        row: &TumorOnlyVariant,
+    ) -> Result<(), Box<dyn error::Error>> {
+        let written: Vec<TumorOnlyVariant> =
+            calls.iter().map(|call| normalized.apply(call)).collect();
+        let record = build_record(&self.header, &written, status, self.filters, merged)?;
+        let line = record.to_vcf_string()?;
+        let rank = Rank::new(region, calls, row);
+        self.sorter
+            .push(sort_key(&record, normalized), rank, line.as_bytes())?;
+        self.progress.record();
+        Ok(())
+    }
+
+    /// Adds the rows of one VarDict region, a block it writes together for one target, with the
+    /// partial rows of each MNV folded into it; VarDict orders a tumor-only region's positions by
+    /// hash, so a partial row can come before or after its MNV.
     ///
-    /// When asked, the partial rows of each MNV are folded into it first. Rows of the region that
-    /// normalize to one call hold different reads of it, and the one with the most ALT reads is
-    /// added. A substitution an earlier region added, or folded as a partial, is not added again,
-    /// and is not folded into an MNV here, so its reads are never counted twice; any other call an
-    /// earlier region added is dropped after the sort, where the two sit side by side.
+    /// A substitution an earlier region added, or folded as a partial, is not added again, and is
+    /// not folded into an MNV here, so its reads are never counted twice. The set of them is kept
+    /// for this, and only for substitutions, so it stays small; the sort drops the rest.
     fn add_region(
         &mut self,
         region: &[StringRecord],
         layout: Layout,
-        fix_leaky_mnv: bool,
+        ordinal: u64,
     ) -> Result<(), Box<dyn error::Error>> {
-        let rows = region
-            .iter()
-            .map(|record| parse_row(record, layout))
-            .collect::<Result<Vec<_>, _>>()?;
-        let calls: Vec<&[TumorOnlyVariant]> = rows
-            .iter()
-            .map(|(calls, _)| &calls[..layout.samples()])
-            .collect();
+        let samples = layout.samples();
+        let mut parsed: Vec<TumorOnlyVariant> = Vec::with_capacity(region.len() * samples);
+        let mut statuses: Vec<Option<&str>> = Vec::with_capacity(region.len());
+        for record in region {
+            let (row_calls, status) = parse_row(record, layout)?;
+            parsed.extend(row_calls.into_iter().take(samples));
+            statuses.push(status);
+        }
+        let calls: Vec<&[TumorOnlyVariant]> = parsed.chunks(samples).collect();
         let normalized = calls
             .iter()
             .map(|row| normalize(&mut self.reference, &row[0]))
@@ -327,45 +367,27 @@ impl Sink<'_> {
             .zip(&normalized)
             .map(|(row, call)| self.seen.contains(row[0].contig, call))
             .collect();
-        let folds = if fix_leaky_mnv {
-            fold_partials(&calls, &written)
-        } else {
-            vec![Fold::Keep; calls.len()]
-        };
-
-        let mut best: AHashMap<CallKey, (usize, i64)> = AHashMap::new();
-        for (row, fold) in folds.iter().enumerate() {
-            let reads = match fold {
-                _ if written[row] => continue,
-                Fold::Keep => alt_reads(calls[row]),
-                Fold::Merged(merged) => alt_reads(&merged.calls),
-                Fold::Into(_) => continue,
-            };
-            let key = CallKey::new(calls[row][0].contig, &normalized[row]);
-            let entry = best.entry(key).or_insert((row, reads));
-            if reads > entry.1 {
-                *entry = (row, reads);
+        for (row, fold) in fold_partials(&calls, &written).into_iter().enumerate() {
+            match fold {
+                _ if written[row] => {}
+                Fold::Keep => self.add_normalized(
+                    calls[row],
+                    &normalized[row],
+                    statuses[row],
+                    None,
+                    ordinal,
+                    &calls[row][0],
+                )?,
+                Fold::Merged(merged) => self.add_normalized(
+                    &merged.calls,
+                    &normalized[row],
+                    statuses[row],
+                    Some(&merged),
+                    ordinal,
+                    &calls[row][0],
+                )?,
+                Fold::Into(_) => {}
             }
-        }
-
-        for (row, fold) in folds.iter().enumerate() {
-            let key = CallKey::new(calls[row][0].contig, &normalized[row]);
-            if best.get(&key).is_none_or(|&(chosen, _)| chosen != row) {
-                continue;
-            }
-            let (row_calls, merged) = match fold {
-                Fold::Merged(merged) => (&merged.calls[..], Some(merged)),
-                _ => (calls[row], None),
-            };
-            let row_calls: Vec<TumorOnlyVariant> = row_calls
-                .iter()
-                .map(|call| normalized[row].apply(call))
-                .collect();
-            let record = build_record(&self.header, &row_calls, rows[row].1, self.filters, merged)?;
-            let line = record.to_vcf_string()?;
-            self.sorter
-                .push(sort_key(&record, &normalized[row]), line.as_bytes())?;
-            self.progress.record();
         }
         for (row, call) in calls.iter().zip(&normalized) {
             if is_substitution(call) {
@@ -402,32 +424,13 @@ fn is_substitution(call: &Normalized) -> bool {
             .all(|base| base.is_ascii_alphabetic())
 }
 
-/// The ALT reads of a record's calls, summed over its samples.
-fn alt_reads(calls: &[TumorOnlyVariant]) -> i64 {
-    calls.iter().map(|call| call.alt_depth.max(0) as i64).sum()
-}
-
-/// A normalized call's contig, start, END, REF and ALT, which no two written records share.
-#[derive(Hash, PartialEq, Eq)]
-struct CallKey<'n> {
-    contig: &'n str,
-    start: u64,
-    end: u64,
-    ref_allele: &'n str,
-    alt_allele: &'n str,
-}
-
-impl<'n> CallKey<'n> {
-    /// The key of a normalized call on a contig.
-    fn new(contig: &'n str, call: &'n Normalized) -> Self {
-        CallKey {
-            contig,
-            start: call.start,
-            end: call.end,
-            ref_allele: &call.ref_allele,
-            alt_allele: &call.alt_allele,
-        }
-    }
+/// Copies a row into a record holding only its fields and position, as a region's rows are held
+/// until the region ends.
+fn compact(record: &StringRecord) -> StringRecord {
+    let mut copy = StringRecord::with_capacity(record.as_slice().len(), record.len());
+    copy.extend(record.iter());
+    copy.set_position(record.position().cloned());
+    copy
 }
 
 /// Builds one VCF record with a sample column per call, the tumor (or only) sample first; FILTER and
