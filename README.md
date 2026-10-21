@@ -136,11 +136,11 @@ Read 3     CGAAATT
 Read 4     CGAANTT
 ```
 
-VarDict folds some of these partials back itself and writes the rest as calls of their own. `--fix-leaky-mnv` folds them into their MNV with the directional adjacency rule of [UMI-tools](https://doi.org/10.1101/gr.209601.116) (Smith, Heger and Sudbery 2017):
+VarDict folds some of these partials back itself and writes the rest as calls of their own. `--fix-leaky-mnv` folds a row into its MNV when its reads are plausible leakage from it:
 
 - A row is a partial of an MNV when it lies within the MNV's span and carries the MNV's ALT bases over its own span.
-- An MNV claims a partial when it has at least `2 * child - 1` ALT reads in every sample, so an SNV on another haplotype, with about as many reads, stays a record of its own.
-- Rows are visited from the most supported down. When two MNVs can claim the same partial, it goes to the one where fewer of the partial's ends fall inside the MNV, since each such end needs a read end or a no-call to explain it; a tie goes to the MNV with more reads.
+- Each read of an MNV molecule lands in any one partial row with a small probability, the leak rate, so a partial's reads are a binomial draw over the molecules both rows hold. An MNV with `n` ALT reads claims a partial with `c` when `c` is below `n` and within the upper 5% of a binomial over `n + c` reads at the rate, in every sample with reads of the partial. At the default rate of 0.05, an MNV folds a partial of 1 read from 2 reads up, of 2 reads from 6, of 5 reads from 36 and of 10 reads from 101; `--leaky-mnv-rate` sets the rate, and the header's `MNV_PARTIALS` line records it with these bounds.
+- Rows are visited from the most supported down. When two MNVs can claim the same partial, it goes to the one where fewer of the partial's ends fall inside the MNV, since each such end needs a read end or a no-call to explain it; a tie goes to the MNV with more reads. Each partial is tested against the MNV's own reads, not those of partials it already took, so the outcome does not depend on the order the rows are visited in.
 
 In the example, `TGG>AAA` is written with `AD` 4 and `DP` 4. A folded record gains INFO `MNV_PARTIALS` (rows folded in) and FORMAT `MNV_PARTIAL_READS` (ALT reads added), and its other fields are combined as VarDict merges an allele's reads:
 
@@ -154,10 +154,10 @@ In the example, `TGG>AAA` is written with `AD` 4 and `DP` 4. A folded record gai
 | `REALIGNED_FRAC_OF_DP` | Counts the partials' reads as reassigned to the MNV |
 | `REF`, `AD[0]`, `TYPE`, `REPEAT_UNIT_*`, `VARDICT_STATUS` | The MNV's own |
 
-Folding never pushes `AD[1]` above `DP`, though a VarDict row already above it stays so. Only substitutions within one VarDict region are folded. When regions overlap, a partial folded in one is not written again from another, and a partial another region already wrote is not folded, so no read is counted twice. A partial only a later region writes, beside an MNV an earlier region already wrote, is dropped, so its reads are counted nowhere. With few reads a partial cannot be told from an SNV on another haplotype, so a 2-read SNV under a 4-read MNV is folded.
+Folding never pushes `AD[1]` above `DP`, though a VarDict row already above it stays so. Only substitutions within one VarDict region are folded. When regions overlap, a partial folded in one is not written again from another, and a partial another region already wrote is not folded, so no read is counted twice. A partial only a later region writes, beside an MNV an earlier region already wrote, is dropped, so its reads are counted nowhere. An MNV with few reads is expected to leak less than one, so a partial under it is as likely an SNV on another haplotype as a leak and stays a record of its own: a 2-read SNV under a 4-read MNV is not folded, and a 1-read SNV under it is.
 
 > [!TIP]
-> On duplex consensus reads, folded partials carry about 1% of their MNV's reads, while SNVs on another haplotype carry about as many as the MNV and stay apart. Some partials are `PASS` SNVs, often pieces of germline MNVs, that would otherwise read as mutations of their own; folding them typically raises the MNV's `AF` by about 0.006.
+> The rate varies with the library and the MNV's sequence context. Set it at or above the leak fraction of nearly every MNV in your library, so their leakage folds while SNVs on another haplotype, which carry far more reads, stay apart. Some partials are `PASS` SNVs, often pieces of germline MNVs, that would otherwise read as mutations of their own. Estimate a library's rate from a run without `--fix-leaky-mnv`: the partials' `AD[1]` over the MNV's, on MNVs with a few hundred reads.
 
 > [!WARNING]
 > **Known VarDictJava issue:** VarDict's own fold takes a partial starting after the MNV's first base whenever it has fewer reads than the MNV (`VariationRealigner.java:335` in 1.8.4). An SNV on another haplotype with slightly fewer reads is folded in too, which can nearly double the MNV's `AF`, and no row is written for the SNV, so `--fix-leaky-mnv` cannot undo it.
