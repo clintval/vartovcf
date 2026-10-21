@@ -856,7 +856,11 @@ mod tests {
             .args([&format!("-{signal}"), &pid])
             .status()?;
         assert!(status.success());
-        stdin.write_all(rows.as_bytes())?;
+        // The run may already have stopped on a row still in the pipe, which closes it.
+        match stdin.write_all(rows.as_bytes()) {
+            Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {}
+            result => result?,
+        }
         drop(stdin);
         assert_eq!(child.wait()?.code(), Some(code));
         assert!(!output.exists());
