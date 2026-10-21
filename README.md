@@ -139,8 +139,8 @@ Read 4     CGAANTT
 VarDict folds some of these partials back itself and writes the rest as calls of their own. `--fix-leaky-mnv` folds them into their MNV with the directional adjacency rule of [UMI-tools](https://doi.org/10.1101/gr.209601.116) (Smith, Heger and Sudbery 2017):
 
 - A row is a partial of an MNV when it lies within the MNV's span and carries the MNV's ALT bases over its own span.
-- An MNV claims a partial when it has at least `2 * child - 1` ALT reads in every sample, so an SNV on another haplotype, with about as many reads, stays a record of its own.
-- Rows are visited from the most supported down. When two MNVs can claim the same partial, it goes to the one where fewer of the partial's ends fall inside the MNV, since each such end needs a read end or a no-call to explain it; a tie goes to the MNV with more reads.
+- An MNV claims a partial in a sample when it has at least `2 * child - 1` ALT reads there, so an SNV on another haplotype, with about as many reads, stays a record of its own. Each sample is judged on its own: a partial claimed in every sample that has reads of it is dropped, and one claimed in some samples only is written for the others, with the claimed samples' ALT reads moved to the MNV and recorded in FORMAT `MNV_FOLDED_READS`.
+- Rows are visited from the most supported down. When two MNVs can claim the same partial, it goes to the one that claims it in more samples, then to the one where fewer of the partial's ends fall inside the MNV, since each such end needs a read end or a no-call to explain it; a tie goes to the MNV with more reads.
 
 In the example, `TGG>AAA` is written with `AD` 4 and `DP` 4. A folded record gains INFO `MNV_PARTIALS` (rows folded in) and FORMAT `MNV_PARTIAL_READS` (ALT reads added), and its other fields are combined as VarDict merges an allele's reads:
 
@@ -153,6 +153,8 @@ In the example, `TGG>AAA` is written with `AD` 4 and `DP` 4. A folded record gai
 | `ALT_READ_POS_VARIES` | 1 when any row's is, or the rows' `MEAN_DIST_TO_READ_END` differ |
 | `REALIGNED_FRAC_OF_DP` | Counts the partials' reads as reassigned to the MNV |
 | `REF`, `AD[0]`, `TYPE`, `REPEAT_UNIT_*`, `VARDICT_STATUS` | The MNV's own |
+
+A partial written for the samples an MNV does not claim it in keeps its own fields there; in a sample whose reads moved it has `AD[1]` 0 and the other fields of a sample without reads of the allele, with `DP` and `AD[0]` unchanged, since the reads are still at the position. Its `FILTER` is recomputed too, so it is `.` when the tumor's reads moved. In a tumor-normal pair this keeps a partial the normal cannot explain, with its normal reads, and never counts the tumor's reads in both records.
 
 Folding never pushes `AD[1]` above `DP`, though a VarDict row already above it stays so. Only substitutions within one VarDict region are folded. When regions overlap, a partial folded in one is not written again from another, and a partial another region already wrote is not folded, so no read is counted twice. A partial only a later region writes, beside an MNV an earlier region already wrote, is dropped, so its reads are counted nowhere. With few reads a partial cannot be told from an SNV on another haplotype, so a 2-read SNV under a 4-read MNV is folded.
 
