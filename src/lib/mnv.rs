@@ -9,7 +9,8 @@
 //!
 //! Partial rows are grouped with their MNV by the directional adjacency rule of UMI-tools (Smith,
 //! Heger and Sudbery 2017): a parent with `n` ALT reads can claim a sub-event with at most
-//! `(n + 1) / 2` of them.
+//! `(n + 1) / 2` of them. The rule is about one sample's reads, so it is applied to each sample on
+//! its own, and a row it explains in some samples only is written for the others.
 
 use rust_htslib::bcf::record::Numeric;
 
@@ -20,10 +21,25 @@ use crate::record::TumorOnlyVariant;
 pub enum Fold<'a> {
     /// The row is written as VarDict wrote it.
     Keep,
-    /// The row is a partial of the row at this index and is not written.
+    /// The row is a partial of the row at this index in every sample with reads of it and is not
+    /// written.
     Into(usize),
+    /// The row is a partial of an MNV in some samples but not all, written with these calls.
+    Remainder(Remainder<'a>),
     /// The row is an MNV that absorbed partial rows, written with these calls, one per sample.
     Merged(Merged<'a>),
+}
+
+/// A partial row's calls after the samples in which an MNV explains its reads gave them up.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Remainder<'a> {
+    /// The index of the MNV the folded samples' reads went to.
+    pub root: usize,
+    /// The row's call of each sample, the tumor (or only) sample first, without the ALT reads of
+    /// the samples that folded.
+    pub calls: Vec<TumorOnlyVariant<'a>>,
+    /// The ALT reads taken out of each sample's AD[1].
+    pub folded_reads: Vec<i32>,
 }
 
 /// An MNV's calls after its partial rows are folded into it.
@@ -31,7 +47,7 @@ pub enum Fold<'a> {
 pub struct Merged<'a> {
     /// The merged call of each sample, the tumor (or only) sample first.
     pub calls: Vec<TumorOnlyVariant<'a>>,
-    /// The number of partial rows folded in.
+    /// The number of partial rows folded in, whole or in part.
     pub partials: usize,
     /// The ALT reads the partial rows added to each sample's AD[1].
     pub partial_reads: Vec<i32>,
@@ -42,14 +58,15 @@ pub struct Merged<'a> {
 /// A row takes part when it is a substitution (an SNV or an MNV) with ALT reads in some sample. A
 /// child is a sub-event of a parent when it lies within the parent's span and its ALT bases equal
 /// the parent's over that span, so it changes no base the parent does not and changes the bases it
-/// covers as the parent does; it can claim the child when, in every sample, it has at least
-/// `2 * child - 1` ALT reads. Rows are visited from the most to the least supported, and a row no
-/// earlier root can claim is a root itself. A row that several roots can claim goes to the one that
-/// needs the fewest breaks to leave it, one for each end of the child inside the root's span, since
-/// every break is a rare event in a read; then to the root with the most ALT reads. A child starting
-/// at the root's first base is folded only while the root's ALT reads and those of the children it
-/// took there fit in that base's DP, as VarDict counts each read's base there once. A row marked
-/// `written`, already written for an earlier region, can be a root but is never claimed.
+/// covers as the parent does. A parent claims a child in a sample when it has at least
+/// `2 * child - 1` ALT reads there, and, for a child starting at its first base, while its ALT reads
+/// and those of the children it took there fit in that base's DP, as VarDict counts each read's base
+/// there once. Rows are visited from the most to the least supported, and a row no earlier root can
+/// claim in any sample is a root itself. A row that several roots can claim goes to the one that
+/// claims it in the most samples, then to the one that needs the fewest breaks to leave it, one for
+/// each end of the child inside the root's span, since every break is a rare event in a read, then
+/// to the root with the most ALT reads; the samples that root cannot claim stay on the row. A row
+/// marked `written`, already written for an earlier region, can be a root but is never claimed.
 pub fn fold_partials<'a>(rows: &[&[TumorOnlyVariant<'a>]], written: &[bool]) -> Vec<Fold<'a>> {
     let mut folds = vec![Fold::Keep; rows.len()];
     let mut nodes: Vec<usize> = (0..rows.len())
@@ -71,35 +88,48 @@ pub fn fold_partials<'a>(rows: &[&[TumorOnlyVariant<'a>]], written: &[bool]) -> 
     });
     let mut roots: Vec<Root> = Vec::new();
     for &node in &nodes {
-        let mut candidates: Vec<(usize, usize)> = roots
-            .iter()
-            .enumerate()
-            .filter(|(_, root)| !written[node] && can_claim(rows[root.row], rows[node]))
-            .map(|(rank, root)| (breaks(&rows[root.row][0], &rows[node][0]), rank))
-            .collect();
-        if candidates.is_empty() {
-            if rows[node][0].ref_allele.len() > 1 {
-                roots.push(Root::new(node, rows[node]));
-            }
-            continue;
-        }
-        candidates.sort_unstable();
-        if let Some(&(_, rank)) = candidates
-            .iter()
-            .find(|(_, rank)| roots[*rank].admits(rows, node))
-        {
-            roots[rank].take(rows, node);
-        } else if rows[node][0].ref_allele.len() > 1 {
-            roots.push(Root::new(node, rows[node]));
+        let claimant = if written[node] {
+            None
+        } else {
+            roots
+                .iter()
+                .enumerate()
+                .filter(|(_, root)| is_sub_event(&rows[root.row][0], &rows[node][0]))
+                .map(|(rank, root)| (rank, root.claims(rows, node)))
+                .filter(|(_, claimed)| claimed.contains(&true))
+                .min_by_key(|(rank, claimed)| {
+                    let unclaimed = claimed.iter().filter(|&&folds| !folds).count();
+                    (
+                        unclaimed,
+                        breaks(&rows[roots[*rank].row][0], &rows[node][0]),
+                        *rank,
+                    )
+                })
+        };
+        match claimant {
+            Some((rank, claimed)) => roots[rank].take(rows, node, claimed),
+            None if rows[node][0].ref_allele.len() > 1 => roots.push(Root::new(node, rows[node])),
+            None => {}
         }
     }
     for root in roots.iter_mut().filter(|root| !root.children.is_empty()) {
         root.children.sort_unstable();
-        for &child in &root.children {
-            folds[child] = Fold::Into(root.row);
+        for (child, claimed) in &root.children {
+            let whole = rows[*child]
+                .iter()
+                .zip(claimed)
+                .all(|(call, &folds)| folds || call.alt_depth <= 0);
+            folds[*child] = if whole {
+                Fold::Into(root.row)
+            } else {
+                Fold::Remainder(remainder(root.row, rows[*child], claimed))
+            };
         }
-        let children: Vec<&[TumorOnlyVariant<'a>]> =
-            root.children.iter().map(|&child| rows[child]).collect();
+        let children: Vec<(&[TumorOnlyVariant<'a>], &[bool])> = root
+            .children
+            .iter()
+            .map(|(child, claimed)| (rows[*child], claimed.as_slice()))
+            .collect();
         folds[root.row] = Fold::Merged(merge(rows[root.row], &children));
     }
     folds
@@ -108,7 +138,8 @@ pub fn fold_partials<'a>(rows: &[&[TumorOnlyVariant<'a>]], written: &[bool]) -> 
 /// An MNV row that partial rows fold into, with the ALT reads it holds at its first base.
 struct Root {
     row: usize,
-    children: Vec<usize>,
+    /// Each child row with the samples it folded in.
+    children: Vec<(usize, Vec<bool>)>,
     first_base_reads: Vec<i64>,
 }
 
@@ -122,38 +153,39 @@ impl Root {
         }
     }
 
-    /// Whether a child's reads fit beside this root's: always for a child starting after the root's
-    /// first base, and otherwise only while every sample's ALT reads at that base stay within its DP.
-    fn admits(&self, rows: &[&[TumorOnlyVariant]], child: usize) -> bool {
-        rows[child][0].start != rows[self.row][0].start
-            || rows[self.row]
-                .iter()
-                .zip(rows[child])
-                .zip(&self.first_base_reads)
-                .all(|((root, call), &reads)| {
-                    call.alt_depth == 0 || reads + call.alt_depth as i64 <= root.depth as i64
-                })
+    /// The samples in which this root claims a child: those where the child has ALT reads, the root
+    /// has at least `2 * child - 1`, and, for a child starting at the root's first base, the child's
+    /// reads fit in that base's DP beside the ALT reads the root holds there.
+    fn claims(&self, rows: &[&[TumorOnlyVariant]], child: usize) -> Vec<bool> {
+        let first_base = rows[child][0].start == rows[self.row][0].start;
+        rows[self.row]
+            .iter()
+            .zip(rows[child])
+            .zip(&self.first_base_reads)
+            .map(|((root, call), &reads)| {
+                call.alt_depth > 0
+                    && root.alt_depth >= 2 * call.alt_depth - 1
+                    && (!first_base || reads + call.alt_depth as i64 <= root.depth as i64)
+            })
+            .collect()
     }
 
-    /// Takes a child into this root.
-    fn take(&mut self, rows: &[&[TumorOnlyVariant]], child: usize) {
+    /// Takes a child into this root in the samples it claimed.
+    fn take(&mut self, rows: &[&[TumorOnlyVariant]], child: usize, claimed: Vec<bool>) {
         if rows[child][0].start == rows[self.row][0].start {
-            for (reads, call) in self.first_base_reads.iter_mut().zip(rows[child]) {
-                *reads += call.alt_depth as i64;
+            for ((reads, call), &folds) in self
+                .first_base_reads
+                .iter_mut()
+                .zip(rows[child])
+                .zip(&claimed)
+            {
+                if folds {
+                    *reads += call.alt_depth as i64;
+                }
             }
         }
-        self.children.push(child);
+        self.children.push((child, claimed));
     }
-}
-
-/// Whether a parent row can claim a child row: the child is its sub-event and, in every sample, the
-/// parent has at least `2 * child - 1` ALT reads.
-fn can_claim(parent: &[TumorOnlyVariant], child: &[TumorOnlyVariant]) -> bool {
-    is_sub_event(&parent[0], &child[0])
-        && parent
-            .iter()
-            .zip(child)
-            .all(|(p, c)| p.alt_depth >= 2 * c.alt_depth - 1)
 }
 
 /// The breaks a read of `parent` needs to leave only `child`: one for each end of the child that
@@ -183,14 +215,60 @@ fn is_sub_event(parent: &TumorOnlyVariant, child: &TumorOnlyVariant) -> bool {
         && parent.ref_allele.get(span) == Some(child.ref_allele)
 }
 
-/// Folds the partial rows' calls into the MNV's, one sample at a time.
-fn merge<'a>(parent: &[TumorOnlyVariant<'a>], children: &[&[TumorOnlyVariant<'a>]]) -> Merged<'a> {
+/// A partial row's calls without the ALT reads of the samples that folded.
+fn remainder<'a>(root: usize, row: &[TumorOnlyVariant<'a>], claimed: &[bool]) -> Remainder<'a> {
+    let calls = row
+        .iter()
+        .zip(claimed)
+        .map(|(call, &folds)| {
+            if folds {
+                without_alt_reads(call)
+            } else {
+                call.clone()
+            }
+        })
+        .collect();
+    let folded_reads = row
+        .iter()
+        .zip(claimed)
+        .map(|(call, &folds)| if folds { call.alt_depth } else { 0 })
+        .collect();
+    Remainder {
+        root,
+        calls,
+        folded_reads,
+    }
+}
+
+/// A sample's call once its ALT reads are the MNV's: DP and the REF reads stay, as the reads are
+/// still at the position, and every ALT-read field follows from the ALT count of 0.
+fn without_alt_reads<'a>(call: &TumorOnlyVariant<'a>) -> TumorOnlyVariant<'a> {
+    TumorOnlyVariant {
+        alt_depth: 0,
+        alt_forward: 0,
+        alt_reverse: 0,
+        high_quality_variant_reads: 0,
+        af: 0.0,
+        af_adjusted: 0.0,
+        ..call.clone()
+    }
+}
+
+/// Folds the partial rows' calls into the MNV's, one sample at a time, each row only in the samples
+/// it folded in.
+fn merge<'a>(
+    parent: &[TumorOnlyVariant<'a>],
+    children: &[(&[TumorOnlyVariant<'a>], &[bool])],
+) -> Merged<'a> {
     let calls: Vec<TumorOnlyVariant<'a>> = parent
         .iter()
         .enumerate()
         .map(|(sample, call)| {
-            let sample_children: Vec<&TumorOnlyVariant<'a>> =
-                children.iter().map(|row| &row[sample]).collect();
+            let sample_children: Vec<&TumorOnlyVariant<'a>> = children
+                .iter()
+                .filter(|(_, claimed)| claimed[sample])
+                .map(|(row, _)| &row[sample])
+                .collect();
             merge_sample(call, &sample_children)
         })
         .collect();
@@ -289,6 +367,8 @@ fn read_weighted_mean(
 mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
+
+    use rust_htslib::bcf::record::GenotypeAllele;
 
     use super::*;
     use crate::fisher::fisher_exact_two_sided;
@@ -645,12 +725,176 @@ mod tests {
         assert_eq!(counts, vec![(104, 204), (52, 102)]);
     }
 
+    /// The remainder of a row, with the tumor sample's and the normal sample's (AD[1], DP).
+    fn remainder<'a>(folds: &'a [Fold], row: usize) -> (&'a Remainder<'a>, Vec<(i32, i32)>) {
+        match &folds[row] {
+            Fold::Remainder(remainder) => (
+                remainder,
+                remainder
+                    .calls
+                    .iter()
+                    .map(|call| (call.alt_depth, call.depth))
+                    .collect(),
+            ),
+            other => panic!("row {row} is not a remainder: {other:?}"),
+        }
+    }
+
     #[test]
-    fn test_a_tumor_normal_partial_must_follow_the_gradient_in_every_sample() {
+    fn test_a_tumor_normal_partial_the_normal_refuses_folds_in_the_tumor_alone() {
         let folds = fold_pairs(&[
             [call(10, "GG", "CA", 100, 200), call(10, "GG", "CA", 0, 100)],
             [call(10, "G", "C", 4, 200), call(10, "G", "C", 3, 100)],
         ]);
+        let (remainder, counts) = remainder(&folds, 1);
+        assert_eq!(remainder.root, 0);
+        assert_eq!(remainder.folded_reads, vec![4, 0]);
+        assert_eq!(counts, vec![(0, 200), (3, 100)]);
+        let merged = merged(&folds, 0);
+        assert_eq!((merged.partials, &merged.partial_reads), (1, &vec![4, 0]));
+        let counts: Vec<(i32, i32)> = merged
+            .calls
+            .iter()
+            .map(|call| (call.alt_depth, call.depth))
+            .collect();
+        assert_eq!(counts, vec![(104, 200), (0, 100)]);
+    }
+
+    #[test]
+    fn test_a_tumor_normal_partial_the_tumor_refuses_folds_in_the_normal_alone() {
+        let folds = fold_pairs(&[
+            [call(10, "TG", "CA", 3, 600), call(10, "TG", "CA", 100, 400)],
+            [call(11, "G", "A", 3, 600), call(11, "G", "A", 4, 400)],
+        ]);
+        let (remainder, counts) = remainder(&folds, 1);
+        assert_eq!(remainder.folded_reads, vec![0, 4]);
+        assert_eq!(counts, vec![(3, 600), (0, 400)]);
+        let merged = merged(&folds, 0);
+        assert_eq!(merged.partial_reads, vec![0, 4]);
+        assert_eq!(
+            (merged.calls[1].alt_depth, merged.calls[1].depth),
+            (104, 404)
+        );
+        assert_eq!(merged.calls[0], call(10, "TG", "CA", 3, 600));
+    }
+
+    #[test]
+    fn test_a_tumor_normal_partial_refused_in_both_samples_is_kept() {
+        let folds = fold_pairs(&[
+            [call(10, "GG", "CA", 5, 200), call(10, "GG", "CA", 0, 100)],
+            [call(10, "G", "C", 4, 200), call(10, "G", "C", 3, 100)],
+        ]);
         assert_eq!(folds, vec![Fold::Keep, Fold::Keep]);
+    }
+
+    #[test]
+    fn test_a_sample_without_reads_of_the_partial_does_not_keep_the_row() {
+        let folds = fold_pairs(&[
+            [call(10, "GG", "CA", 100, 200), call(10, "GG", "CA", 0, 100)],
+            [call(10, "G", "C", 4, 200), call(10, "G", "C", 0, 100)],
+        ]);
+        assert_eq!(targets(&folds), vec![None, Some(0)]);
+        assert_eq!(merged(&folds, 0).partial_reads, vec![4, 0]);
+    }
+
+    #[test]
+    fn test_a_folded_sample_of_a_remainder_reads_as_one_without_alt_reads() {
+        let folds = fold_pairs(&[
+            [call(10, "GG", "CA", 100, 200), call(10, "GG", "CA", 0, 100)],
+            [call(10, "G", "C", 4, 200), call(10, "G", "C", 3, 100)],
+        ]);
+        let (remainder, _) = remainder(&folds, 1);
+        let tumor = &remainder.calls[0];
+        assert!(!tumor.has_alt_reads());
+        assert_eq!(tumor.af_value(), 0.0);
+        assert_eq!((tumor.alt_forward, tumor.alt_reverse), (0, 0));
+        assert_eq!(tumor.hicnt_value(), 0);
+        assert_eq!(tumor.ad_value(), vec![100, 0]);
+        assert!(tumor.strand_bias_fisher_p_value().is_missing());
+        assert!(tumor.qmean_value().is_missing());
+        assert_eq!(
+            tumor.gt_value(0.8),
+            &[GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(0)]
+        );
+        assert_eq!(remainder.calls[1], call(10, "G", "C", 3, 100));
+    }
+
+    #[test]
+    fn test_a_first_base_partial_folds_only_in_the_samples_whose_dp_has_room() {
+        let folds = fold_pairs(&[
+            [
+                call(10, "GGG", "CAT", 100, 110),
+                call(10, "GGG", "CAT", 100, 200),
+            ],
+            [call(10, "GG", "CA", 8, 110), call(10, "GG", "CA", 8, 200)],
+            [call(10, "G", "C", 5, 110), call(10, "G", "C", 5, 200)],
+        ]);
+        assert_eq!(targets(&folds), vec![None, Some(0), None]);
+        let (remainder, counts) = remainder(&folds, 2);
+        assert_eq!(remainder.folded_reads, vec![0, 5]);
+        assert_eq!(counts, vec![(5, 110), (0, 200)]);
+        let merged = merged(&folds, 0);
+        assert_eq!(merged.partial_reads, vec![8, 13]);
+        assert!(merged.calls[0].alt_depth <= merged.calls[0].depth);
+    }
+
+    #[test]
+    fn test_a_partial_goes_to_the_mnv_that_claims_it_in_more_samples() {
+        let folds = fold_pairs(&[
+            [call(10, "GG", "CT", 100, 200), call(10, "GG", "CT", 0, 100)],
+            [
+                call(9, "GGG", "TCA", 40, 200),
+                call(9, "GGG", "TCA", 40, 100),
+            ],
+            [call(10, "G", "C", 5, 200), call(10, "G", "C", 4, 100)],
+        ]);
+        assert_eq!(targets(&folds), vec![None, None, Some(1)]);
+        assert_eq!(merged(&folds, 1).partial_reads, vec![5, 4]);
+    }
+
+    #[test]
+    fn test_a_partial_no_mnv_claims_in_every_sample_leaves_the_rest_on_the_row() {
+        let folds = fold_pairs(&[
+            [call(10, "GG", "CT", 100, 200), call(10, "GG", "CT", 0, 100)],
+            [
+                call(9, "GGG", "TCA", 40, 200),
+                call(9, "GGG", "TCA", 0, 100),
+            ],
+            [call(10, "G", "C", 5, 200), call(10, "G", "C", 4, 100)],
+        ]);
+        assert_eq!(targets(&folds), vec![None, None, None]);
+        let (remainder, counts) = remainder(&folds, 2);
+        assert_eq!(remainder.root, 0);
+        assert_eq!(counts, vec![(0, 200), (4, 100)]);
+        assert_eq!(folds[1], Fold::Keep);
+    }
+
+    #[test]
+    fn test_a_partially_folded_row_is_never_a_root() {
+        let folds = fold_pairs(&[
+            [
+                call(10, "GGG", "CAT", 100, 200),
+                call(10, "GGG", "CAT", 0, 100),
+            ],
+            [call(10, "GG", "CA", 10, 200), call(10, "GG", "CA", 10, 100)],
+            [call(11, "G", "A", 2, 205), call(11, "G", "A", 2, 105)],
+        ]);
+        let (shorter_mnv, _) = remainder(&folds, 1);
+        assert_eq!(shorter_mnv.folded_reads, vec![10, 0]);
+        let (snv, _) = remainder(&folds, 2);
+        assert_eq!((snv.root, &snv.folded_reads), (0, &vec![2, 0]));
+        assert_eq!(merged(&folds, 0).partial_reads, vec![12, 0]);
+    }
+
+    #[rstest]
+    #[case::folds(call(10, "G", "C", 5, 200), Some(0))]
+    #[case::stays(call(10, "G", "C", 60, 200), None)]
+    fn test_a_tumor_only_row_is_folded_whole_or_kept_whole(
+        #[case] partial: TumorOnlyVariant<'static>,
+        #[case] expected: Option<usize>,
+    ) {
+        let folds = fold(&[call(10, "GG", "CA", 100, 200), partial]);
+        assert_eq!(targets(&folds)[1], expected);
+        assert!(!matches!(folds[1], Fold::Remainder(_)));
     }
 }

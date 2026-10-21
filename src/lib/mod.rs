@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::fai::{fasta_contigs_to_vcf_header, fasta_path_to_vcf_header};
 use crate::filter::FilterThresholds;
-use crate::mnv::{Fold, Merged, fold_partials};
+use crate::mnv::{Fold, fold_partials};
 use crate::normalize::{Normalized, normalize};
 use crate::output::{Index, Output};
 use crate::record::MIN_HOM_ALT_AF;
@@ -318,7 +318,7 @@ fn convert<I: Read>(
         } else {
             columns.drop_fisher_columns(&mut carry, &mut scratch);
             let (calls, status) = parse_row(&carry, columns)?;
-            sink.add(&calls[..layout.samples()], status, None, ordinal)?;
+            sink.add(&calls[..layout.samples()], status, ordinal)?;
         }
     }
     sink.add_region(&region, columns, ordinal)?;
@@ -382,26 +382,26 @@ impl Sink<'_> {
         &mut self,
         calls: &[TumorOnlyVariant],
         status: Option<&str>,
-        merged: Option<&Merged>,
         region: u64,
     ) -> Result<(), Box<dyn error::Error>> {
         let normalized = normalize(&mut self.reference, &calls[0])?;
-        self.add_normalized(calls, &normalized, status, merged, region, &calls[0])
+        self.add_normalized(calls, &normalized, status, &Fold::Keep, region, &calls[0])
     }
 
-    /// Adds a record already normalized, ranked by its calls and by the row it was written for.
+    /// Adds a record already normalized, ranked by its calls and by the row it was written for, with
+    /// the fold that gave it these calls.
     fn add_normalized(
         &mut self,
         calls: &[TumorOnlyVariant],
         normalized: &Normalized,
         status: Option<&str>,
-        merged: Option<&Merged>,
+        fold: &Fold,
         region: u64,
         row: &TumorOnlyVariant,
     ) -> Result<(), Box<dyn error::Error>> {
         let written: Vec<TumorOnlyVariant> =
             calls.iter().map(|call| normalized.apply(call)).collect();
-        let record = build_record(&self.header, &written, status, self.filters, merged)?;
+        let record = build_record(&self.header, &written, status, self.filters, fold)?;
         let line = record.to_vcf_string()?;
         let rank = Rank::new(region, calls, row);
         self.sorter
@@ -442,26 +442,21 @@ impl Sink<'_> {
             .map(|(row, call)| self.seen.contains(row[0].contig, call))
             .collect();
         for (row, fold) in fold_partials(&calls, &written).into_iter().enumerate() {
-            match fold {
-                _ if written[row] => {}
-                Fold::Keep => self.add_normalized(
-                    calls[row],
-                    &normalized[row],
-                    statuses[row],
-                    None,
-                    ordinal,
-                    &calls[row][0],
-                )?,
-                Fold::Merged(merged) => self.add_normalized(
-                    &merged.calls,
-                    &normalized[row],
-                    statuses[row],
-                    Some(&merged),
-                    ordinal,
-                    &calls[row][0],
-                )?,
-                Fold::Into(_) => {}
-            }
+            let written_calls: &[TumorOnlyVariant] = match &fold {
+                _ if written[row] => continue,
+                Fold::Keep => calls[row],
+                Fold::Merged(merged) => &merged.calls,
+                Fold::Remainder(remainder) => &remainder.calls,
+                Fold::Into(_) => continue,
+            };
+            self.add_normalized(
+                written_calls,
+                &normalized[row],
+                statuses[row],
+                &fold,
+                ordinal,
+                &calls[row][0],
+            )?;
         }
         for (row, call) in calls.iter().zip(&normalized) {
             if is_substitution(call) {
@@ -507,13 +502,14 @@ fn compact(record: &StringRecord, columns: Columns) -> StringRecord {
 }
 
 /// Builds one VCF record with a sample column per call, the tumor (or only) sample first; FILTER and
-/// the site's INFO come from the first call, and a tumor-normal record carries its VARDICT_STATUS.
+/// the site's INFO come from the first call, a tumor-normal record carries its VARDICT_STATUS, and a
+/// record the fold changed carries the fields that describe it.
 fn build_record(
     header: &Arc<HeaderView>,
     calls: &[TumorOnlyVariant],
     status: Option<&str>,
     filters: &FilterThresholds,
-    merged: Option<&Merged>,
+    fold: &Fold,
 ) -> Result<Record, Box<dyn error::Error>> {
     let var = &calls[0];
     let rid = header.name2rid(var.contig.as_bytes())?;
@@ -577,7 +573,7 @@ fn build_record(
         )?;
     }
 
-    if let Some(merged) = merged {
+    if let Fold::Merged(merged) = fold {
         variant.push_info_integer(b"MNV_PARTIALS", &[merged.partials as i32])?;
     }
 
@@ -620,8 +616,14 @@ fn build_record(
         &each(calls, TumorOnlyVariant::mean_mismatches_value),
     )?;
 
-    if let Some(merged) = merged {
-        variant.push_format_integer(b"MNV_PARTIAL_READS", &merged.partial_reads)?;
+    match fold {
+        Fold::Merged(merged) => {
+            variant.push_format_integer(b"MNV_PARTIAL_READS", &merged.partial_reads)?;
+        }
+        Fold::Remainder(remainder) => {
+            variant.push_format_integer(b"MNV_FOLDED_READS", &remainder.folded_reads)?;
+        }
+        Fold::Keep | Fold::Into(_) => {}
     }
 
     if let Some(counts) = calls
@@ -1521,6 +1523,10 @@ mod tests {
         );
         assert_eq!(
             reader.header().format_type(b"MNV_PARTIAL_READS").is_ok(),
+            fix_leaky_mnv
+        );
+        assert_eq!(
+            reader.header().format_type(b"MNV_FOLDED_READS").is_ok(),
             fix_leaky_mnv
         );
         assert_eq!(reader.records().count(), expected);
