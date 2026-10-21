@@ -208,13 +208,12 @@ impl FilterThresholds {
             labels.push(SAME_READ_POSITION);
         }
         if self.strand_bias.is_some_and(|max_p| {
-            variant.strand_bias_fisher_p_value() < max_p
+            self.strand_bias_max_af
+                .is_none_or(|max_af| variant.af_value() < max_af)
                 && self
                     .strand_bias_min_odds_ratio
                     .is_none_or(|min_odds_ratio| strand_odds_ratio_exceeds(variant, min_odds_ratio))
-                && self
-                    .strand_bias_max_af
-                    .is_none_or(|max_af| variant.af_value() < max_af)
+                && variant.strand_bias_fisher_p_value() < max_p
         }) {
             labels.push(STRAND_BIAS);
         }
@@ -302,7 +301,9 @@ mod tests {
             mean_mapping_quality: 0.0,
             base_quality_mean: 0.0,
             mean_mismatches_in_reads: 9.0,
-            strand_bias_p_value: 0.0,
+            ref_forward: 500,
+            ref_reverse: 500,
+            alt_reverse: 10,
             ..variant("G", "A", 0.0)
         };
         assert!(filters.labels(&no_alt_reads).is_empty());
@@ -577,12 +578,10 @@ mod tests {
     }
 
     fn strand_variant(
-        p_value: f32,
         ref_strands: (i32, i32),
         alt_strands: (i32, i32),
     ) -> TumorOnlyVariant<'static> {
         TumorOnlyVariant {
-            strand_bias_p_value: p_value,
             ref_forward: ref_strands.0,
             ref_reverse: ref_strands.1,
             alt_forward: alt_strands.0,
@@ -594,14 +593,13 @@ mod tests {
     }
 
     #[rstest]
-    #[case(0.001, (500, 500), (0, 10), vec![STRAND_BIAS])]
-    #[case(0.001, (500, 500), (2, 60), vec![STRAND_BIAS])]
-    #[case(0.001, (500, 500), (60, 2), vec![STRAND_BIAS])]
-    #[case(0.001, (500, 500), (20, 40), vec![])]
-    #[case(0.5, (500, 500), (0, 10), vec![])]
-    #[case(0.001, (500, 500), (0, 300), vec![])]
+    #[case::an_empty_cell((500, 500), (0, 10), vec![STRAND_BIAS])]
+    #[case::odds_ratio_above_the_minimum((500, 500), (2, 60), vec![STRAND_BIAS])]
+    #[case::odds_ratio_folded((500, 500), (60, 2), vec![STRAND_BIAS])]
+    #[case::odds_ratio_below_the_minimum((500, 500), (40, 120), vec![])]
+    #[case::p_value_above_the_maximum((500, 500), (0, 3), vec![])]
+    #[case::af_above_the_maximum((500, 500), (0, 300), vec![])]
     fn test_strand_bias(
-        #[case] p_value: f32,
         #[case] ref_strands: (i32, i32),
         #[case] alt_strands: (i32, i32),
         #[case] expected: Vec<&str>,
@@ -614,7 +612,7 @@ mod tests {
         };
         assert!(filters.any());
         assert_eq!(
-            filters.labels(&strand_variant(p_value, ref_strands, alt_strands)),
+            filters.labels(&strand_variant(ref_strands, alt_strands)),
             expected
         );
     }
@@ -625,7 +623,7 @@ mod tests {
             strand_bias: Some(0.01),
             ..Default::default()
         };
-        let modest_skew_at_high_af = strand_variant(0.001, (500, 500), (200, 400));
+        let modest_skew_at_high_af = strand_variant((500, 500), (200, 400));
         assert_eq!(filters.labels(&modest_skew_at_high_af), vec![STRAND_BIAS]);
     }
 
@@ -637,7 +635,7 @@ mod tests {
         };
         let reference_row = TumorOnlyVariant {
             alt_allele: "G",
-            ..strand_variant(0.001, (500, 500), (0, 10))
+            ..strand_variant((500, 500), (0, 10))
         };
         assert!(filters.labels(&reference_row).is_empty());
     }

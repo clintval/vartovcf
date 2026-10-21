@@ -51,7 +51,7 @@ pub mod path {
     pub const GZIP_EXTENSION: &str = "gz";
 }
 
-/// The layouts of VarDictJava output rows `vartovcf` reads, each from a run with `--fisher`.
+/// The layouts of VarDictJava output rows `vartovcf` reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Layout {
     /// One sample per row, from `vardict-java -b sample.bam`.
@@ -61,11 +61,11 @@ pub enum Layout {
 }
 
 impl Layout {
-    /// The 0-based column holding VarDict's `chr:start-end` segment.
+    /// The 0-based column holding VarDict's `chr:start-end` segment in a row without `-fisher`.
     fn segment_column(&self) -> usize {
         match self {
-            Layout::TumorOnly => 34,
-            Layout::TumorNormal => 52,
+            Layout::TumorOnly => 32,
+            Layout::TumorNormal => 48,
         }
     }
 
@@ -77,17 +77,82 @@ impl Layout {
         }
     }
 
-    /// The fewest columns a row of this layout has.
+    /// The fewest columns a row of this layout has without `-fisher`.
     fn min_columns(&self) -> usize {
         match self {
-            Layout::TumorOnly => 38,
-            Layout::TumorNormal => 61,
+            Layout::TumorOnly => 36,
+            Layout::TumorNormal => 55,
         }
     }
 }
 
-/// The 0-based segment columns of the tumor-only and tumor-normal layouts without `--fisher`.
-const NO_FISHER_SEGMENT_COLUMNS: [usize; 2] = [32, 48];
+/// A row's layout and whether VarDictJava ran with `-fisher`, whose strand-bias and tumor-normal
+/// p-value and odds-ratio columns are dropped as each row is read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Columns {
+    layout: Layout,
+    fisher: bool,
+}
+
+impl Columns {
+    /// Every layout, without and with `-fisher`.
+    const ALL: [Columns; 4] = [
+        Columns::new(Layout::TumorOnly, false),
+        Columns::new(Layout::TumorOnly, true),
+        Columns::new(Layout::TumorNormal, false),
+        Columns::new(Layout::TumorNormal, true),
+    ];
+
+    const fn new(layout: Layout, fisher: bool) -> Self {
+        Columns { layout, fisher }
+    }
+
+    /// The 0-based columns `-fisher` adds, in order.
+    fn fisher_columns(&self) -> &'static [usize] {
+        match (self.layout, self.fisher) {
+            (_, false) => &[],
+            (Layout::TumorOnly, true) => &[20, 21],
+            (Layout::TumorNormal, true) => &[25, 26, 45, 46, 59, 60],
+        }
+    }
+
+    /// Maps a 0-based column of the row without `-fisher`'s columns to the column as read.
+    fn input_column(&self, column: usize) -> usize {
+        self.fisher_columns().iter().fold(column, |column, &added| {
+            column + usize::from(column >= added)
+        })
+    }
+
+    /// The 0-based column holding VarDict's `chr:start-end` segment.
+    fn segment_column(&self) -> usize {
+        self.input_column(self.layout.segment_column())
+    }
+
+    /// The fewest columns a row has.
+    fn min_columns(&self) -> usize {
+        self.layout.min_columns() + self.fisher_columns().len()
+    }
+
+    /// Copies a row and its position into `copy`, without the columns `-fisher` adds.
+    fn copy_row(&self, record: &StringRecord, copy: &mut StringRecord) {
+        let fisher_columns = self.fisher_columns();
+        copy.clear();
+        for (column, field) in record.iter().enumerate() {
+            if !fisher_columns.contains(&column) {
+                copy.push_field(field);
+            }
+        }
+        copy.set_position(record.position().cloned());
+    }
+
+    /// Drops the columns `-fisher` adds, rebuilding the row in `scratch` to spare an allocation.
+    fn drop_fisher_columns(&self, record: &mut StringRecord, scratch: &mut StringRecord) {
+        if self.fisher {
+            self.copy_row(record, scratch);
+            std::mem::swap(record, scratch);
+        }
+    }
+}
 
 /// What `vartovcf` reads and writes, and how it converts the rows.
 #[derive(Clone, Debug, Default)]
@@ -167,22 +232,24 @@ fn convert<I: Read>(
 
     // Peek at the first row to learn the layout and sample before the header is made.
     let mut carry = StringRecord::new();
+    let mut scratch = StringRecord::new();
     let mut peeked = reader.read_record(&mut carry)?;
-    let layout = if peeked {
-        let layout = detect_layout(&carry)?;
-        check_width(&carry, layout)?;
-        Some(layout)
+    let columns = if peeked {
+        let columns = detect_columns(&carry)?;
+        check_width(&carry, columns)?;
+        Some(columns)
     } else {
         None
     };
     let row_sample = peeked.then(|| carry.get(0).unwrap_or_default().to_string());
     let (sample, normal_sample) = resolve_samples(
         row_sample.as_deref(),
-        layout,
+        columns.map(|columns| columns.layout),
         options.sample,
         options.normal_sample,
     )?;
-    let layout = layout.unwrap_or(Layout::TumorOnly);
+    let columns = columns.unwrap_or(Columns::new(Layout::TumorOnly, false));
+    let layout = columns.layout;
 
     let filters = &options.filters;
     let mut header = match &normal_sample {
@@ -212,12 +279,12 @@ fn convert<I: Read>(
     };
 
     let row_sample = row_sample.unwrap_or_default();
-    let column = layout.segment_column();
+    let column = columns.segment_column();
     let mut segment = String::new();
     let mut ordinal: u64 = 0;
     let mut region: Vec<StringRecord> = Vec::new();
 
-    while std::mem::take(&mut peeked) || read_row(&mut reader, &mut carry, layout)? {
+    while std::mem::take(&mut peeked) || read_row(&mut reader, &mut carry, columns)? {
         if signal() != 0 {
             return Ok(false);
         }
@@ -236,20 +303,21 @@ fn convert<I: Read>(
         };
 
         if field(column) != segment {
-            sink.add_region(&region, layout, ordinal)?;
+            sink.add_region(&region, columns, ordinal)?;
             region.clear();
             ordinal += 1;
             segment.clear();
             segment.push_str(field(column));
         }
         if options.fix_leaky_mnv {
-            region.push(compact(&carry));
+            region.push(compact(&carry, columns));
         } else {
-            let (calls, status) = parse_row(&carry, layout)?;
+            columns.drop_fisher_columns(&mut carry, &mut scratch);
+            let (calls, status) = parse_row(&carry, columns)?;
             sink.add(&calls[..layout.samples()], status, None, ordinal)?;
         }
     }
-    sink.add_region(&region, layout, ordinal)?;
+    sink.add_region(&region, columns, ordinal)?;
 
     output
         .write_all(&header_text)
@@ -276,15 +344,16 @@ fn render_header(
 /// call filling the second slot of a tumor-only row, and its tumor-normal VARDICT_STATUS.
 fn parse_row(
     record: &StringRecord,
-    layout: Layout,
+    columns: Columns,
 ) -> Result<([TumorOnlyVariant<'_>; 2], Option<&str>), String> {
-    Ok(match layout {
+    let describe = |error| describe_parse_error(error, columns);
+    Ok(match columns.layout {
         Layout::TumorOnly => {
-            let call: TumorOnlyVariant = record.deserialize(None).map_err(describe_parse_error)?;
+            let call: TumorOnlyVariant = record.deserialize(None).map_err(describe)?;
             ([call, TumorOnlyVariant::default()], None)
         }
         Layout::TumorNormal => {
-            let row: TumorNormalVariant = record.deserialize(None).map_err(describe_parse_error)?;
+            let row: TumorNormalVariant = record.deserialize(None).map_err(describe)?;
             ([row.tumor_call(), row.normal_call()], Some(row.status))
         }
     })
@@ -346,14 +415,14 @@ impl Sink<'_> {
     fn add_region(
         &mut self,
         region: &[StringRecord],
-        layout: Layout,
+        columns: Columns,
         ordinal: u64,
     ) -> Result<(), Box<dyn error::Error>> {
-        let samples = layout.samples();
+        let samples = columns.layout.samples();
         let mut parsed: Vec<TumorOnlyVariant> = Vec::with_capacity(region.len() * samples);
         let mut statuses: Vec<Option<&str>> = Vec::with_capacity(region.len());
         for record in region {
-            let (row_calls, status) = parse_row(record, layout)?;
+            let (row_calls, status) = parse_row(record, columns)?;
             parsed.extend(row_calls.into_iter().take(samples));
             statuses.push(status);
         }
@@ -424,12 +493,11 @@ fn is_substitution(call: &Normalized) -> bool {
             .all(|base| base.is_ascii_alphabetic())
 }
 
-/// Copies a row into a record holding only its fields and position, as a region's rows are held
-/// until the region ends.
-fn compact(record: &StringRecord) -> StringRecord {
+/// Copies a row into a record holding only its fields, without `-fisher`'s, and its position, as a
+/// region's rows are held until the region ends.
+fn compact(record: &StringRecord, columns: Columns) -> StringRecord {
     let mut copy = StringRecord::with_capacity(record.as_slice().len(), record.len());
-    copy.extend(record.iter());
-    copy.set_position(record.position().cloned());
+    columns.copy_row(record, &mut copy);
     copy
 }
 
@@ -667,41 +735,41 @@ impl SeenRows {
     }
 }
 
-/// Reads the next row, refusing one whose layout differs from the first row's.
+/// Reads the next row, refusing one whose columns differ from the first row's.
 fn read_row<R: Read>(
     reader: &mut Reader<R>,
     record: &mut StringRecord,
-    layout: Layout,
+    columns: Columns,
 ) -> Result<bool, Box<dyn error::Error>> {
     if !reader.read_record(record)? {
         return Ok(false);
     }
-    if !is_segment(record, layout.segment_column()) {
-        return Err(layout_error(record).into());
+    if !is_segment(record, columns.segment_column()) {
+        return Err(layout_error(record, Some(columns)).into());
     }
-    check_width(record, layout)?;
+    check_width(record, columns)?;
     Ok(true)
 }
 
 /// Refuses a row with fewer columns than its layout has.
-fn check_width(record: &StringRecord, layout: Layout) -> Result<(), String> {
-    if record.len() >= layout.min_columns() {
+fn check_width(record: &StringRecord, columns: Columns) -> Result<(), String> {
+    if record.len() >= columns.min_columns() {
         return Ok(());
     }
     let line = record.position().map_or(0, |position| position.line());
     Err(format!(
         "Expected at least {} columns on line {line}, found {}!",
-        layout.min_columns(),
+        columns.min_columns(),
         record.len()
     ))
 }
 
-/// Detects the layout of a row from the column holding its segment.
-fn detect_layout(record: &StringRecord) -> Result<Layout, String> {
-    [Layout::TumorOnly, Layout::TumorNormal]
+/// Detects the columns of a row from the column holding its segment.
+fn detect_columns(record: &StringRecord) -> Result<Columns, String> {
+    Columns::ALL
         .into_iter()
-        .find(|layout| is_segment(record, layout.segment_column()))
-        .ok_or_else(|| layout_error(record))
+        .find(|columns| is_segment(record, columns.segment_column()))
+        .ok_or_else(|| layout_error(record, None))
 }
 
 /// Whether a row holds a `chr:start-end` segment on its own contig at a 0-based column.
@@ -718,21 +786,18 @@ fn is_segment(record: &StringRecord, index: usize) -> bool {
         .is_some_and(|(start, end)| start.parse::<u64>().is_ok() && end.parse::<u64>().is_ok())
 }
 
-/// Describes why a row matches neither layout.
-fn layout_error(record: &StringRecord) -> String {
+/// Describes why a row matches no layout, or not the first row's columns.
+fn layout_error(record: &StringRecord, first: Option<Columns>) -> String {
     let line = record.position().map_or(0, |position| position.line());
-    if NO_FISHER_SEGMENT_COLUMNS
-        .iter()
-        .any(|&index| is_segment(record, index))
-    {
-        format!(
-            "Expected the strand-bias p-value and odds-ratio columns on line {line}: run VarDictJava with --fisher!"
-        )
-    } else {
-        let contig = record.get(2).unwrap_or_default();
-        format!(
-            "Expected a {contig}:start-end segment in column 35 (tumor-only) or 53 (tumor-normal) on line {line}!"
-        )
+    let contig = record.get(2).unwrap_or_default();
+    match first {
+        Some(columns) => format!(
+            "Expected a {contig}:start-end segment in column {} on line {line}, as on the first row!",
+            columns.segment_column() + 1
+        ),
+        None => format!(
+            "Expected a {contig}:start-end segment in column 33 or 35 (tumor-only) or 49 or 53 (tumor-normal) on line {line}!"
+        ),
     }
 }
 
@@ -800,8 +865,8 @@ fn given_or_input<'a>(given: Option<&'a str>, input: Option<&'a str>) -> Option<
     given.or(input)
 }
 
-/// Names the 1-based line and column of a record that could not be deserialized.
-fn describe_parse_error(error: csv::Error) -> String {
+/// Names the 1-based line and input column of a record that could not be deserialized.
+fn describe_parse_error(error: csv::Error, columns: Columns) -> String {
     match error.kind() {
         csv::ErrorKind::Deserialize {
             pos: Some(pos),
@@ -809,7 +874,7 @@ fn describe_parse_error(error: csv::Error) -> String {
         } => match err.field() {
             Some(index) => format!(
                 "Could not parse column {} on line {}: {}!",
-                index + 1,
+                columns.input_column(index as usize) + 1,
                 pos.line(),
                 err.kind()
             ),
@@ -880,9 +945,19 @@ mod tests {
         "Expected at least 38 columns on line 1, found 36!"
     )]
     #[case(
+        "tests/calls.no-fisher.var",
+        34,
+        "Expected at least 36 columns on line 1, found 34!"
+    )]
+    #[case(
         "tests/calls.tumor-normal.var",
         57,
         "Expected at least 61 columns on line 1, found 57!"
+    )]
+    #[case(
+        "tests/calls.tumor-normal.no-fisher.var",
+        50,
+        "Expected at least 55 columns on line 1, found 50!"
     )]
     fn test_refuses_a_truncated_row(
         #[case] path: &str,
@@ -966,30 +1041,208 @@ mod tests {
         );
     }
 
-    #[rstest]
-    #[case("tests/calls.no-fisher.reference.var")]
-    #[case("tests/calls.no-fisher.variant.var")]
-    fn test_refuses_rows_without_fisher_columns(
-        #[case] path: &str,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let input = BufReader::new(File::open(path)?);
+    /// Drops the columns VarDictJava's `-fisher` adds from rows of either layout.
+    fn without_fisher_columns(rows: &str) -> String {
+        rows.lines()
+            .map(|line| {
+                let fields: Vec<&str> = line.split('\t').collect();
+                let added: &[usize] = match fields.len() {
+                    38 | 39 => &[20, 21],
+                    61 => &[25, 26, 45, 46, 59, 60],
+                    width => panic!("Unexpected row of {width} columns!"),
+                };
+                let kept: Vec<&str> = fields
+                    .iter()
+                    .enumerate()
+                    .filter(|(column, _)| !added.contains(column))
+                    .map(|(_, field)| *field)
+                    .collect();
+                format!("{}\n", kept.join("\t"))
+            })
+            .collect()
+    }
+
+    fn convert(input: &str, options: &Options) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         let output = NamedTempFile::new().expect("Cannot create temporary file!");
-        let reference = PathBuf::from("tests/reference.fa");
+        let options = Options {
+            output: Some(output.path().into()),
+            ..options.clone()
+        };
+        assert_eq!(vartovcf(input.as_bytes(), &options)?, 0);
+        Ok(std::fs::read(output.path())?)
+    }
+
+    #[rstest]
+    #[case("tests/calls.var", "tests/reference.fa", false)]
+    #[case("tests/calls.filters.var", "tests/reference.fa", false)]
+    #[case("tests/calls.g.var", "tests/reference.fa", false)]
+    #[case("tests/calls.complex.var", "tests/reference.fa", false)]
+    #[case("tests/calls.normalize.var", "tests/reference.fa", false)]
+    #[case("tests/calls.leaky-mnv.var", "tests/reference.fa", true)]
+    #[case("tests/calls.leaky-mnv.overlapping.var", "tests/reference.fa", true)]
+    #[case("tests/calls.tumor-normal.var", "tests/tumor-normal.fa", false)]
+    #[case("tests/calls.tumor-normal.edge.var", "tests/tumor-normal.fa", false)]
+    #[case("tests/calls.tumor-normal.hicnt.var", "tests/tumor-normal.fa", false)]
+    #[case(
+        "tests/calls.tumor-normal.normalize.var",
+        "tests/tumor-normal.fa",
+        false
+    )]
+    #[case(
+        "tests/calls.tumor-normal.leaky-mnv.var",
+        "tests/tumor-normal.fa",
+        true
+    )]
+    fn test_rows_without_fisher_columns_convert_the_same(
+        #[case] path: &str,
+        #[case] reference: &str,
+        #[case] fix_leaky_mnv: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let rows = std::fs::read_to_string(path)?;
+        let options = Options {
+            reference: PathBuf::from(reference),
+            normal_sample: path.contains("tumor-normal").then_some("N"),
+            fix_leaky_mnv,
+            filters: FilterThresholds {
+                near_read_end: Some(8.0),
+                low_mean_mapq: Some(10.0),
+                high_mean_mismatches: Some(5.25),
+                same_read_position: Some(0.35),
+                strand_bias: Some(0.01),
+                strand_bias_min_odds_ratio: Some(5.0),
+                strand_bias_max_af: Some(0.25),
+                low_af: Some(0.0001),
+                low_qmean: Some(30.0),
+                low_dp: Some(3),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let expected = convert(&rows, &options)?;
+        assert_eq!(convert(&without_fisher_columns(&rows), &options)?, expected);
+        Ok(())
+    }
+
+    #[rstest]
+    #[case("tests/calls.var")]
+    #[case("tests/calls.tumor-normal.var")]
+    #[case("tests/calls.tumor-normal.edge.var")]
+    fn test_strand_bias_p_values_round_to_the_ones_vardictjava_prints(#[case] path: &str) {
+        let mut reader = ReaderBuilder::new()
+            .delimiter(b'\t')
+            .has_headers(false)
+            .from_path(path)
+            .unwrap();
+        let mut checked = 0;
+        for row in reader.records() {
+            let row = row.unwrap();
+            let columns = detect_columns(&row).unwrap();
+            let mut record = row.clone();
+            columns.drop_fisher_columns(&mut record, &mut StringRecord::new());
+            let (calls, _) = parse_row(&record, columns).unwrap();
+            let printed = columns.fisher_columns().iter().step_by(2);
+            for (call, &column) in calls.iter().zip(printed).take(columns.layout.samples()) {
+                if call.has_alt_reads() {
+                    let printed: f64 = row[column].parse().unwrap();
+                    let p = call.strand_bias_fisher_p_value() as f64;
+                    assert!((p - printed).abs() <= 5e-6, "{p} printed as {printed}");
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 0);
+    }
+
+    #[test]
+    fn test_refuses_a_row_without_the_first_rows_fisher_columns() {
+        let with_fisher = std::fs::read_to_string("tests/calls.var").unwrap();
+        let without_fisher = std::fs::read_to_string("tests/calls.no-fisher.var").unwrap();
+        let input = format!(
+            "{}\n{}\n",
+            with_fisher.lines().nth(2).unwrap(),
+            without_fisher.lines().nth(2).unwrap()
+        );
+        let output = NamedTempFile::new().expect("Cannot create temporary file!");
         let result = vartovcf(
-            input,
+            input.as_bytes(),
             &Options {
                 output: Some(output.path().into()),
-                reference: reference.clone(),
-                sample: Some("dna00001"),
+                reference: PathBuf::from("tests/reference.fa"),
                 ..Default::default()
             },
         );
         assert_eq!(
             result.unwrap_err().to_string(),
-            "Expected the strand-bias p-value and odds-ratio columns on line 1: run VarDictJava with --fisher!"
+            "Expected a chr1:start-end segment in column 35 on line 2, as on the first row!"
         );
-        assert_eq!(output.as_file().metadata()?.len(), 0);
-        Ok(())
+    }
+
+    #[rstest]
+    #[case(
+        "tests/calls.var",
+        2,
+        22,
+        "Could not parse column 23 on line 1: invalid float literal!"
+    )]
+    #[case(
+        "tests/calls.no-fisher.var",
+        2,
+        20,
+        "Could not parse column 21 on line 1: invalid float literal!"
+    )]
+    #[case(
+        "tests/calls.tumor-normal.var",
+        0,
+        47,
+        "Could not parse column 48 on line 1: invalid digit found in string!"
+    )]
+    #[case(
+        "tests/calls.tumor-normal.no-fisher.var",
+        0,
+        43,
+        "Could not parse column 44 on line 1: invalid digit found in string!"
+    )]
+    fn test_a_parse_error_names_the_column_as_read(
+        #[case] path: &str,
+        #[case] row: usize,
+        #[case] column: usize,
+        #[case] message: &str,
+    ) {
+        let rows = std::fs::read_to_string(path).unwrap();
+        let mut fields: Vec<&str> = rows.lines().nth(row).unwrap().split('\t').collect();
+        fields[column] = "x";
+        let input = format!("{}\n", fields.join("\t"));
+        let output = NamedTempFile::new().expect("Cannot create temporary file!");
+        let result = vartovcf(
+            input.as_bytes(),
+            &Options {
+                output: Some(output.path().into()),
+                reference: PathBuf::from(if path.contains("tumor-normal") {
+                    "tests/tumor-normal.fa"
+                } else {
+                    "tests/reference.fa"
+                }),
+                normal_sample: path.contains("tumor-normal").then_some("N"),
+                ..Default::default()
+            },
+        );
+        assert_eq!(result.unwrap_err().to_string(), message);
+    }
+
+    #[rstest]
+    #[case("tests/calls.var", Columns::new(Layout::TumorOnly, true))]
+    #[case("tests/calls.no-fisher.var", Columns::new(Layout::TumorOnly, false))]
+    fn test_reads_the_crispr_column_with_or_without_fisher(
+        #[case] path: &str,
+        #[case] columns: Columns,
+    ) {
+        let rows = std::fs::read_to_string(path).unwrap();
+        let mut record = first_record(&format!("{}\t-3\n", rows.lines().nth(2).unwrap()));
+        assert_eq!(detect_columns(&record), Ok(columns));
+        columns.drop_fisher_columns(&mut record, &mut StringRecord::new());
+        let (calls, _) = parse_row(&record, columns).unwrap();
+        assert_eq!(calls[0].distance_to_crispr_site, Some(-3));
+        assert_eq!(calls[0].mean_mapping_quality, 60.0);
     }
 
     #[test]
@@ -1029,19 +1282,8 @@ mod tests {
         );
         assert_eq!(
             result.unwrap_err().to_string(),
-            "Expected a chr1:start-end segment in column 35 (tumor-only) or 53 (tumor-normal) on line 1!"
+            "Expected a chr1:start-end segment in column 33 or 35 (tumor-only) or 49 or 53 (tumor-normal) on line 1!"
         );
-    }
-
-    fn paired_row_without_fisher() -> String {
-        let rows = std::fs::read_to_string("tests/calls.tumor-normal.var").unwrap();
-        let mut fields: Vec<&str> = rows.lines().next().unwrap().split('\t').collect();
-        fields.truncate(59);
-        fields.remove(46);
-        fields.remove(45);
-        fields.remove(26);
-        fields.remove(25);
-        format!("{}\n", fields.join("\t"))
     }
 
     fn first_record(input: &str) -> StringRecord {
@@ -1054,38 +1296,39 @@ mod tests {
         record
     }
 
-    #[test]
-    fn test_detect_layout() {
-        let tumor_only = std::fs::read_to_string("tests/calls.var").unwrap();
-        let paired = std::fs::read_to_string("tests/calls.tumor-normal.var").unwrap();
-        assert_eq!(
-            detect_layout(&first_record(&tumor_only)),
-            Ok(Layout::TumorOnly)
-        );
-        assert_eq!(
-            detect_layout(&first_record(&paired)),
-            Ok(Layout::TumorNormal)
-        );
+    #[rstest]
+    #[case("tests/calls.var", Layout::TumorOnly, true, 38)]
+    #[case("tests/calls.no-fisher.var", Layout::TumorOnly, false, 36)]
+    #[case("tests/calls.tumor-normal.var", Layout::TumorNormal, true, 61)]
+    #[case(
+        "tests/calls.tumor-normal.no-fisher.var",
+        Layout::TumorNormal,
+        false,
+        55
+    )]
+    fn test_detect_columns(
+        #[case] path: &str,
+        #[case] layout: Layout,
+        #[case] fisher: bool,
+        #[case] width: usize,
+    ) {
+        let mut record = first_record(&std::fs::read_to_string(path).unwrap());
+        let columns = detect_columns(&record);
+        assert_eq!(columns, Ok(Columns::new(layout, fisher)));
+        assert_eq!(record.len(), width);
+        columns
+            .unwrap()
+            .drop_fisher_columns(&mut record, &mut StringRecord::new());
+        assert_eq!(record.len(), layout.min_columns());
+        assert!(is_segment(&record, layout.segment_column()));
     }
 
     #[test]
-    fn test_detect_layout_refuses_paired_rows_without_fisher_columns() {
-        assert_eq!(
-            paired_row_without_fisher().trim_end().split('\t').count(),
-            55
-        );
-        assert_eq!(
-            detect_layout(&first_record(&paired_row_without_fisher())),
-            Err("Expected the strand-bias p-value and odds-ratio columns on line 1: run VarDictJava with --fisher!".to_string())
-        );
-    }
-
-    #[test]
-    fn test_detect_layout_refuses_rows_without_a_segment() {
+    fn test_detect_columns_refuses_rows_without_a_segment() {
         let input = "dna00001\tBRINP3\tchr1\t190098265\t190098265\tA\tA\n";
         assert_eq!(
-            detect_layout(&first_record(input)),
-            Err("Expected a chr1:start-end segment in column 35 (tumor-only) or 53 (tumor-normal) on line 1!".to_string())
+            detect_columns(&first_record(input)),
+            Err("Expected a chr1:start-end segment in column 33 or 35 (tumor-only) or 49 or 53 (tumor-normal) on line 1!".to_string())
         );
     }
 
