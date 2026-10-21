@@ -30,7 +30,7 @@ Or build from source with Rust 1.89 or newer, a C toolchain, and libclang (used 
 - Records are normalized against `--reference` as `bcftools norm -f` does, and every allele is written uppercase, see [Normalization](#normalization)
 - Tumor-only (`var2vcf_valid.pl`) and tumor-normal (`var2vcf_paired.pl`) output are both supported, told apart from the first row
 - When asked, the partial rows VarDict writes for a multi-nucleotide variant (MNV) are folded back into it, see [Leaky MNVs](#leaky-mnvs)
-- VarDictJava must be run with `--fisher`
+- Runs the strand-bias Fisher test itself, so VarDictJava's `-fisher` is optional
 
 ### Example Usage
 
@@ -42,7 +42,6 @@ Replace the call to `var2vcf_valid.pl` with `vartovcf` in a typical VarDictJava 
     -G hg38.fa \
     -N dna00001 \
     -c1 -S2 -E3 -g4 -f0.05 \
-    --fisher \
     calling-intervals.bed \
   | vartovcf --reference hg38.fa --sample dna00001 \
       --filter-near-read-end 8 \
@@ -58,7 +57,7 @@ Replace the call to `var2vcf_valid.pl` with `vartovcf` in a typical VarDictJava 
 In pileup mode (`-p`) VarDict keeps every candidate and switches off its own call rules. Add `LOW_AF`, `LOW_QMEAN` and `LOW_DP` to mark the candidates its `-f` and `-q` rules would have dropped, here with VarDict's defaults (`-f` as given, `-q 22.5`):
 
 ```bash
-❯ vardict-java -p ... --fisher calling-intervals.bed \
+❯ vardict-java -p ... calling-intervals.bed \
   | vartovcf --reference hg38.fa --sample dna00001 --skip-non-variants \
       --filter-near-read-end 8 \
       --filter-low-mean-mapq 10 \
@@ -83,7 +82,6 @@ Replace `var2vcf_paired.pl` the same way. VarDictJava writes the sample names in
     -G hg38.fa \
     -N "dna00001|dna00002" \
     -c1 -S2 -E3 -g4 -f0.05 \
-    --fisher \
     calling-intervals.bed \
   | vartovcf --reference hg38.fa --sample dna00001 --normal-sample dna00002 \
       --filter-near-read-end 8 \
@@ -149,8 +147,7 @@ In the example, `TGG>AAA` is written with `AD` 4 and `DP` 4. A folded record gai
 |---|---|
 | `AD[1]`, `ADF[1]`, `ADR[1]`, `HICNT` | The sums over the MNV and its partials |
 | `DP` | The MNV's, plus the reads of partials starting after `POS` |
-| `AF`, `GT`, `FILTER`, `TUMOR_NORMAL_FISHER_P` | Recomputed from the sums |
-| `STRAND_BIAS_FISHER_P` | Recomputed by vartovcf from the REF and summed ALT strand counts |
+| `AF`, `GT`, `FILTER`, `STRAND_BIAS_FISHER_P`, `TUMOR_NORMAL_FISHER_P` | Recomputed from the sums |
 | `QMEAN`, `MEAN_MAPQ`, `MEAN_MISMATCHES`, `MEAN_DIST_TO_READ_END` | Means over all the ALT reads, each partial's reads measured at its own bases |
 | `ALT_READ_POS_VARIES` | 1 when any row's is, or the rows' `MEAN_DIST_TO_READ_END` differ |
 | `REALIGNED_FRAC_OF_DP` | Counts the partials' reads as reassigned to the MNV |
@@ -176,7 +173,7 @@ Records are sorted by contig, in the reference's order, then by POS, REF and ALT
 
 ### Benchmarks
 
-Measured on an Apple M3 Max running macOS 26.6.2, with `vartovcf` 3.0.0 (pre-release build of 5008e5e), VarDictJava 1.8.4 and the `var2vcf_valid.pl` it ships, run by Perl 5.34.1. The input is 60,501 rows of VarDictJava `-p --fisher` output for part of a targeted panel. `var2vcf_valid.pl` holds all of its input in memory to sort it, so its peak memory was 10 times that of `vartovcf` 3.0.0, which wrote its records unsorted (184 MB against 18 MB).
+Measured on an Apple M3 Max running macOS 26.6.2, with `vartovcf` 3.0.0 (pre-release build of 5008e5e), VarDictJava 1.8.4 and the `var2vcf_valid.pl` it ships, run by Perl 5.34.1. The input is 60,501 rows of VarDictJava `-p -fisher` output for part of a targeted panel. `var2vcf_valid.pl` holds all of its input in memory to sort it, so its peak memory was 10 times that of `vartovcf` 3.0.0, which wrote its records unsorted (184 MB against 18 MB).
 
 ```bash
 ❯ vartovcf --reference hg19.fa --sample dna00001 < test.var > /dev/null

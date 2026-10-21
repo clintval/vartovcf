@@ -13,7 +13,6 @@
 
 use rust_htslib::bcf::record::Numeric;
 
-use crate::fisher::fisher_exact_two_sided;
 use crate::record::TumorOnlyVariant;
 
 /// How a row is written once the partial rows of its region are folded.
@@ -262,12 +261,6 @@ fn merge_sample<'a>(
         base_quality_mean: mean(&|row| row.base_quality_mean),
         mean_mapping_quality: mean(&|row| row.mean_mapping_quality),
         mean_mismatches_in_reads: mean(&|row| row.mean_mismatches_in_reads),
-        strand_bias_p_value: fisher_exact_two_sided(
-            parent.ref_forward.max(0) as u64,
-            parent.ref_reverse.max(0) as u64,
-            alt_forward.max(0) as u64,
-            alt_reverse.max(0) as u64,
-        ) as f32,
         high_quality_variant_reads,
         af_adjusted: if depth > 0 {
             (realigned_reads / depth as f64) as f32
@@ -298,6 +291,7 @@ mod tests {
     use rstest::rstest;
 
     use super::*;
+    use crate::fisher::fisher_exact_two_sided;
 
     /// A call of `alt_depth` ALT reads, split evenly by strand, with fixed per-read summaries.
     fn call(
@@ -598,7 +592,7 @@ mod tests {
         assert_eq!(merged.high_quality_variant_reads, 100);
         assert_eq!(merged.af_adjusted, 0.1);
         let expected = fisher_exact_two_sided(50, 50, 70, 30) as f32;
-        assert_eq!(merged.strand_bias_p_value, expected);
+        assert_eq!(merged.strand_bias_fisher_p_value(), expected);
     }
 
     #[test]
