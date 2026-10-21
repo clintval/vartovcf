@@ -24,12 +24,12 @@ Or build from source with Rust 1.89 or newer, a C toolchain, and libclang (used 
 
 ### Features
 
-- Unlike the Perl script bundled with VarDict, which holds every record in memory to sort them, this tool sorts in bounded memory, see [Sorting](#sorting)
-- This tool is kept lean on purpose: it converts formats, and applies FILTER labels only when asked
-- The output is compliant with the VCF v4.2 and v4.3 specifications
-- Records are normalized against `--reference` as `bcftools norm -f` does, and every allele is written uppercase, see [Normalization](#normalization)
-- Tumor-only (`var2vcf_valid.pl`) and tumor-normal (`var2vcf_paired.pl`) output are both supported, told apart from the first row
-- When asked, the partial rows VarDict writes for a multi-nucleotide variant (MNV) are folded back into it, see [Leaky MNVs](#leaky-mnvs)
+- Sorts in bounded memory, where VarDict's Perl script holds every record, see [Sorting](#sorting)
+- Stays lean on purpose: converts formats and applies FILTER labels only when asked
+- Writes VCF compliant with the v4.2 and v4.3 specifications
+- Normalizes like `bcftools norm -f` and writes uppercase alleles, see [Normalization](#normalization)
+- Reads tumor-only and tumor-normal output, detecting which from the first row
+- Optionally folds an MNV's partial rows back into it, see [Leaky MNVs](#leaky-mnvs)
 - Runs the strand-bias Fisher test itself, so VarDictJava's `-fisher` is optional
 
 ### Example Usage
