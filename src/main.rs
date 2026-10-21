@@ -3,11 +3,15 @@ use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::PathBuf;
 use std::process;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 
 use anyhow::{Error, Result};
 use clap::Parser;
 use env_logger::Env;
 use log::*;
+use signal_hook::consts::{SIGINT, SIGTERM};
+use signal_hook::flag;
 
 use vartovcflib::filter::FilterThresholds;
 use vartovcflib::{Options, vartovcf};
@@ -34,6 +38,10 @@ struct Opt {
     /// Output VCF file or stream [default: /dev/stdout]
     #[arg(short, long)]
     output: Option<PathBuf>,
+
+    /// Directory for temporary files: the header while it is formatted and the records sorting spills. They are removed when vartovcf exits, fails or is stopped by a SIGINT or SIGTERM, which takes effect at the next input row or the next record written; a second signal, or SIGKILL, exits at once and leaves a spillsort-* directory and an incomplete output file behind [default: $TMPDIR when set and not empty, else the system's temporary directory]
+    #[arg(long, value_name = "DIR")]
+    tmp_dir: Option<PathBuf>,
 
     /// Skip non-variant sites (where ref_allele == alt_allele)
     #[arg(long)]
@@ -111,6 +119,15 @@ fn main() -> Result<(), Error> {
 
     env_logger::Builder::from_env(env).init();
 
+    // The first SIGINT or SIGTERM stops the run cleanly, and a second exits at once.
+    let stop = Arc::new(AtomicBool::new(false));
+    let signal = Arc::new(AtomicUsize::new(0));
+    for number in [SIGINT, SIGTERM] {
+        flag::register_conditional_shutdown(number, 128 + number, Arc::clone(&stop))?;
+        flag::register(number, Arc::clone(&stop))?;
+        flag::register_usize(number, Arc::clone(&signal), number as usize)?;
+    }
+
     let input: Box<dyn Read> = match &opt.input {
         Some(path) if path.to_str().unwrap() != "-" => {
             info!("Input file: {path:?}");
@@ -134,6 +151,8 @@ fn main() -> Result<(), Error> {
         normal_sample: opt.normal_sample.as_deref(),
         skip_non_variants: opt.skip_non_variants,
         fix_leaky_mnv: opt.fix_leaky_mnv,
+        tmp_dir: opt.tmp_dir,
+        signal: Some(&signal),
         filters: FilterThresholds {
             near_read_end: opt.filter_near_read_end,
             low_mean_mapq: opt.filter_low_mean_mapq,
@@ -152,7 +171,20 @@ fn main() -> Result<(), Error> {
         },
     };
 
+    let to_file = options
+        .output
+        .as_ref()
+        .is_some_and(|path| path.as_os_str() != "-");
     match vartovcf(input, &options) {
+        Ok(exit_code) if exit_code > 128 => {
+            let output = if to_file {
+                "removed the output file"
+            } else {
+                "output already written may end in a partial record"
+            };
+            error!("Stopped by signal {}; {output}.", exit_code - 128);
+            process::exit(exit_code)
+        }
         Ok(exit_code) => process::exit(exit_code),
         Err(except) => {
             error!("{except}");

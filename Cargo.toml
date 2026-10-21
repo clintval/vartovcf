@@ -3,7 +3,7 @@ name = "vartovcf"
 version = "3.1.0"
 authors = ["Clint Valentine <valentine.clint@gmail.com>"]
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.89"
 license = "MIT"
 readme = "README.md"
 homepage = "https://github.com/clintval/vartovcf"
@@ -36,6 +36,9 @@ log = "0.4.34"
 proglog = "0.4.0"
 rust-htslib = "1.0.1"
 serde = { version = "1.0.229", features = ["derive"] }
+signal-hook = "0.4.5"
+spillsort = "0.2.0"
+tempfile = "3.27.0"
 
 [dev-dependencies]
 assert_cmd = "2.2.2"
@@ -43,7 +46,6 @@ file_diff = "1.0.0"
 pretty_assertions = "1.4.1"
 rstest = "0.27.0"
 serde_test = "1.0.177"
-tempfile = "3.27.0"
 
 [lints.rust]
 unsafe_code = "forbid"

@@ -6,26 +6,28 @@ use anyhow::Result;
 use csv::{Reader, ReaderBuilder, StringRecord};
 use log::warn;
 use proglog::ProgLogBuilder;
-use rust_htslib::bcf::Format;
-use rust_htslib::bcf::Writer as VcfWriter;
+use rust_htslib::bcf::header::HeaderView;
 use rust_htslib::bcf::record::{GenotypeAllele, Numeric};
-use std::cmp::Reverse;
+use rust_htslib::bcf::{Format, Header, Record, Writer as VcfWriter};
 use std::error;
 use std::fmt::Debug;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::ops::Deref;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::fai::{fasta_contigs_to_vcf_header, fasta_path_to_vcf_header};
 use crate::filter::FilterThresholds;
-use crate::io::has_gzip_ext;
 use crate::mnv::{Fold, Merged, fold_partials};
 use crate::normalize::{Normalized, normalize};
+use crate::output::Output;
 use crate::record::MIN_HOM_ALT_AF;
 use crate::record::TumorNormalVariant;
 use crate::record::TumorOnlyVariant;
 use crate::record::{tumor_normal_fisher_p_value, tumor_normal_header, tumor_only_header};
 use crate::reference::Reference;
+use crate::sort::{Rank, RecordSorter, SortKey, resolve_tmp_dir};
 
 pub mod fai;
 pub mod filter;
@@ -34,8 +36,10 @@ pub mod hicnt;
 pub mod io;
 pub mod mnv;
 pub mod normalize;
+pub mod output;
 pub mod record;
 pub mod reference;
+pub mod sort;
 
 /// The structural variant types VarDict writes, which are the values of the `SVTYPE` INFO field.
 pub const VALID_SV_TYPES: &[&str] = &["DEL", "DUP", "INV"];
@@ -102,16 +106,57 @@ pub struct Options<'a> {
     pub fix_leaky_mnv: bool,
     /// The FILTER labels to apply.
     pub filters: FilterThresholds,
+    /// The directory to spill records to while sorting, resolved by [`sort::resolve_tmp_dir`].
+    pub tmp_dir: Option<PathBuf>,
+    /// Set to a signal's number when one asks the run to stop.
+    pub signal: Option<&'a AtomicUsize>,
 }
 
 /// Runs the tool `vartovcf` on an input VAR file or stream and writes the records to a VCF file.
 ///
 /// Each VarDict region's rows are parsed and, when asked, their leaky MNV partials folded, both in
-/// VarDict's own coordinates; each record is then normalized against the reference and written
-/// unless an earlier record normalized to the same call.
+/// VarDict's own coordinates; each record is then normalized against the reference and sorted, and
+/// each call is written once, after the input ends.
 ///
-/// Returns the exit code for success (0).
+/// Returns the exit code: 0 for success, also when standard output's reader closes it early, or 128
+/// plus the signal that stopped the run, after removing its temporary files and output file.
 pub fn vartovcf<I: Read>(input: I, options: &Options) -> Result<i32, Box<dyn error::Error>> {
+    let tmp_dir = resolve_tmp_dir(options.tmp_dir.as_deref())?;
+    let mut output = Output::create(options.output.as_deref())?;
+    let signal = || {
+        options
+            .signal
+            .map_or(0, |signal| signal.load(Ordering::Relaxed))
+    };
+    match convert(input, options, &tmp_dir, &mut output, &signal) {
+        Ok(true) => {
+            output.finish()?;
+            Ok(0)
+        }
+        Ok(false) => {
+            output.discard();
+            Ok(128 + signal() as i32)
+        }
+        Err(_) if output.is_closed_pipe() => {
+            output.discard();
+            Ok(0)
+        }
+        Err(error) => {
+            output.discard();
+            Err(error)
+        }
+    }
+}
+
+/// Converts the input's rows into sorted VCF text in the output, returning false when a signal
+/// stopped the run first.
+fn convert<I: Read>(
+    input: I,
+    options: &Options,
+    tmp_dir: &Path,
+    output: &mut Output,
+    signal: &dyn Fn() -> usize,
+) -> Result<bool, Box<dyn error::Error>> {
     let reference = Reference::from_path(&options.reference)?;
 
     let mut reader = ReaderBuilder::new()
@@ -120,7 +165,7 @@ pub fn vartovcf<I: Read>(input: I, options: &Options) -> Result<i32, Box<dyn err
         .flexible(true)
         .from_reader(input);
 
-    // Peek at the first row to learn the layout and sample before the writer emits the header.
+    // Peek at the first row to learn the layout and sample before the header is made.
     let mut carry = StringRecord::new();
     let mut peeked = reader.read_record(&mut carry)?;
     let layout = if peeked {
@@ -150,16 +195,12 @@ pub fn vartovcf<I: Read>(input: I, options: &Options) -> Result<i32, Box<dyn err
     fasta_contigs_to_vcf_header(&options.reference, &mut header);
     fasta_path_to_vcf_header(&options.reference, &mut header)
         .expect("Adding FASTA path to header failed!");
-
-    let writer = match &options.output {
-        Some(output) => VcfWriter::from_path(output, &header, !has_gzip_ext(output), Format::Vcf),
-        None => VcfWriter::from_stdout(&header, true, Format::Vcf),
-    }
-    .expect("Could not build a VCF writer!");
+    let (header, header_text) = render_header(&header, tmp_dir)?;
 
     let mut sink = Sink {
-        writer,
+        header,
         reference,
+        sorter: RecordSorter::new(tmp_dir)?,
         seen: SeenRows::default(),
         filters,
         progress: ProgLogBuilder::new()
@@ -171,9 +212,15 @@ pub fn vartovcf<I: Read>(input: I, options: &Options) -> Result<i32, Box<dyn err
     };
 
     let row_sample = row_sample.unwrap_or_default();
+    let column = layout.segment_column();
+    let mut segment = String::new();
+    let mut ordinal: u64 = 0;
     let mut region: Vec<StringRecord> = Vec::new();
 
     while std::mem::take(&mut peeked) || read_row(&mut reader, &mut carry, layout)? {
+        if signal() != 0 {
+            return Ok(false);
+        }
         if carry.get(5).is_none_or(|f| f.is_empty()) {
             continue; // If the 5th field is empty, it's a record we need to avoid deserializing.
         }
@@ -188,28 +235,41 @@ pub fn vartovcf<I: Read>(input: I, options: &Options) -> Result<i32, Box<dyn err
             return Err(message.into());
         };
 
-        let column = layout.segment_column();
-        if region
-            .last()
-            .is_some_and(|last| last.get(column) != carry.get(column))
-        {
-            sink.write_region(&region, layout, options.fix_leaky_mnv)?;
+        if field(column) != segment {
+            sink.add_region(&region, layout, ordinal)?;
             region.clear();
+            ordinal += 1;
+            segment.clear();
+            segment.push_str(field(column));
         }
-        region.push(compact(&carry));
+        if options.fix_leaky_mnv {
+            region.push(compact(&carry));
+        } else {
+            let (calls, status) = parse_row(&carry, layout)?;
+            sink.add(&calls[..layout.samples()], status, None, ordinal)?;
+        }
     }
-    sink.write_region(&region, layout, options.fix_leaky_mnv)?;
+    sink.add_region(&region, layout, ordinal)?;
 
-    Ok(0)
+    output
+        .write_all(&header_text)
+        .map_err(|error| format!("Could not write the output: {error}!"))?;
+    Ok(sink.sorter.write_to(output, &|| signal() != 0)?.is_some())
 }
 
-/// Copies a row into a record holding only its fields and position, as a region's rows are held
-/// until the region ends.
-fn compact(record: &StringRecord) -> StringRecord {
-    let mut copy = StringRecord::with_capacity(record.as_slice().len(), record.len());
-    copy.extend(record.iter());
-    copy.set_position(record.position().cloned());
-    copy
+/// Returns a view of a header to build records with, and the header as VCF text, which it renders
+/// through a temporary file in `tmp_dir`.
+fn render_header(
+    header: &Header,
+    tmp_dir: &Path,
+) -> Result<(Arc<HeaderView>, Vec<u8>), Box<dyn error::Error>> {
+    let file = tempfile::NamedTempFile::new_in(tmp_dir)
+        .map_err(|error| format!("Could not use the temporary directory {tmp_dir:?}: {error}!"))?;
+    let view = {
+        let writer = VcfWriter::from_path(file.path(), header, true, Format::Vcf)?;
+        Arc::new(writer.header().clone())
+    };
+    Ok((view, std::fs::read(file.path())?))
 }
 
 /// Parses a row into its calls, one per sample with the tumor (or only) sample first and a default
@@ -230,28 +290,64 @@ fn parse_row(
     })
 }
 
-/// Normalizes records and writes each call once.
+/// Normalizes records and adds them to the sort, which writes each call once.
 struct Sink<'r> {
-    writer: VcfWriter,
+    header: Arc<HeaderView>,
     reference: Reference,
+    sorter: RecordSorter,
     seen: SeenRows,
     filters: &'r FilterThresholds,
     progress: proglog::ProgLog,
 }
 
 impl Sink<'_> {
-    /// Writes the rows of one VarDict region, a block it writes together for one target, each call
-    /// once; VarDict orders a tumor-only region's positions by hash, so rows can come in any order.
+    /// Normalizes a record of the region with this ordinal and adds it to the sort, ranked against
+    /// other records of its call: the first region's records first, then the best supported, by
+    /// [`Rank`], so the sort writes the one each call keeps.
+    fn add(
+        &mut self,
+        calls: &[TumorOnlyVariant],
+        status: Option<&str>,
+        merged: Option<&Merged>,
+        region: u64,
+    ) -> Result<(), Box<dyn error::Error>> {
+        let normalized = normalize(&mut self.reference, &calls[0])?;
+        self.add_normalized(calls, &normalized, status, merged, region, &calls[0])
+    }
+
+    /// Adds a record already normalized, ranked by its calls and by the row it was written for.
+    fn add_normalized(
+        &mut self,
+        calls: &[TumorOnlyVariant],
+        normalized: &Normalized,
+        status: Option<&str>,
+        merged: Option<&Merged>,
+        region: u64,
+        row: &TumorOnlyVariant,
+    ) -> Result<(), Box<dyn error::Error>> {
+        let written: Vec<TumorOnlyVariant> =
+            calls.iter().map(|call| normalized.apply(call)).collect();
+        let record = build_record(&self.header, &written, status, self.filters, merged)?;
+        let line = record.to_vcf_string()?;
+        let rank = Rank::new(region, calls, row);
+        self.sorter
+            .push(sort_key(&record, normalized), rank, line.as_bytes())?;
+        self.progress.record();
+        Ok(())
+    }
+
+    /// Adds the rows of one VarDict region, a block it writes together for one target, with the
+    /// partial rows of each MNV folded into it; VarDict orders a tumor-only region's positions by
+    /// hash, so a partial row can come before or after its MNV.
     ///
-    /// When asked, the partial rows of each MNV are folded into it first. Rows of the region that
-    /// normalize to one call hold different reads of it, and the best supported is written, by
-    /// [`Support`]. A call an earlier region wrote, or folded as a partial, is not written again,
-    /// and is not folded into an MNV here, so its reads are never counted twice.
-    fn write_region(
+    /// A substitution an earlier region added, or folded as a partial, is not added again, and is
+    /// not folded into an MNV here, so its reads are never counted twice. The set of them is kept
+    /// for this, and only for substitutions, so it stays small; the sort drops the rest.
+    fn add_region(
         &mut self,
         region: &[StringRecord],
         layout: Layout,
-        fix_leaky_mnv: bool,
+        ordinal: u64,
     ) -> Result<(), Box<dyn error::Error>> {
         let samples = layout.samples();
         let mut parsed: Vec<TumorOnlyVariant> = Vec::with_capacity(region.len() * samples);
@@ -271,120 +367,85 @@ impl Sink<'_> {
             .zip(&normalized)
             .map(|(row, call)| self.seen.contains(row[0].contig, call))
             .collect();
-        let folds = if fix_leaky_mnv {
-            fold_partials(&calls, &written)
-        } else {
-            vec![Fold::Keep; calls.len()]
-        };
-
-        let mut best: AHashMap<CallKey, (usize, Support)> = AHashMap::new();
-        for (row, fold) in folds.iter().enumerate() {
-            let support = match fold {
-                _ if written[row] => continue,
-                Fold::Keep => Support::new(calls[row], &calls[row][0]),
-                Fold::Merged(merged) => Support::new(&merged.calls, &calls[row][0]),
-                Fold::Into(_) => continue,
-            };
-            let key = CallKey::new(calls[row][0].contig, &normalized[row]);
-            let entry = best.entry(key).or_insert((row, support));
-            if support < entry.1 {
-                *entry = (row, support);
+        for (row, fold) in fold_partials(&calls, &written).into_iter().enumerate() {
+            match fold {
+                _ if written[row] => {}
+                Fold::Keep => self.add_normalized(
+                    calls[row],
+                    &normalized[row],
+                    statuses[row],
+                    None,
+                    ordinal,
+                    &calls[row][0],
+                )?,
+                Fold::Merged(merged) => self.add_normalized(
+                    &merged.calls,
+                    &normalized[row],
+                    statuses[row],
+                    Some(&merged),
+                    ordinal,
+                    &calls[row][0],
+                )?,
+                Fold::Into(_) => {}
             }
-        }
-
-        for (row, fold) in folds.iter().enumerate() {
-            let key = CallKey::new(calls[row][0].contig, &normalized[row]);
-            if best.get(&key).is_none_or(|&(chosen, _)| chosen != row) {
-                continue;
-            }
-            let (row_calls, merged) = match fold {
-                Fold::Merged(merged) => (&merged.calls[..], Some(merged)),
-                _ => (calls[row], None),
-            };
-            let row_calls: Vec<TumorOnlyVariant> = row_calls
-                .iter()
-                .map(|call| normalized[row].apply(call))
-                .collect();
-            write_record(
-                &mut self.writer,
-                &row_calls,
-                statuses[row],
-                self.filters,
-                merged,
-            )?;
-            self.progress.record();
         }
         for (row, call) in calls.iter().zip(&normalized) {
-            self.seen.insert(row[0].contig, call)?;
+            if is_substitution(call) {
+                self.seen.insert(row[0].contig, call)?;
+            }
         }
         Ok(())
     }
 }
 
-/// How well a record supports its call, ordered best first: the most ALT reads in the tumor (or
-/// only) sample, then in all samples, then the most depth in the tumor, then VarDict's lowest
-/// position, REF and ALT for the row, so the choice never depends on the order of the rows.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct Support<'a> {
-    tumor_reads: Reverse<i64>,
-    reads: Reverse<i64>,
-    tumor_depth: Reverse<i64>,
-    start: u64,
-    ref_allele: &'a str,
-    alt_allele: &'a str,
-}
-
-impl<'a> Support<'a> {
-    /// The support of a record with these calls, written for a row with this tumor call.
-    fn new(calls: &[TumorOnlyVariant], row: &TumorOnlyVariant<'a>) -> Self {
-        let reads = |call: &TumorOnlyVariant| call.alt_depth.max(0) as i64;
-        Support {
-            tumor_reads: Reverse(reads(&calls[0])),
-            reads: Reverse(calls.iter().map(reads).sum()),
-            tumor_depth: Reverse(calls[0].depth.max(0) as i64),
-            start: row.start,
-            ref_allele: row.ref_allele,
-            alt_allele: row.alt_allele,
-        }
+/// The sort key of a record, which is also what makes two records the same call.
+fn sort_key<'n>(record: &Record, call: &'n Normalized) -> SortKey<'n> {
+    let alt_allele = if call.ref_allele == call.alt_allele {
+        &[][..]
+    } else {
+        call.alt_allele.as_bytes()
+    };
+    SortKey {
+        rid: record.rid().unwrap_or_default(),
+        pos: call.start - 1,
+        ref_allele: call.ref_allele.as_bytes(),
+        alt_allele,
+        end: call.end,
     }
 }
 
-/// A normalized call's contig, start, END, REF and ALT, which no two written records share.
-#[derive(Hash, PartialEq, Eq)]
-struct CallKey<'n> {
-    contig: &'n str,
-    start: u64,
-    end: u64,
-    ref_allele: &'n str,
-    alt_allele: &'n str,
+/// Whether a normalized call substitutes bases, as only a substitution can be a leaky MNV's partial.
+fn is_substitution(call: &Normalized) -> bool {
+    call.ref_allele.len() == call.alt_allele.len()
+        && call.ref_allele != call.alt_allele
+        && call
+            .alt_allele
+            .bytes()
+            .all(|base| base.is_ascii_alphabetic())
 }
 
-impl<'n> CallKey<'n> {
-    /// The key of a normalized call on a contig.
-    fn new(contig: &'n str, call: &'n Normalized) -> Self {
-        CallKey {
-            contig,
-            start: call.start,
-            end: call.end,
-            ref_allele: &call.ref_allele,
-            alt_allele: &call.alt_allele,
-        }
-    }
+/// Copies a row into a record holding only its fields and position, as a region's rows are held
+/// until the region ends.
+fn compact(record: &StringRecord) -> StringRecord {
+    let mut copy = StringRecord::with_capacity(record.as_slice().len(), record.len());
+    copy.extend(record.iter());
+    copy.set_position(record.position().cloned());
+    copy
 }
 
-/// Writes one VCF record with a sample column per call, the tumor (or only) sample first; FILTER and
+/// Builds one VCF record with a sample column per call, the tumor (or only) sample first; FILTER and
 /// the site's INFO come from the first call, and a tumor-normal record carries its VARDICT_STATUS.
-fn write_record(
-    writer: &mut VcfWriter,
+fn build_record(
+    header: &Arc<HeaderView>,
     calls: &[TumorOnlyVariant],
     status: Option<&str>,
     filters: &FilterThresholds,
     merged: Option<&Merged>,
-) -> Result<(), Box<dyn error::Error>> {
+) -> Result<Record, Box<dyn error::Error>> {
     let var = &calls[0];
-    let rid = writer.header().name2rid(var.contig.as_bytes()).unwrap();
+    let rid = header.name2rid(var.contig.as_bytes())?;
 
-    let mut variant = writer.empty_record();
+    let mut variant = header.empty_record();
     variant.set_rid(Some(rid));
     variant.set_pos(var.start as i64 - 1);
     variant.set_alleles(&[
@@ -499,8 +560,7 @@ fn write_record(
         variant.push_format_integer(b"SV_DISCORDANT_READS", &each(&counts, |count| count.1))?;
     }
 
-    writer.write(&variant)?;
-    Ok(())
+    Ok(variant)
 }
 
 /// Collects one value per sample.
@@ -542,7 +602,7 @@ impl<V, const N: usize> Deref for Values<V, N> {
     }
 }
 
-/// The calls written so far, each held as a fixed-size key, for skipping a call written before.
+/// The substitutions added so far, each held as a fixed-size key, for skipping one added before.
 #[derive(Default)]
 struct SeenRows {
     keys: AHashSet<RowKey>,
