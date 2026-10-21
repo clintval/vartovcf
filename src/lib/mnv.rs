@@ -49,8 +49,9 @@ pub struct Merged<'a> {
 /// needs the fewest breaks to leave it, one for each end of the child inside the root's span, since
 /// every break is a rare event in a read; then to the root with the most ALT reads. A child starting
 /// at the root's first base is folded only while the root's ALT reads and those of the children it
-/// took there fit in that base's DP, as VarDict counts each read's base there once.
-pub fn fold_partials<'a>(rows: &[&[TumorOnlyVariant<'a>]]) -> Vec<Fold<'a>> {
+/// took there fit in that base's DP, as VarDict counts each read's base there once. A row marked
+/// `written`, already written for an earlier region, can be a root but is never claimed.
+pub fn fold_partials<'a>(rows: &[&[TumorOnlyVariant<'a>]], written: &[bool]) -> Vec<Fold<'a>> {
     let mut folds = vec![Fold::Keep; rows.len()];
     let mut nodes: Vec<usize> = (0..rows.len())
         .filter(|&row| {
@@ -74,7 +75,7 @@ pub fn fold_partials<'a>(rows: &[&[TumorOnlyVariant<'a>]]) -> Vec<Fold<'a>> {
         let mut candidates: Vec<(usize, usize)> = roots
             .iter()
             .enumerate()
-            .filter(|(_, root)| can_claim(rows[root.row], rows[node]))
+            .filter(|(_, root)| !written[node] && can_claim(rows[root.row], rows[node]))
             .map(|(rank, root)| (breaks(&rows[root.row][0], &rows[node][0]), rank))
             .collect();
         if candidates.is_empty() {
@@ -335,7 +336,7 @@ mod tests {
     /// Folds tumor-only rows.
     fn fold(rows: &[TumorOnlyVariant<'static>]) -> Vec<Fold<'static>> {
         let rows: Vec<&[TumorOnlyVariant]> = rows.iter().map(std::slice::from_ref).collect();
-        fold_partials(&rows)
+        fold_partials(&rows, &vec![false; rows.len()])
     }
 
     /// The rows each row folds into, `None` for a row that is written.
@@ -544,6 +545,20 @@ mod tests {
     }
 
     #[test]
+    fn test_a_row_written_before_is_not_claimed_but_can_be_a_root() {
+        let rows = [
+            call(10, "GG", "CA", 100, 200),
+            call(10, "G", "C", 5, 200),
+            call(11, "G", "A", 4, 205),
+        ];
+        let calls: Vec<&[TumorOnlyVariant]> = rows.iter().map(std::slice::from_ref).collect();
+        let folds = fold_partials(&calls, &[false, true, false]);
+        assert_eq!(targets(&folds), vec![None, None, Some(0)]);
+        let folds = fold_partials(&calls, &[true, false, false]);
+        assert_eq!(targets(&folds), vec![None, Some(0), Some(0)]);
+    }
+
+    #[test]
     fn test_without_an_mnv_every_row_is_kept() {
         let folds = fold(&[call(10, "G", "C", 100, 200), call(11, "G", "A", 5, 200)]);
         assert_eq!(folds, vec![Fold::Keep, Fold::Keep]);
@@ -613,7 +628,7 @@ mod tests {
     /// Folds tumor-normal rows given as (tumor, normal) pairs.
     fn fold_pairs(rows: &[[TumorOnlyVariant<'static>; 2]]) -> Vec<Fold<'static>> {
         let rows: Vec<&[TumorOnlyVariant]> = rows.iter().map(|row| &row[..]).collect();
-        fold_partials(&rows)
+        fold_partials(&rows, &vec![false; rows.len()])
     }
 
     #[test]

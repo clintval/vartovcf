@@ -405,33 +405,7 @@ impl<'a> TumorOnlyVariant<'a> {
     /// Return VarDict's variant class for the alleles this record writes, using VarDict's own rule
     /// (`Variant.varType`) on the final alleles: VarDict labels a Complex call before trimming it.
     pub fn variant_class(&self) -> Option<&'a str> {
-        let (ref_allele, alt_allele) = (self.ref_allele, self.alt_allele);
-        if ref_allele == alt_allele {
-            return None;
-        }
-        if ref_allele.len() == 1 && alt_allele.len() == 1 {
-            return Some("SNV");
-        }
-        if let Some(sv) = alt_allele
-            .strip_prefix('<')
-            .and_then(|rest| rest.strip_suffix('>'))
-            .filter(|sv| sv.len() == 3)
-        {
-            return Some(sv);
-        }
-        let class = match (ref_allele.as_bytes().first(), alt_allele.as_bytes().first()) {
-            (Some(r), Some(a)) if r == a => {
-                if ref_allele.len() == 1 && alt_allele.starts_with(ref_allele) {
-                    "Insertion"
-                } else if alt_allele.len() == 1 && ref_allele.starts_with(alt_allele) {
-                    "Deletion"
-                } else {
-                    "Complex"
-                }
-            }
-            _ => "Complex",
-        };
-        Some(class)
+        variant_class(self.ref_allele, self.alt_allele)
     }
 
     /// Return the "INDEL_3P_SHIFT" formatted VCF field for this record: only for insertions and
@@ -490,6 +464,37 @@ impl<'a> TumorOnlyVariant<'a> {
             .map_or(rest, |end| &rest[..end]);
         digits.parse::<i32>().ok().map(|length| sign * length)
     }
+}
+
+/// Return VarDict's variant class (`Variant.varType`) for a REF and ALT allele: `None` without an ALT
+/// allele, SNV, Insertion, Deletion, Complex, or the type of a symbolic structural variant.
+pub fn variant_class<'s>(ref_allele: &'s str, alt_allele: &'s str) -> Option<&'s str> {
+    if ref_allele == alt_allele {
+        return None;
+    }
+    if ref_allele.len() == 1 && alt_allele.len() == 1 {
+        return Some("SNV");
+    }
+    if let Some(sv) = alt_allele
+        .strip_prefix('<')
+        .and_then(|rest| rest.strip_suffix('>'))
+        .filter(|sv| sv.len() == 3)
+    {
+        return Some(sv);
+    }
+    let class = match (ref_allele.as_bytes().first(), alt_allele.as_bytes().first()) {
+        (Some(r), Some(a)) if r == a => {
+            if ref_allele.len() == 1 && alt_allele.starts_with(ref_allele) {
+                "Insertion"
+            } else if alt_allele.len() == 1 && ref_allele.starts_with(alt_allele) {
+                "Deletion"
+            } else {
+                "Complex"
+            }
+        }
+        _ => "Complex",
+    };
+    Some(class)
 }
 
 /// One sample's columns in a record of VarDict/VarDictJava output run on a tumor and normal pair.
@@ -763,8 +768,8 @@ fn vcf_header(samples: &[&str], filters: &FilterThresholds, fix_leaky_mnv: bool)
     header.remove_filter(b"PASS");
     header.push_record(format!("##source={source}").as_bytes());
     header.push_record(r#"##INFO=<ID=TYPE,Number=A,Type=String,Description="VarDict's class of the change from REF to ALT, from VarDict's own rule applied to the alleles in this record: SNV (one base to one base), Insertion (ALT is the single REF base followed by inserted bases), Deletion (REF is longer and ALT is its first base), Complex (every other change, including MNVs, which VarDict does not separate), or DEL, DUP or INV for a symbolic structural variant. Absent when there is no ALT allele.">"#.as_bytes());
-    header.push_record(r#"##INFO=<ID=INDEL_3P_SHIFT,Number=A,Type=Integer,Description="Number of bases this insertion or deletion can slide toward the 3' end (rightward on the forward strand) and still describe the same haplotype, counted within VarDict's 70-base window, so values top out near 70; POS plus this is the right-most equivalent position. Written only for insertions and deletions.">"#.as_bytes());
-    header.push_record(r#"##INFO=<ID=REPEAT_UNIT_COPIES,Number=A,Type=Float,Description="Copies of the 1-6 bp tandem repeat unit next to the variant, counted by VarDict in the reference or ALT haplotype, whichever is larger (1 means no repeat). VarDict takes the unit from one side of the variant (for SNVs, the repeat starting at the following base), so a repeat on the other side can be missed; it also raises the count to an indel's 3' shift divided by its length when that is larger, which can make it fractional and leave REPEAT_UNIT_LEN describing a different repeat. Sequence context, not microsatellite instability. Rounded by VarDict to 3 decimals; absent when VarDict did not compute it.">"#.as_bytes());
+    header.push_record(r#"##INFO=<ID=INDEL_3P_SHIFT,Number=A,Type=Integer,Description="Number of bases this insertion or deletion can slide toward the 3' end (rightward on the forward strand) and still describe the same haplotype, counted by vartovcf in the reference as VarDict counts its Shift3, but without the window that capped VarDict's at 70 for insertions and 71 for deletions; POS plus this is the right-most equivalent position. Written only for insertions and deletions.">"#.as_bytes());
+    header.push_record(r#"##INFO=<ID=REPEAT_UNIT_COPIES,Number=A,Type=Float,Description="Copies of the 1-6 bp tandem repeat unit next to the variant, counted by VarDict in the reference or ALT haplotype, whichever is larger (1 means no repeat). VarDict takes the unit from one side of the variant (for SNVs, the repeat starting at the following base), so a repeat on the other side can be missed, and for a row it labels Complex it can take the unit as for an SNV even when the call normalizes to an insertion or deletion; it also raises the count to an indel's 3' shift divided by its length when that is larger, which can make it fractional and leave REPEAT_UNIT_LEN describing a different repeat. Sequence context, not microsatellite instability. Rounded by VarDict to 3 decimals; absent when VarDict did not compute it.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=REPEAT_UNIT_LEN,Number=A,Type=Integer,Description="Length in bp (1-6) of the repeat unit counted in REPEAT_UNIT_COPIES; absent when VarDict did not compute it.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=END,Number=1,Type=Integer,Description="End position, written only on records with a symbolic ALT allele: the last deleted base for DEL, the last inverted base for INV, and VarDict's end of the duplication for DUP, which can be off by one depending on how VarDict found it.">"#.as_bytes());
     header.push_record(r#"##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="Signed length of the structural variant, written only on records with a symbolic ALT allele: VarDict's own event length, negative for DEL (the deleted bases), positive for DUP (the duplicated bases) and INV (the inverted bases).">"#.as_bytes());
@@ -781,11 +786,11 @@ fn vcf_header(samples: &[&str], filters: &FilterThresholds, fix_leaky_mnv: bool)
         header.push_record(line.as_bytes());
     }
     header.push_record(format!(r#"##FORMAT=<ID=GT,Number=1,Type=String,Description="The genotype inferred from the allele frequency alone, since VarDict does not genotype: 1/1 when AF >= {MIN_HOM_ALT_AF}, 0/1 for any other call with ALT reads, 0/0 when no read carries the ALT allele or there is no ALT allele, and ./. when DP is 0 too.">"#).as_bytes());
-    header.push_record(r#"##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Read depth for REF then ALT as VarDict counts them: ALT is the reads carrying this allele and REF is the reads carrying the reference base at the variant's first internal base (the first deleted base for deletions, without insertion-carrying reads for insertions), or at the following base when an insertion at the same position raises DP. REF is missing for Complex calls, where VarDict counts only their first base and can count a read as both, and REF is the only value when there is no ALT allele.">"#.as_bytes());
-    header.push_record(r#"##FORMAT=<ID=ADF,Number=R,Type=Integer,Description="Reads on the forward strand (SAM flag 0x10 unset) supporting REF then ALT, the forward half of AD as VarDict counts it: REF is counted where AD's is (sometimes the following base), is missing for Complex calls and is the only value when there is no ALT allele. When VarDict runs with -u, overlapping mates count only through the reverse read.">"#.as_bytes());
-    header.push_record(r#"##FORMAT=<ID=ADR,Number=R,Type=Integer,Description="Reads on the reverse strand (SAM flag 0x10 set) supporting REF then ALT, the reverse half of AD as VarDict counts it: REF is counted where AD's is (sometimes the following base), is missing for Complex calls and is the only value when there is no ALT allele. When VarDict runs with -u, overlapping mates count only through the reverse read.">"#.as_bytes());
+    header.push_record(r#"##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Read depth for REF then ALT as VarDict counts them: ALT is the reads carrying this allele and REF is the reads carrying the reference base at the variant's first internal base (the first deleted base for deletions, without insertion-carrying reads for insertions), or at the following base when an insertion at the same position raises DP. REF is missing for calls VarDict labels Complex, MNVs included, whatever their TYPE after trimming, as VarDict counts only their first base and can count a read as both, and REF is the only value when there is no ALT allele.">"#.as_bytes());
+    header.push_record(r#"##FORMAT=<ID=ADF,Number=R,Type=Integer,Description="Reads on the forward strand (SAM flag 0x10 unset) supporting REF then ALT, the forward half of AD as VarDict counts it: REF is counted where AD's is (sometimes the following base), is missing where AD's is and is the only value when there is no ALT allele. When VarDict runs with -u, overlapping mates count only through the reverse read.">"#.as_bytes());
+    header.push_record(r#"##FORMAT=<ID=ADR,Number=R,Type=Integer,Description="Reads on the reverse strand (SAM flag 0x10 set) supporting REF then ALT, the reverse half of AD as VarDict counts it: REF is counted where AD's is (sometimes the following base), is missing where AD's is and is the only value when there is no ALT allele. When VarDict runs with -u, overlapping mates count only through the reverse read.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=STRAND_BIAS_FISHER_P,Number=A,Type=Float,Description="Two-sided Fisher exact p-value that the ALT allele's forward/reverse read split differs from REF's, from VarDict's table of REF and ALT reads by SAM strand, not a test against 50:50; its REF counts are VarDict's, including the overcount on Complex calls. Rounded by VarDict to 5 decimals, so values below 0.000005 read 0. Missing when no read carries the ALT allele.">"#.as_bytes());
-    header.push_record(r#"##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read depth as VarDict counts it at the variant's first internal base (POS+1 for deletions), the denominator of FORMAT AF and usually of VarDict's own AF: reads with any base quality, reads whose deletion spans the base, reference-matching soft-clipped bases, reads VarDict reassigned by realignment, and N calls only under -K; overlapping mates count twice unless VarDict ran with -u or -UN, and an insertion at the same position can make it the following base's depth. REF and ALT depths need not sum to DP.">"#.as_bytes());
+    header.push_record(r#"##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read depth as VarDict counts it at the variant's first internal base where VarDict placed the variant, which is POS+1 for a deletion that normalization did not move left, the denominator of FORMAT AF and usually of VarDict's own AF: reads with any base quality, reads whose deletion spans the base, reference-matching soft-clipped bases, reads VarDict reassigned by realignment, and N calls only under -K; overlapping mates count twice unless VarDict ran with -u or -UN, and an insertion at the same position can make it the following base's depth. REF and ALT depths need not sum to DP.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=AF,Number=A,Type=Float,Description="Fraction of reads carrying the ALT allele, AD[1] / DP, computed by vartovcf at full precision and clamped to [0, 1] because VarDict's ALT count can exceed DP; AD and DP keep the raw counts. VarDict's own AF column is rounded to 4 decimals and its denominator can differ from DP, for example at a position shared with an insertion. Missing when there is no ALT allele or DP is 0.">"#.as_bytes());
     let hicnt = "ALT reads whose per-read variant quality, the one QMEAN averages (the base's quality for SNVs, the better flanking base's for deletions and so on), is at least VarDict's -q; mapping quality is not considered. Missing when there is no ALT allele.";
     let hicnt_tumor_normal = if tumor_normal {

@@ -10,12 +10,12 @@ use env_logger::Env;
 use log::*;
 
 use vartovcflib::filter::FilterThresholds;
-use vartovcflib::vartovcf;
+use vartovcflib::{Options, vartovcf};
 
 #[derive(Clone, Debug, Parser)]
 #[command(version, about)]
 struct Opt {
-    /// The indexed FASTA reference sequence file
+    /// The indexed FASTA reference VarDict was run with, which every record is checked and normalized against
     #[arg(short, long)]
     reference: PathBuf,
 
@@ -127,15 +127,14 @@ fn main() -> Result<(), Error> {
         _ => info!("Output stream: STDOUT"),
     }
 
-    match vartovcf(
-        input,
-        opt.output,
-        &opt.reference,
-        opt.sample.as_deref(),
-        opt.normal_sample.as_deref(),
-        opt.skip_non_variants,
-        opt.fix_leaky_mnv,
-        &FilterThresholds {
+    let options = Options {
+        output: opt.output,
+        reference: opt.reference,
+        sample: opt.sample.as_deref(),
+        normal_sample: opt.normal_sample.as_deref(),
+        skip_non_variants: opt.skip_non_variants,
+        fix_leaky_mnv: opt.fix_leaky_mnv,
+        filters: FilterThresholds {
             near_read_end: opt.filter_near_read_end,
             low_mean_mapq: opt.filter_low_mean_mapq,
             homopolymer_indel: opt.filter_homopolymer_indel,
@@ -151,7 +150,9 @@ fn main() -> Result<(), Error> {
             low_qmean: opt.filter_low_qmean,
             low_dp: opt.filter_low_dp,
         },
-    ) {
+    };
+
+    match vartovcf(input, &options) {
         Ok(exit_code) => process::exit(exit_code),
         Err(except) => {
             error!("{except}");

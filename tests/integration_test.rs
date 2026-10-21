@@ -361,10 +361,231 @@ mod tests {
         let vcf = std::fs::read_to_string(output)?;
         let filter = vcf
             .lines()
-            .find(|line| line.starts_with("cA\t200\t.\tCC\tTT\t"))
+            .find(|line| line.starts_with("cG\t200\t.\tCC\tTT\t"))
             .and_then(|line| line.split('\t').nth(6))
             .expect("the CC>TT record");
         assert_eq!(filter, expected);
+        Ok(())
+    }
+
+    #[rstest]
+    #[case(
+        "tests/reference.fa",
+        "tests/calls.normalize.var",
+        "tests/calls.normalize.vcf"
+    )]
+    #[case(
+        "tests/tumor-normal.fa",
+        "tests/calls.tumor-normal.normalize.var",
+        "tests/calls.tumor-normal.normalize.vcf"
+    )]
+    fn run_end_to_end_normalizes_each_record(
+        #[case] reference: &str,
+        #[case] input: &str,
+        #[case] expected: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let output = NamedTempFile::new().expect("Cannot create temporary file!");
+        let output = output.path().to_str().unwrap();
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        cmd.args([
+            "--reference",
+            reference,
+            "--input",
+            input,
+            "--output",
+            output,
+        ])
+        .unwrap()
+        .assert()
+        .success();
+
+        assert!(diff(output, expected));
+        Ok(())
+    }
+
+    #[rstest]
+    #[case(true, "tests/calls.leaky-mnv.overlapping.vcf")]
+    #[case(false, "")]
+    fn run_end_to_end_writes_a_call_of_overlapping_regions_once(
+        #[case] fix_leaky_mnv: bool,
+        #[case] expected: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let output = NamedTempFile::new().expect("Cannot create temporary file!");
+        let output = output.path().to_str().unwrap();
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        cmd.args(["--reference", "tests/reference.fa", "--output", output])
+            .args(["--input", "tests/calls.leaky-mnv.overlapping.var"]);
+        if fix_leaky_mnv {
+            cmd.arg("--fix-leaky-mnv");
+        }
+        cmd.unwrap().assert().success();
+
+        let vcf = read_to_string(output)?;
+        let records: Vec<String> = vcf
+            .lines()
+            .filter(|line| !line.starts_with('#'))
+            .map(|line| line.split('\t').take(5).collect::<Vec<_>>().join(" "))
+            .collect();
+        if fix_leaky_mnv {
+            assert!(diff(output, expected));
+            assert_eq!(records, vec!["chr1 1100 . GG CA"]);
+        } else {
+            assert_eq!(
+                records,
+                vec!["chr1 1100 . GG CA", "chr1 1100 . G C", "chr1 1101 . G A"]
+            );
+        }
+        Ok(())
+    }
+
+    /// The CHROM, POS, REF, ALT and the first sample's AD of each record converted from some rows.
+    fn records(rows: &str, args: &[&str]) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        let reference = if rows.starts_with("T|N") {
+            "tests/tumor-normal.fa"
+        } else {
+            "tests/reference.fa"
+        };
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        let assert = cmd
+            .args(["--reference", reference])
+            .args(args)
+            .write_stdin(rows)
+            .assert()
+            .success();
+        let vcf = String::from_utf8(assert.get_output().stdout.clone())?;
+        Ok(vcf
+            .lines()
+            .filter(|line| !line.starts_with('#'))
+            .map(|line| {
+                let fields: Vec<&str> = line.split('\t').collect();
+                let ad = fields[9].split(':').nth(1).unwrap_or_default();
+                format!(
+                    "{} {} {} {} {ad}",
+                    fields[0], fields[1], fields[3], fields[4]
+                )
+            })
+            .collect())
+    }
+
+    #[rstest]
+    #[case::partial_first(false, true, vec!["chr1 1101 G A .,105"])]
+    #[case::mnv_first(true, true, vec!["chr1 1101 G A .,105"])]
+    #[case::partial_first_without_the_fold(false, false, vec!["chr1 1101 G A .,100"])]
+    #[case::mnv_first_without_the_fold(true, false, vec!["chr1 1101 G A .,100"])]
+    fn run_end_to_end_writes_rows_that_normalize_to_one_call_once(
+        #[case] reversed: bool,
+        #[case] fix_leaky_mnv: bool,
+        #[case] expected: Vec<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let rows = read_to_string("tests/calls.leaky-mnv.same-call.var")?;
+        let rows: String = if reversed {
+            rows.lines().rev().map(|line| format!("{line}\n")).collect()
+        } else {
+            rows
+        };
+        let args: &[&str] = if fix_leaky_mnv {
+            &["--fix-leaky-mnv"]
+        } else {
+            &[]
+        };
+        assert_eq!(records(&rows, args)?, expected);
+        Ok(())
+    }
+
+    #[rstest]
+    #[case::the_most_depth_wins_a_tie_of_reads(
+        "tests/calls.same-call.tie.var",
+        vec!["chr1 1153 C CA 300,20"]
+    )]
+    #[case::the_tumor_reads_decide_before_the_normal_reads(
+        "tests/calls.tumor-normal.same-call.var",
+        vec!["cL 21 CA C 270,50"]
+    )]
+    fn run_end_to_end_chooses_among_rows_of_one_call_whatever_their_order(
+        #[case] input: &str,
+        #[case] expected: Vec<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let rows = read_to_string(input)?;
+        let reversed: String = rows.lines().rev().map(|line| format!("{line}\n")).collect();
+        assert_eq!(records(&rows, &[])?, expected);
+        assert_eq!(records(&reversed, &[])?, expected);
+        Ok(())
+    }
+
+    #[rstest]
+    #[case::partial_written_by_an_earlier_region(
+        "tests/calls.leaky-mnv.partial-first.var",
+        vec!["chr1 1100 G C 300,5", "chr1 1100 GG CA .,101"]
+    )]
+    #[case::partial_folded_by_an_earlier_region(
+        "tests/calls.leaky-mnv.three-regions.var",
+        vec!["chr1 1100 GG CA .,100"]
+    )]
+    fn run_end_to_end_never_counts_a_partial_twice(
+        #[case] input: &str,
+        #[case] expected: Vec<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let rows = read_to_string(input)?;
+        assert_eq!(records(&rows, &["--fix-leaky-mnv"])?, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn run_end_to_end_keeps_a_reference_only_row_in_mixed_case()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let rows = read_to_string("tests/calls.mixed-case.var")?;
+        assert_eq!(records(&rows, &[])?, vec!["chr1 1100 G . 300"]);
+        Ok(())
+    }
+
+    #[rstest]
+    #[case(
+        "tests/tumor-normal.fa",
+        "tests/calls.var",
+        "Contig 'chr12' is not in the reference: give --reference the FASTA VarDict was run with!"
+    )]
+    #[case(
+        "tests/reference.fa",
+        "tests/calls.tumor-normal.var",
+        "Contig 'cA' is not in the reference: give --reference the FASTA VarDict was run with!"
+    )]
+    #[case(
+        "tests/missing.fa",
+        "tests/calls.var",
+        "Could not read the FASTA index \"tests/missing.fa.fai\""
+    )]
+    fn run_end_to_end_refuses_a_reference_vardict_did_not_use(
+        #[case] reference: &str,
+        #[case] input: &str,
+        #[case] message: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        let assert = cmd
+            .args(["--reference", reference, "--input", input])
+            .assert()
+            .code(1);
+        let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+        assert!(stderr.contains(message), "{stderr}");
+        assert!(!stderr.contains("panicked"), "{stderr}");
+        Ok(())
+    }
+
+    #[test]
+    fn run_end_to_end_refuses_a_ref_allele_the_reference_lacks()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let rows =
+            read_to_string("tests/calls.var")?.replace("\t880\t880\tT\tA\t", "\t880\t880\tG\tA\t");
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        let assert = cmd
+            .args(["--reference", "tests/reference.fa", "--sample", "dna00001"])
+            .write_stdin(rows)
+            .assert()
+            .code(1);
+        let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+        assert!(
+            stderr.contains("The REF allele 'G' at chr1:880 is 'T' in the reference: give --reference the FASTA VarDict was run with!"),
+            "{stderr}"
+        );
         Ok(())
     }
 
@@ -473,7 +694,7 @@ mod tests {
             .code(1);
 
         let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
-        assert!(stderr.contains("chr13:24684729: cannot read the DEL length from the genotype column 'G/G'"), "{stderr}");
+        assert!(stderr.contains("chr13:1141: cannot read the DEL length from the genotype column 'G/G'"), "{stderr}");
         assert!(!stderr.contains("panicked"), "{stderr}");
         Ok(())
     }
