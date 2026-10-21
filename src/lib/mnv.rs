@@ -7,13 +7,96 @@
 //! at its first base whose reads end, on average, within the partial, and writes the rest as rows
 //! of their own.
 //!
-//! Partial rows are grouped with their MNV by the directional adjacency rule of UMI-tools (Smith,
-//! Heger and Sudbery 2017): a parent with `n` ALT reads can claim a sub-event with at most
-//! `(n + 1) / 2` of them.
+//! A partial row is folded when its reads are plausible leakage from the MNV. Each read of an MNV
+//! molecule lands in any one partial row with a small probability, the leak rate, which depends on
+//! the library: read length, fragment size, base-quality and no-call rates. A partial with `c` reads
+//! under an MNV with `n` is then a draw from a binomial over the `n + c` molecules observed, and it
+//! is folded when `c` is within that binomial's upper [`LEAK_TAIL`] at [`LeakRate`], and smaller
+//! than `n`: a row with at least as many reads as the MNV is a separate allele, or the MNV's own
+//! reads counted again, whatever the rate.
 
 use rust_htslib::bcf::record::Numeric;
 
 use crate::record::TumorOnlyVariant;
+
+/// The upper tail of the leak binomial a partial's reads may fall in and still be folded.
+pub const LEAK_TAIL: f64 = 0.05;
+
+/// The probability that a read of an MNV molecule is counted toward any one partial row.
+///
+/// The rate varies with the library and the MNV's sequence context; the README describes how to
+/// estimate it from a run without `--fix-leaky-mnv`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LeakRate(f64);
+
+impl Default for LeakRate {
+    fn default() -> Self {
+        LeakRate(0.05)
+    }
+}
+
+impl LeakRate {
+    /// A leak rate, which must be above 0 and below 0.5.
+    pub fn new(rate: f64) -> Result<Self, String> {
+        if rate > 0.0 && rate < 0.5 {
+            Ok(LeakRate(rate))
+        } else {
+            Err(format!(
+                "The leak rate must be above 0 and below 0.5, not {rate}!"
+            ))
+        }
+    }
+
+    /// The rate as a number.
+    pub fn value(self) -> f64 {
+        self.0
+    }
+
+    /// Whether an MNV with `mnv_reads` ALT reads explains a partial with `partial_reads` as leakage:
+    /// the partial has fewer reads than the MNV, and at least as many are leaked from the `mnv_reads
+    /// + partial_reads` molecules with probability [`LEAK_TAIL`] or more.
+    pub fn explains(self, mnv_reads: i32, partial_reads: i32) -> bool {
+        partial_reads < mnv_reads
+            && binomial_upper_tail(
+                i64::from(mnv_reads) + i64::from(partial_reads),
+                i64::from(partial_reads),
+                self.0,
+            ) >= LEAK_TAIL
+    }
+
+    /// The most reads a partial may have and still be explained by an MNV with `mnv_reads`.
+    pub fn bound(self, mnv_reads: i32) -> i32 {
+        (0..mnv_reads)
+            .rev()
+            .find(|&reads| self.explains(mnv_reads, reads))
+            .unwrap_or(0)
+    }
+
+    /// The fewest reads an MNV needs to explain a partial with `partial_reads`.
+    pub fn fewest_mnv_reads(self, partial_reads: i32) -> i32 {
+        (partial_reads + 1..)
+            .find(|&reads| self.explains(reads, partial_reads))
+            .expect("some count of MNV reads explains any partial")
+    }
+}
+
+/// `P(X >= successes)` for `X ~ Binomial(trials, p)`, as 1 minus the lower tail summed in log space.
+fn binomial_upper_tail(trials: i64, successes: i64, p: f64) -> f64 {
+    if successes <= 0 {
+        return 1.0;
+    }
+    if successes > trials {
+        return 0.0;
+    }
+    let log_odds = p.ln() - (-p).ln_1p();
+    let mut log_pmf = trials as f64 * (-p).ln_1p();
+    let mut lower = log_pmf.exp();
+    for k in 0..successes - 1 {
+        log_pmf += ((trials - k) as f64 / (k + 1) as f64).ln() + log_odds;
+        lower += log_pmf.exp();
+    }
+    (1.0 - lower).max(0.0)
+}
 
 /// How a row is written once the partial rows of its region are folded.
 #[derive(Clone, Debug, PartialEq)]
@@ -42,15 +125,23 @@ pub struct Merged<'a> {
 /// A row takes part when it is a substitution (an SNV or an MNV) with ALT reads in some sample. A
 /// child is a sub-event of a parent when it lies within the parent's span and its ALT bases equal
 /// the parent's over that span, so it changes no base the parent does not and changes the bases it
-/// covers as the parent does; it can claim the child when, in every sample, it has at least
-/// `2 * child - 1` ALT reads. Rows are visited from the most to the least supported, and a row no
-/// earlier root can claim is a root itself. A row that several roots can claim goes to the one that
-/// needs the fewest breaks to leave it, one for each end of the child inside the root's span, since
-/// every break is a rare event in a read; then to the root with the most ALT reads. A child starting
-/// at the root's first base is folded only while the root's ALT reads and those of the children it
-/// took there fit in that base's DP, as VarDict counts each read's base there once. A row marked
-/// `written`, already written for an earlier region, can be a root but is never claimed.
-pub fn fold_partials<'a>(rows: &[&[TumorOnlyVariant<'a>]], written: &[bool]) -> Vec<Fold<'a>> {
+/// covers as the parent does; it can claim the child when, in every sample with reads of the child,
+/// its own reads explain the child's as leakage at `leak_rate`. Each test uses the parent's own
+/// reads, not those of the children it took, so a child's fate depends only on its counts and the
+/// parent's, not on the order the rows are visited in. Rows are visited from the most to the least
+/// supported, and a row no earlier root can claim is a root itself; a row a root claims is never a
+/// root, as every sub-event of it is a sub-event of that root. A row that several roots can claim
+/// goes to the one that needs the fewest breaks to leave it, one for each end of the child inside
+/// the root's span, since every break is a rare event in a read; then to the root with the most ALT
+/// reads. A child starting at the root's first base is folded only while the root's ALT reads and
+/// those of the children it took there fit in that base's DP, as VarDict counts each read's base
+/// there once. A row marked `written`, already written for an earlier region, can be a root but is
+/// never claimed.
+pub fn fold_partials<'a>(
+    rows: &[&[TumorOnlyVariant<'a>]],
+    written: &[bool],
+    leak_rate: LeakRate,
+) -> Vec<Fold<'a>> {
     let mut folds = vec![Fold::Keep; rows.len()];
     let mut nodes: Vec<usize> = (0..rows.len())
         .filter(|&row| {
@@ -74,7 +165,7 @@ pub fn fold_partials<'a>(rows: &[&[TumorOnlyVariant<'a>]], written: &[bool]) -> 
         let mut candidates: Vec<(usize, usize)> = roots
             .iter()
             .enumerate()
-            .filter(|(_, root)| !written[node] && can_claim(rows[root.row], rows[node]))
+            .filter(|(_, root)| !written[node] && can_claim(rows[root.row], rows[node], leak_rate))
             .map(|(rank, root)| (breaks(&rows[root.row][0], &rows[node][0]), rank))
             .collect();
         if candidates.is_empty() {
@@ -146,14 +237,14 @@ impl Root {
     }
 }
 
-/// Whether a parent row can claim a child row: the child is its sub-event and, in every sample, the
-/// parent has at least `2 * child - 1` ALT reads.
-fn can_claim(parent: &[TumorOnlyVariant], child: &[TumorOnlyVariant]) -> bool {
+/// Whether a parent row can claim a child row: the child is its sub-event and, in every sample with
+/// reads of the child, the parent's reads explain them as leakage.
+fn can_claim(parent: &[TumorOnlyVariant], child: &[TumorOnlyVariant], leak_rate: LeakRate) -> bool {
     is_sub_event(&parent[0], &child[0])
         && parent
             .iter()
             .zip(child)
-            .all(|(p, c)| p.alt_depth >= 2 * c.alt_depth - 1)
+            .all(|(p, c)| c.alt_depth <= 0 || leak_rate.explains(p.alt_depth, c.alt_depth))
 }
 
 /// The breaks a read of `parent` needs to leave only `child`: one for each end of the child that
@@ -330,7 +421,7 @@ mod tests {
     /// Folds tumor-only rows.
     fn fold(rows: &[TumorOnlyVariant<'static>]) -> Vec<Fold<'static>> {
         let rows: Vec<&[TumorOnlyVariant]> = rows.iter().map(std::slice::from_ref).collect();
-        fold_partials(&rows, &vec![false; rows.len()])
+        fold_partials(&rows, &vec![false; rows.len()], LeakRate::default())
     }
 
     /// The rows each row folds into, `None` for a row that is written.
@@ -401,7 +492,7 @@ mod tests {
     fn test_a_gapped_mnv_folds_into_a_longer_mnv_that_carries_it() {
         let folds = fold(&[
             call(20, "TTGGA", "CTGAC", 80, 200),
-            call(20, "TTGG", "CTGA", 6, 200),
+            call(20, "TTGG", "CTGA", 4, 200),
             call(23, "GA", "AT", 3, 203),
         ]);
         assert_eq!(targets(&folds), vec![None, Some(0), None]);
@@ -445,11 +536,15 @@ mod tests {
     }
 
     #[rstest]
-    #[case(9, 5, Some(0))]
-    #[case(9, 6, None)]
-    #[case(1, 1, Some(0))]
-    #[case(2, 2, None)]
-    fn test_the_gradient_is_two_n_minus_one(
+    #[case(2, 1, Some(0))]
+    #[case(1, 1, None)]
+    #[case(3, 2, None)]
+    #[case(9, 5, None)]
+    #[case(5, 2, None)]
+    #[case(6, 2, Some(0))]
+    #[case(100, 9, Some(0))]
+    #[case(100, 10, None)]
+    fn test_a_partial_folds_only_when_its_reads_are_plausible_leakage(
         #[case] mnv_reads: i32,
         #[case] snv_reads: i32,
         #[case] expected: Option<usize>,
@@ -461,11 +556,123 @@ mod tests {
         assert_eq!(targets(&folds)[1], expected);
     }
 
+    #[rstest]
+    #[case(2, 1, 0.03, 0.0591)]
+    #[case(4, 1, 0.03, 0.11471)]
+    #[case(5, 2, 0.03, 0.00847)]
+    #[case(10, 0, 0.03, 1.0)]
+    #[case(10, 11, 0.03, 0.0)]
+    #[case(1041, 41, 0.03, 0.05057)]
+    #[case(1042, 42, 0.03, 0.03595)]
+    #[case(3, 3, 0.5, 0.125)]
+    fn test_the_binomial_upper_tail(
+        #[case] trials: i64,
+        #[case] successes: i64,
+        #[case] p: f64,
+        #[case] expected: f64,
+    ) {
+        let tail = binomial_upper_tail(trials, successes, p);
+        assert!((tail - expected).abs() < 5e-5, "{tail} is not {expected}");
+    }
+
+    #[test]
+    fn test_the_default_leak_rate_bounds_a_partials_reads_by_the_mnvs() {
+        let rate = LeakRate::default();
+        let bounds: Vec<(i32, i32)> = [1, 2, 5, 6, 10, 15, 20, 25, 50, 100, 200, 1000]
+            .into_iter()
+            .map(|reads| (reads, rate.bound(reads)))
+            .collect();
+        assert_eq!(
+            bounds,
+            vec![
+                (1, 0),
+                (2, 1),
+                (5, 1),
+                (6, 2),
+                (10, 2),
+                (15, 3),
+                (20, 3),
+                (25, 4),
+                (50, 6),
+                (100, 9),
+                (200, 16),
+                (1000, 65)
+            ]
+        );
+    }
+
+    #[rstest]
+    #[case(1, 1)]
+    #[case(2, 2)]
+    #[case(5, 7)]
+    fn test_a_partial_with_at_least_the_mnvs_reads_is_never_leakage(
+        #[case] mnv_reads: i32,
+        #[case] partial_reads: i32,
+    ) {
+        let rate = LeakRate::new(0.49).unwrap();
+        assert!(!rate.explains(mnv_reads, partial_reads));
+        assert!(rate.explains(mnv_reads + partial_reads, partial_reads));
+    }
+
+    #[rstest]
+    #[case(0.0)]
+    #[case(-0.1)]
+    #[case(0.5)]
+    #[case(1.0)]
+    #[case(f64::NAN)]
+    fn test_a_leak_rate_outside_the_open_interval_is_refused(#[case] rate: f64) {
+        assert!(LeakRate::new(rate).is_err());
+    }
+
+    #[test]
+    fn test_a_higher_leak_rate_folds_more_reads() {
+        let rows = [call(10, "GG", "CA", 100, 200), call(10, "G", "C", 9, 200)];
+        let calls: Vec<&[TumorOnlyVariant]> = rows.iter().map(std::slice::from_ref).collect();
+        let strict = fold_partials(&calls, &[false, false], LeakRate::new(0.03).unwrap());
+        let loose = fold_partials(&calls, &[false, false], LeakRate::new(0.05).unwrap());
+        assert_eq!(targets(&strict), vec![None, None]);
+        assert_eq!(targets(&loose), vec![None, Some(0)]);
+    }
+
+    #[test]
+    fn test_a_partial_is_tested_against_the_roots_own_reads_whatever_it_took() {
+        let folds = fold(&[
+            call(10, "GGG", "CAT", 100, 200),
+            call(10, "GG", "CA", 6, 200),
+            call(10, "G", "C", 6, 200),
+            call(11, "G", "A", 6, 206),
+        ]);
+        assert_eq!(targets(&folds), vec![None, Some(0), Some(0), Some(0)]);
+    }
+
+    #[test]
+    fn test_a_partial_of_a_claimed_sub_mnv_folds_into_the_root_that_explains_it() {
+        // The 3-read sub-MNV cannot explain a 2-read SNV, but the root it leaked from can.
+        let folds = fold(&[
+            call(10, "GGGG", "CATA", 200, 400),
+            call(10, "GGG", "CAT", 3, 400),
+            call(10, "G", "C", 2, 400),
+        ]);
+        assert_eq!(targets(&folds), vec![None, Some(0), Some(0)]);
+    }
+
+    #[test]
+    fn test_a_refused_sub_mnv_is_a_root_and_competes_for_a_partial() {
+        // The sub-MNV has too many reads to be leakage, so it is a root; the SNV at its first base
+        // needs one break to leave either MNV and goes to the one with more reads.
+        let folds = fold(&[
+            call(10, "GGGG", "CATA", 100, 400),
+            call(10, "GGG", "CAT", 40, 400),
+            call(10, "G", "C", 3, 400),
+        ]);
+        assert_eq!(targets(&folds), vec![None, None, Some(0)]);
+    }
+
     #[test]
     fn test_chained_partials_fold_into_the_longest_mnv() {
         let folds = fold(&[
             call(10, "GGG", "CAT", 100, 200),
-            call(10, "GG", "CA", 10, 200),
+            call(10, "GG", "CA", 5, 200),
             call(10, "G", "C", 3, 200),
             call(11, "G", "A", 2, 205),
             call(12, "G", "T", 4, 206),
@@ -478,7 +685,7 @@ mod tests {
         assert_eq!(merged.partials, 4);
         assert_eq!(
             (merged.calls[0].alt_depth, merged.calls[0].depth),
-            (119, 206)
+            (114, 206)
         );
     }
 
@@ -487,7 +694,7 @@ mod tests {
         let folds = fold(&[
             call(10, "GGG", "CTT", 40, 200),
             call(10, "GGG", "CAA", 100, 200),
-            call(10, "G", "C", 5, 200),
+            call(10, "G", "C", 3, 200),
         ]);
         assert_eq!(targets(&folds), vec![None, None, Some(1)]);
     }
@@ -497,7 +704,7 @@ mod tests {
         let folds = fold(&[
             call(9, "GGG", "TCA", 100, 200),
             call(10, "GG", "CT", 40, 200),
-            call(10, "G", "C", 5, 200),
+            call(10, "G", "C", 3, 200),
         ]);
         assert_eq!(targets(&folds), vec![None, None, Some(1)]);
     }
@@ -505,9 +712,9 @@ mod tests {
     #[test]
     fn test_a_partial_at_the_first_base_folds_only_while_it_fits_in_dp() {
         let folds = fold(&[
-            call(10, "GGG", "CAT", 100, 110),
-            call(10, "GG", "CA", 8, 110),
-            call(10, "G", "C", 5, 110),
+            call(10, "GGG", "CAT", 100, 105),
+            call(10, "GG", "CA", 4, 105),
+            call(10, "G", "C", 3, 105),
         ]);
         assert_eq!(targets(&folds), vec![None, Some(0), None]);
         let merged = merged(&folds, 0);
@@ -517,9 +724,9 @@ mod tests {
     #[test]
     fn test_an_mnv_no_root_has_room_for_takes_its_own_partials() {
         let folds = fold(&[
-            call(10, "GGG", "CAT", 100, 104),
-            call(10, "GG", "CA", 8, 104),
-            call(11, "G", "A", 3, 104),
+            call(10, "GGG", "CAT", 100, 103),
+            call(10, "GG", "CA", 4, 103),
+            call(11, "G", "A", 1, 103),
         ]);
         assert_eq!(targets(&folds), vec![None, None, Some(1)]);
     }
@@ -546,9 +753,9 @@ mod tests {
             call(11, "G", "A", 4, 205),
         ];
         let calls: Vec<&[TumorOnlyVariant]> = rows.iter().map(std::slice::from_ref).collect();
-        let folds = fold_partials(&calls, &[false, true, false]);
+        let folds = fold_partials(&calls, &[false, true, false], LeakRate::default());
         assert_eq!(targets(&folds), vec![None, None, Some(0)]);
-        let folds = fold_partials(&calls, &[true, false, false]);
+        let folds = fold_partials(&calls, &[true, false, false], LeakRate::default());
         assert_eq!(targets(&folds), vec![None, Some(0), Some(0)]);
     }
 
@@ -561,7 +768,7 @@ mod tests {
     #[test]
     fn test_the_merged_call_combines_the_rows_summaries() {
         let mnv = TumorOnlyVariant {
-            alt_forward: 60,
+            alt_forward: 65,
             alt_reverse: 30,
             mean_position_in_read: 20.0,
             stdev_position_in_read: 0.0,
@@ -569,28 +776,28 @@ mod tests {
             mean_mapping_quality: 60.0,
             mean_mismatches_in_reads: 1.0,
             af_adjusted: 0.05,
-            ..call(10, "GG", "CA", 90, 200)
+            ..call(10, "GG", "CA", 95, 200)
         };
         let partial = TumorOnlyVariant {
-            alt_forward: 10,
+            alt_forward: 5,
             alt_reverse: 0,
             mean_position_in_read: 2.0,
             stdev_position_in_read: 0.0,
             base_quality_mean: 70.0,
             mean_mapping_quality: 40.0,
             mean_mismatches_in_reads: 3.0,
-            ..call(10, "G", "C", 10, 200)
+            ..call(10, "G", "C", 5, 200)
         };
         let folds = fold(&[mnv, partial]);
         let merged = &merged(&folds, 0).calls[0];
         assert_eq!((merged.alt_forward, merged.alt_reverse), (70, 30));
-        assert_eq!(merged.mean_position_in_read, 18.2);
+        assert_eq!(merged.mean_position_in_read, 19.1);
         assert_eq!(merged.stdev_position_in_read, 1.0);
-        assert_eq!(merged.base_quality_mean, 88.0);
-        assert_eq!(merged.mean_mapping_quality, 58.0);
-        assert_eq!(merged.mean_mismatches_in_reads, 1.2);
+        assert_eq!(merged.base_quality_mean, 89.0);
+        assert_eq!(merged.mean_mapping_quality, 59.0);
+        assert_eq!(merged.mean_mismatches_in_reads, 1.1);
         assert_eq!(merged.high_quality_variant_reads, 100);
-        assert_eq!(merged.af_adjusted, 0.1);
+        assert_eq!(merged.af_adjusted, 0.075);
         let expected = fisher_exact_two_sided(50, 50, 70, 30) as f32;
         assert_eq!(merged.strand_bias_fisher_p_value(), expected);
     }
@@ -622,7 +829,7 @@ mod tests {
     /// Folds tumor-normal rows given as (tumor, normal) pairs.
     fn fold_pairs(rows: &[[TumorOnlyVariant<'static>; 2]]) -> Vec<Fold<'static>> {
         let rows: Vec<&[TumorOnlyVariant]> = rows.iter().map(|row| &row[..]).collect();
-        fold_partials(&rows, &vec![false; rows.len()])
+        fold_partials(&rows, &vec![false; rows.len()], LeakRate::default())
     }
 
     #[test]
@@ -646,11 +853,20 @@ mod tests {
     }
 
     #[test]
-    fn test_a_tumor_normal_partial_must_follow_the_gradient_in_every_sample() {
+    fn test_a_tumor_normal_partial_must_be_leakage_in_every_sample_with_its_reads() {
         let folds = fold_pairs(&[
             [call(10, "GG", "CA", 100, 200), call(10, "GG", "CA", 0, 100)],
             [call(10, "G", "C", 4, 200), call(10, "G", "C", 3, 100)],
         ]);
         assert_eq!(folds, vec![Fold::Keep, Fold::Keep]);
+    }
+
+    #[test]
+    fn test_a_sample_without_reads_of_the_partial_does_not_object() {
+        let folds = fold_pairs(&[
+            [call(10, "GG", "CA", 100, 200), call(10, "GG", "CA", 0, 100)],
+            [call(10, "G", "C", 4, 200), call(10, "G", "C", 0, 100)],
+        ]);
+        assert_eq!(targets(&folds), vec![None, Some(0)]);
     }
 }

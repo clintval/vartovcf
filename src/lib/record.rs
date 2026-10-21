@@ -14,6 +14,7 @@ use rust_htslib::bcf::Header;
 use crate::filter::FilterThresholds;
 use crate::fisher::{fisher_exact_greater, fisher_exact_two_sided};
 use crate::hicnt::{hicnt_from_sn, parse_thousandths};
+use crate::mnv::{LEAK_TAIL, LeakRate};
 use rust_htslib::bcf::record::{GenotypeAllele, Numeric};
 use serde::{Deserialize, Serialize, de::Error};
 
@@ -694,17 +695,31 @@ impl<'a> AbstractInterval for TumorOnlyVariant<'a> {
     }
 }
 
-/// The INFO header line of the count of partial rows folded into an MNV, which also says how each
-/// field of such a record is combined.
-const MNV_PARTIALS_HEADER: &str = r#"##INFO=<ID=MNV_PARTIALS,Number=1,Type=Integer,Description="Number of VarDict rows folded into this MNV as its partials: SNVs and shorter MNVs that carry its ALT bases over their own span, which VarDict writes for reads that end, have a no-call (N) or a base below its -q plus 5 inside the MNV, each with at most (n + 1) / 2 ALT reads where n is the MNV's own in every sample. Written only on records that absorbed partials. On such a record, AD[1], ADF[1], ADR[1] and HICNT add the partials' reads; DP adds the reads of partials starting after POS, as VarDict's own MNV merging does, while a partial starting at POS is folded only when its reads fit in DP beside the MNV's, so AD[1] never exceeds DP by more than VarDict's own row did; AF, GT, FILTER, STRAND_BIAS_FISHER_P and TUMOR_NORMAL_FISHER_P follow from these; QMEAN, MEAN_MAPQ, MEAN_MISMATCHES and MEAN_DIST_TO_READ_END are the rows' values weighted by their ALT reads, each as VarDict rounded it and measured at that row's own bases; ALT_READ_POS_VARIES is 1 when any row's is or the rows' MEAN_DIST_TO_READ_END differ; REALIGNED_FRAC_OF_DP counts the partials' reads as reassigned; VARDICT_STATUS is VarDict's label for the MNV's own row.">"#;
+/// The INFO header line of the count of partial rows folded into an MNV, which also says how a
+/// partial is recognized at this leak rate and how each field of such a record is combined.
+fn mnv_partials_header(leak_rate: LeakRate) -> String {
+    format!(
+        r#"##INFO=<ID=MNV_PARTIALS,Number=1,Type=Integer,Description="Number of VarDict rows folded into this MNV as its partials: SNVs and shorter MNVs that carry its ALT bases over their own span, which VarDict writes for reads that end, have a no-call (N) or a base below its -q plus 5 inside the MNV. A row is folded when, in every sample with reads of it, it has fewer ALT reads than the MNV and no more than a binomial over the two rows' reads at a leak rate of {} gives with probability {} or more; at that rate an MNV with {} reads folds a partial of 1 read, one with {} reads 2 reads, one with {} reads 5 reads and one with {} reads 10 reads. Written only on records that absorbed partials. On such a record, AD[1], ADF[1], ADR[1] and HICNT add the partials' reads; DP adds the reads of partials starting after POS, as VarDict's own MNV merging does, while a partial starting at POS is folded only when its reads fit in DP beside the MNV's, so AD[1] never exceeds DP by more than VarDict's own row did; AF, GT, FILTER, STRAND_BIAS_FISHER_P and TUMOR_NORMAL_FISHER_P follow from these; QMEAN, MEAN_MAPQ, MEAN_MISMATCHES and MEAN_DIST_TO_READ_END are the rows' values weighted by their ALT reads, each as VarDict rounded it and measured at that row's own bases; ALT_READ_POS_VARIES is 1 when any row's is or the rows' MEAN_DIST_TO_READ_END differ; REALIGNED_FRAC_OF_DP counts the partials' reads as reassigned; VARDICT_STATUS is VarDict's label for the MNV's own row.">"#,
+        leak_rate.value(),
+        LEAK_TAIL,
+        leak_rate.fewest_mnv_reads(1),
+        leak_rate.fewest_mnv_reads(2),
+        leak_rate.fewest_mnv_reads(5),
+        leak_rate.fewest_mnv_reads(10),
+    )
+}
 
 /// The FORMAT header line of the ALT reads the folded partial rows added to each sample.
 const MNV_PARTIAL_READS_HEADER: &str = r#"##FORMAT=<ID=MNV_PARTIAL_READS,Number=A,Type=Integer,Description="ALT reads the partial rows folded into this MNV (INFO MNV_PARTIALS) added to AD[1]; written only on records that absorbed partials.">"#;
 
 /// Create a VCF header for VarDict/VarDictJava in tumor-only mode, declaring the applied FILTER labels
 /// and, when MNV partials are folded, the fields that describe the fold.
-pub fn tumor_only_header(sample: &str, filters: &FilterThresholds, fix_leaky_mnv: bool) -> Header {
-    vcf_header(&[sample], filters, fix_leaky_mnv)
+pub fn tumor_only_header(
+    sample: &str,
+    filters: &FilterThresholds,
+    leak_rate: Option<LeakRate>,
+) -> Header {
+    vcf_header(&[sample], filters, leak_rate)
 }
 
 /// Create a VCF header for VarDict/VarDictJava run on a tumor and normal pair, declaring the applied
@@ -713,14 +728,14 @@ pub fn tumor_normal_header(
     tumor: &str,
     normal: &str,
     filters: &FilterThresholds,
-    fix_leaky_mnv: bool,
+    leak_rate: Option<LeakRate>,
 ) -> Header {
-    vcf_header(&[tumor, normal], filters, fix_leaky_mnv)
+    vcf_header(&[tumor, normal], filters, leak_rate)
 }
 
 /// Create a VCF header for one tumor-only sample or a tumor and normal pair.
 #[rustfmt::skip]
-fn vcf_header(samples: &[&str], filters: &FilterThresholds, fix_leaky_mnv: bool) -> Header {
+fn vcf_header(samples: &[&str], filters: &FilterThresholds, leak_rate: Option<LeakRate>) -> Header {
     let tumor_normal = samples.len() == 2;
     let source = [CARGO_PKG_NAME, CARGO_PKG_VERSION].join("-");
     let mut header = Header::default();
@@ -740,8 +755,8 @@ fn vcf_header(samples: &[&str], filters: &FilterThresholds, fix_leaky_mnv: bool)
         header.push_record(r#"##INFO=<ID=VARDICT_STATUS,Number=A,Type=String,Description="VarDict's tumor-normal label for this allele, from where the allele is found, its AF and VarDict's own call rules (-f, -r, -q and the others); not a statistical test. StrongSomatic: the normal has no reads of the allele; LikelySomatic: normal AF below -V or a single normal read; Germline: the normal's reads of the allele pass VarDict's call rules at a normal AF at or above -V, or at a tumor AF at or above -V when the top-ranked tumor allele at the position failed the call rules; AFDiff: normal AF at or above -V with more than one read, but the normal's reads fail VarDict's call rules; LikelyLOH: tumor AF above 1 minus -V while the normal's reads pass VarDict's call rules at an AF between 0.2 and 0.8, or a tumor AF below -V when the top-ranked tumor allele at the position failed the call rules; StrongLOH: only the normal has reads of the allele, and they pass VarDict's call rules; SampleSpecific: VarDict has no normal record at the position; Deletion: VarDict has no tumor record at the position. VarDict labels an allele both samples carry before it drops up to three low-quality normal reads of it as noise, so the normal's AD and AF can count fewer reads than the label saw, and it relabels an SNV that loses them StrongSomatic. It also re-calls long indels with few reads on both samples' pooled reads, which can relabel a call Germline, even with no normal reads under -p, which lifts its -f and -r limits.">"#.as_bytes());
         header.push_record(r#"##INFO=<ID=TUMOR_NORMAL_FISHER_P,Number=A,Type=Float,Description="One-sided Fisher exact p-value that this allele's read fraction is higher in the tumor than in the normal, from each sample's ALT reads (FORMAT AD[1]) against its other reads (FORMAT DP minus AD[1]), so it compares the two samples' FORMAT AF. Computed by vartovcf, not VarDict's SSF, which is the smaller of the two one-sided p-values rounded to 5 decimals. 1 when either sample has no depth; stored as a 32-bit float, so values below about 1e-45 read 0.">"#.as_bytes());
     }
-    if fix_leaky_mnv {
-        header.push_record(MNV_PARTIALS_HEADER.as_bytes());
+    if let Some(leak_rate) = leak_rate {
+        header.push_record(mnv_partials_header(leak_rate).as_bytes());
     }
     header.push_record(r#"##FILTER=<ID=PASS,Description="The variant call has passed all filters and may be considered for downstream analysis.">"#.as_bytes());
     for line in filters.header_lines() {
@@ -769,7 +784,7 @@ fn vcf_header(samples: &[&str], filters: &FilterThresholds, fix_leaky_mnv: bool)
     header.push_record(r#"##FORMAT=<ID=MEAN_MISMATCHES,Number=A,Type=Float,Description="Mean, over the reads carrying the ALT allele, of each read's substitution mismatches: its NM tag minus every inserted or deleted base, and for Complex calls minus some of the mismatches VarDict folded into the allele after its first change. Includes the variant's own mismatch for SNVs and excludes soft clips; a read without an NM tag counts as 0, and reads with more than VarDict's -m mismatches (default 8) are not counted. Rounded by VarDict to 1 decimal. Missing when no read carries the ALT allele.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=SV_SOFTCLIP_READS,Number=A,Type=Integer,Description="Reads soft-clipped at this structural variant's breakpoint whose clipped sequence VarDict matched to the other side; primary alignments only, as VarDict ignores supplementary (SA) records. Written only on records with a symbolic ALT allele.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=SV_DISCORDANT_READS,Number=A,Type=Integer,Description="Discordant read records (unexpected insert size or orientation) in the clusters VarDict linked to this structural variant; each mate counts, so one pair can count twice. Written only on records with a symbolic ALT allele.">"#.as_bytes());
-    if fix_leaky_mnv {
+    if leak_rate.is_some() {
         header.push_record(MNV_PARTIAL_READS_HEADER.as_bytes());
     }
     header.push_record(r#"##ALT=<ID=DEL,Description="Deletion relative to the reference.">"#.as_bytes());
@@ -1250,7 +1265,7 @@ mod tests {
 
     #[test]
     fn test_tumor_only_header() {
-        let header = tumor_only_header("dna00001", &FilterThresholds::default(), false);
+        let header = tumor_only_header("dna00001", &FilterThresholds::default(), None);
         let file = NamedTempFile::new().expect("Cannot create temporary file!");
         let _ = VcfWriter::from_path(file.path(), &header, true, Format::Vcf).unwrap();
         let reader = VcfReader::from_path(file.path()).expect("Error opening tempfile!");
@@ -1395,7 +1410,7 @@ mod tests {
 
     #[test]
     fn test_tumor_normal_header() {
-        let header = tumor_normal_header("T", "N", &FilterThresholds::default(), false);
+        let header = tumor_normal_header("T", "N", &FilterThresholds::default(), None);
         let file = NamedTempFile::new().expect("Cannot create temporary file!");
         let _ = VcfWriter::from_path(file.path(), &header, true, Format::Vcf).unwrap();
         let reader = VcfReader::from_path(file.path()).expect("Error opening tempfile!");

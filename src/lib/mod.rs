@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::fai::{fasta_contigs_to_vcf_header, fasta_path_to_vcf_header};
 use crate::filter::FilterThresholds;
-use crate::mnv::{Fold, Merged, fold_partials};
+use crate::mnv::{Fold, LeakRate, Merged, fold_partials};
 use crate::normalize::{Normalized, normalize};
 use crate::output::{Index, Output};
 use crate::record::MIN_HOM_ALT_AF;
@@ -169,6 +169,8 @@ pub struct Options<'a> {
     pub skip_non_variants: bool,
     /// Fold the partial rows of each MNV back into it, see [`mnv`].
     pub fix_leaky_mnv: bool,
+    /// The leak rate the fold tests a partial's reads against, see [`mnv`].
+    pub leak_rate: LeakRate,
     /// The FILTER labels to apply.
     pub filters: FilterThresholds,
     /// The directory to spill records to while sorting, resolved by [`sort::resolve_tmp_dir`].
@@ -256,11 +258,10 @@ fn convert<I: Read>(
     let layout = columns.layout;
 
     let filters = &options.filters;
+    let leak_rate = options.fix_leaky_mnv.then_some(options.leak_rate);
     let mut header = match &normal_sample {
-        Some(normal_sample) => {
-            tumor_normal_header(&sample, normal_sample, filters, options.fix_leaky_mnv)
-        }
-        None => tumor_only_header(&sample, filters, options.fix_leaky_mnv),
+        Some(normal_sample) => tumor_normal_header(&sample, normal_sample, filters, leak_rate),
+        None => tumor_only_header(&sample, filters, leak_rate),
     };
 
     fasta_contigs_to_vcf_header(&options.reference, &mut header);
@@ -274,6 +275,7 @@ fn convert<I: Read>(
         sorter: RecordSorter::new(tmp_dir)?,
         seen: SeenRows::default(),
         filters,
+        leak_rate: options.leak_rate,
         progress: ProgLogBuilder::new()
             .name("main")
             .verb("Processed")
@@ -371,6 +373,7 @@ struct Sink<'r> {
     sorter: RecordSorter,
     seen: SeenRows,
     filters: &'r FilterThresholds,
+    leak_rate: LeakRate,
     progress: proglog::ProgLog,
 }
 
@@ -441,7 +444,10 @@ impl Sink<'_> {
             .zip(&normalized)
             .map(|(row, call)| self.seen.contains(row[0].contig, call))
             .collect();
-        for (row, fold) in fold_partials(&calls, &written).into_iter().enumerate() {
+        for (row, fold) in fold_partials(&calls, &written, self.leak_rate)
+            .into_iter()
+            .enumerate()
+        {
             match fold {
                 _ if written[row] => {}
                 Fold::Keep => self.add_normalized(
