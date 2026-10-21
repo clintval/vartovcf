@@ -129,14 +129,14 @@ pub struct Merged<'a> {
 /// its own reads explain the child's as leakage at `leak_rate`. Each test uses the parent's own
 /// reads, not those of the children it took, so a child's fate depends only on its counts and the
 /// parent's, not on the order the rows are visited in. Rows are visited from the most to the least
-/// supported, and a row no earlier root can claim is a root itself; a row a root claims is never a
-/// root, as every sub-event of it is a sub-event of that root. A row that several roots can claim
-/// goes to the one that needs the fewest breaks to leave it, one for each end of the child inside
-/// the root's span, since every break is a rare event in a read; then to the root with the most ALT
-/// reads. A child starting at the root's first base is folded only while the root's ALT reads and
-/// those of the children it took there fit in that base's DP, as VarDict counts each read's base
-/// there once. A row marked `written`, already written for an earlier region, can be a root but is
-/// never claimed.
+/// supported, and an MNV row no earlier root can claim is a root itself; a row a root claims is
+/// never a root, as every sub-event of it is a sub-event of that root. A row that several roots can
+/// claim goes to the one that needs the fewest breaks to leave it, one for each end of the child
+/// inside the root's span, since every break is a rare event in a read; then to the root with the
+/// most ALT reads. A child starting at the root's first base is folded only while the root's ALT
+/// reads and those of the children it took there fit in that base's DP, as VarDict counts each
+/// read's base there once. A row marked `written`, already written for an earlier region, can be a
+/// root but is never claimed.
 pub fn fold_partials<'a>(
     rows: &[&[TumorOnlyVariant<'a>]],
     written: &[bool],

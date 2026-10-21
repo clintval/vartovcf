@@ -295,7 +295,7 @@ fn convert<I: Read>(
             return Ok(None);
         }
         if carry.get(5).is_none_or(|f| f.is_empty()) {
-            continue; // If the 5th field is empty, it's a record we need to avoid deserializing.
+            continue; // A row without a REF allele is one not to deserialize.
         }
 
         let field = |index: usize| carry.get(index).unwrap_or_default();
@@ -419,7 +419,7 @@ impl Sink<'_> {
     ///
     /// A substitution an earlier region added, or folded as a partial, is not added again, and is
     /// not folded into an MNV here, so its reads are never counted twice. The set of them is kept
-    /// for this, and only for substitutions, so it stays small; the sort drops the rest.
+    /// for this, and only for substitutions, so it grows with the run's substitutions, not its rows.
     fn add_region(
         &mut self,
         region: &[StringRecord],
