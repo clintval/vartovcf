@@ -21,7 +21,7 @@ use crate::fai::{fasta_contigs_to_vcf_header, fasta_path_to_vcf_header};
 use crate::filter::FilterThresholds;
 use crate::mnv::{Fold, Merged, fold_partials};
 use crate::normalize::{Normalized, normalize};
-use crate::output::Output;
+use crate::output::{Index, Output};
 use crate::record::MIN_HOM_ALT_AF;
 use crate::record::TumorNormalVariant;
 use crate::record::TumorOnlyVariant;
@@ -184,7 +184,7 @@ pub struct Options<'a> {
 /// each call is written once, after the input ends.
 ///
 /// Returns the exit code: 0 for success, also when standard output's reader closes it early, or 128
-/// plus the signal that stopped the run, after removing its temporary files and output file.
+/// plus the signal that stopped the run, after removing its temporary files, output file and index.
 pub fn vartovcf<I: Read>(input: I, options: &Options) -> Result<i32, Box<dyn error::Error>> {
     let tmp_dir = resolve_tmp_dir(options.tmp_dir.as_deref())?;
     let mut output = Output::create(options.output.as_deref())?;
@@ -194,11 +194,14 @@ pub fn vartovcf<I: Read>(input: I, options: &Options) -> Result<i32, Box<dyn err
             .map_or(0, |signal| signal.load(Ordering::Relaxed))
     };
     match convert(input, options, &tmp_dir, &mut output, &signal) {
-        Ok(true) => {
-            output.finish()?;
-            Ok(0)
+        Ok(Some(index)) => {
+            if output.finish(index, &|| signal() != 0)? {
+                Ok(0)
+            } else {
+                Ok(128 + signal() as i32)
+            }
         }
-        Ok(false) => {
+        Ok(None) => {
             output.discard();
             Ok(128 + signal() as i32)
         }
@@ -213,16 +216,17 @@ pub fn vartovcf<I: Read>(input: I, options: &Options) -> Result<i32, Box<dyn err
     }
 }
 
-/// Converts the input's rows into sorted VCF text in the output, returning false when a signal
-/// stopped the run first.
+/// Converts the input's rows into sorted VCF text in the output, returning the index a bgzipped
+/// output of the reference needs, or `None` when a signal stopped the run first.
 fn convert<I: Read>(
     input: I,
     options: &Options,
     tmp_dir: &Path,
     output: &mut Output,
     signal: &dyn Fn() -> usize,
-) -> Result<bool, Box<dyn error::Error>> {
+) -> Result<Option<Index>, Box<dyn error::Error>> {
     let reference = Reference::from_path(&options.reference)?;
+    let index = Index::for_longest_contig(reference.longest_contig_length());
 
     let mut reader = ReaderBuilder::new()
         .delimiter(b'\t')
@@ -286,7 +290,7 @@ fn convert<I: Read>(
 
     while std::mem::take(&mut peeked) || read_row(&mut reader, &mut carry, columns)? {
         if signal() != 0 {
-            return Ok(false);
+            return Ok(None);
         }
         if carry.get(5).is_none_or(|f| f.is_empty()) {
             continue; // If the 5th field is empty, it's a record we need to avoid deserializing.
@@ -322,7 +326,8 @@ fn convert<I: Read>(
     output
         .write_all(&header_text)
         .map_err(|error| format!("Could not write the output: {error}!"))?;
-    Ok(sink.sorter.write_to(output, &|| signal() != 0)?.is_some())
+    let written = sink.sorter.write_to(output, &|| signal() != 0)?;
+    Ok(written.map(|_| index))
 }
 
 /// Returns a view of a header to build records with, and the header as VCF text, which it renders
