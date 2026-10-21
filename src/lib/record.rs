@@ -12,7 +12,7 @@ use bio_types::genome::{AbstractInterval, Position};
 use rust_htslib::bcf::Header;
 
 use crate::filter::FilterThresholds;
-use crate::fisher::fisher_exact_greater;
+use crate::fisher::{fisher_exact_greater, fisher_exact_two_sided};
 use crate::hicnt::{hicnt_from_sn, parse_thousandths};
 use rust_htslib::bcf::record::{GenotypeAllele, Numeric};
 use serde::{Deserialize, Serialize, de::Error};
@@ -22,32 +22,6 @@ const CARGO_PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The minimum allele frequency at which a variant call is genotyped homozygous alternate.
 pub const MIN_HOM_ALT_AF: f32 = 0.8;
-
-/// Deserialize a possibly infinite float into a <f32> or return a custom error. The floating point
-/// number in VAR files must be expressed as a ratio for them to be true odds ratios.
-///
-/// Correctly serializes the following cases:
-///
-/// * `"Inf"`: floating point infinity with title-case string, will return `0`.
-/// * `(0, 1)`: a floating point number in the range 0 to 1 (exclusive), will return `1 / n`
-/// * All other values (including 0, 1, and values > 1): returned as-is
-fn maybe_infinite_f32_odds_ratio<'de, D>(deserializer: D) -> Result<f32, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let string: &str = Deserialize::deserialize(deserializer)?;
-    f32::from_str(string.to_lowercase().as_str())
-        .map(|x| {
-            if x.is_infinite() && x.is_sign_positive() {
-                0.0
-            } else if x > 0.0 && x < 1.0 {
-                1.0 / x
-            } else {
-                x
-            }
-        })
-        .map_err(D::Error::custom)
-}
 
 /// Deserialize encoded structural variant (SV) info or return a custom error.
 ///
@@ -206,12 +180,6 @@ pub struct TumorOnlyVariant<'a> {
     /// 1 when the supporting reads give the variant two or more distinct per-read qualities,
     /// otherwise 0; VarDict prints a flag here, not a standard deviation.
     pub stdev_base_stdev: f32,
-    /// The two-sided Fisher exact p-value that the ALT reads' forward/reverse split differs from the
-    /// REF reads' split.
-    pub strand_bias_p_value: f32,
-    #[serde(deserialize_with = "maybe_infinite_f32_odds_ratio")]
-    /// The odds ratio for strand bias.
-    pub strand_bias_odds_ratio: f32,
     /// The arithmetic mean mapping quality of the reads that support the variant call, uncapped.
     pub mean_mapping_quality: f32,
     /// The ratio of high- to low-quality ALT reads split at VarDict's -q, with 0.5 standing in for no
@@ -333,14 +301,19 @@ impl<'a> TumorOnlyVariant<'a> {
         }
     }
 
-    /// Return the "STRAND_BIAS_FISHER_P" formatted VCF field for this record: missing without ALT
-    /// reads.
+    /// Return the "STRAND_BIAS_FISHER_P" formatted VCF field for this record: the two-sided Fisher
+    /// exact p-value of the REF and ALT reads by strand, and missing without ALT reads.
     pub fn strand_bias_fisher_p_value(&self) -> f32 {
         if !self.has_alt_reads() {
-            f32::missing()
-        } else {
-            self.strand_bias_p_value
+            return f32::missing();
         }
+        let count = |reads: i32| reads.max(0) as u64;
+        fisher_exact_two_sided(
+            count(self.ref_forward),
+            count(self.ref_reverse),
+            count(self.alt_forward),
+            count(self.alt_reverse),
+        ) as f32
     }
 
     /// Return the "QMEAN" formatted VCF field for this record: missing without ALT reads.
@@ -539,11 +512,6 @@ pub struct SampleColumns<'a> {
     pub af_adjusted: f32,
     /// The mean substitution mismatches per supporting read.
     pub mean_mismatches_in_reads: f32,
-    /// The two-sided Fisher exact p-value of REF and ALT reads by strand.
-    pub strand_bias_p_value: f32,
-    /// The odds ratio for strand bias.
-    #[serde(deserialize_with = "maybe_infinite_f32_odds_ratio")]
-    pub strand_bias_odds_ratio: f32,
 }
 
 /// A record of output from VarDict/VarDictJava run on a tumor and normal pair with `-b "T|N"`.
@@ -597,10 +565,6 @@ pub struct TumorNormalVariant<'a> {
     /// The normal's structural variant read counts.
     #[serde(deserialize_with = "maybe_sv_info")]
     pub normal_sv_info: Option<SvInfo>,
-    /// VarDict's tumor-normal p-value, the smaller one-sided Fisher p-value rounded to 5 decimals.
-    pub somatic_p_value: &'a str,
-    /// VarDict's tumor-normal odds ratio.
-    pub somatic_odds_ratio: &'a str,
 }
 
 impl<'a> TumorNormalVariant<'a> {
@@ -655,8 +619,6 @@ impl<'a> TumorNormalVariant<'a> {
             stdev_position_in_read: columns.stdev_position_in_read,
             base_quality_mean: columns.base_quality_mean,
             stdev_base_stdev: columns.stdev_base_stdev,
-            strand_bias_p_value: columns.strand_bias_p_value,
-            strand_bias_odds_ratio: columns.strand_bias_odds_ratio,
             mean_mapping_quality: columns.mean_mapping_quality,
             signal_to_noise: columns.signal_to_noise_thousandths as f32 / 1000.0,
             af_high_quality_bases: columns.af_high_quality_bases,
@@ -734,7 +696,7 @@ impl<'a> AbstractInterval for TumorOnlyVariant<'a> {
 
 /// The INFO header line of the count of partial rows folded into an MNV, which also says how each
 /// field of such a record is combined.
-const MNV_PARTIALS_HEADER: &str = r#"##INFO=<ID=MNV_PARTIALS,Number=1,Type=Integer,Description="Number of VarDict rows folded into this MNV as its partials: SNVs and shorter MNVs that carry its ALT bases over their own span, which VarDict writes for reads that end, have a no-call (N) or a base below its -q plus 5 inside the MNV, each with at most (n + 1) / 2 ALT reads where n is the MNV's own in every sample. Written only on records that absorbed partials. On such a record, AD[1], ADF[1], ADR[1] and HICNT add the partials' reads; DP adds the reads of partials starting after POS, as VarDict's own MNV merging does, while a partial starting at POS is folded only when its reads fit in DP beside the MNV's, so AD[1] never exceeds DP by more than VarDict's own row did; AF, GT, FILTER and TUMOR_NORMAL_FISHER_P follow from these; STRAND_BIAS_FISHER_P is recomputed by vartovcf at full precision; QMEAN, MEAN_MAPQ, MEAN_MISMATCHES and MEAN_DIST_TO_READ_END are the rows' values weighted by their ALT reads, each as VarDict rounded it and measured at that row's own bases; ALT_READ_POS_VARIES is 1 when any row's is or the rows' MEAN_DIST_TO_READ_END differ; REALIGNED_FRAC_OF_DP counts the partials' reads as reassigned; VARDICT_STATUS is VarDict's label for the MNV's own row.">"#;
+const MNV_PARTIALS_HEADER: &str = r#"##INFO=<ID=MNV_PARTIALS,Number=1,Type=Integer,Description="Number of VarDict rows folded into this MNV as its partials: SNVs and shorter MNVs that carry its ALT bases over their own span, which VarDict writes for reads that end, have a no-call (N) or a base below its -q plus 5 inside the MNV, each with at most (n + 1) / 2 ALT reads where n is the MNV's own in every sample. Written only on records that absorbed partials. On such a record, AD[1], ADF[1], ADR[1] and HICNT add the partials' reads; DP adds the reads of partials starting after POS, as VarDict's own MNV merging does, while a partial starting at POS is folded only when its reads fit in DP beside the MNV's, so AD[1] never exceeds DP by more than VarDict's own row did; AF, GT, FILTER, STRAND_BIAS_FISHER_P and TUMOR_NORMAL_FISHER_P follow from these; QMEAN, MEAN_MAPQ, MEAN_MISMATCHES and MEAN_DIST_TO_READ_END are the rows' values weighted by their ALT reads, each as VarDict rounded it and measured at that row's own bases; ALT_READ_POS_VARIES is 1 when any row's is or the rows' MEAN_DIST_TO_READ_END differ; REALIGNED_FRAC_OF_DP counts the partials' reads as reassigned; VARDICT_STATUS is VarDict's label for the MNV's own row.">"#;
 
 /// The FORMAT header line of the ALT reads the folded partial rows added to each sample.
 const MNV_PARTIAL_READS_HEADER: &str = r#"##FORMAT=<ID=MNV_PARTIAL_READS,Number=A,Type=Integer,Description="ALT reads the partial rows folded into this MNV (INFO MNV_PARTIALS) added to AD[1]; written only on records that absorbed partials.">"#;
@@ -789,7 +751,7 @@ fn vcf_header(samples: &[&str], filters: &FilterThresholds, fix_leaky_mnv: bool)
     header.push_record(r#"##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Read depth for REF then ALT as VarDict counts them: ALT is the reads carrying this allele and REF is the reads carrying the reference base at the variant's first internal base (the first deleted base for deletions, without insertion-carrying reads for insertions), or at the following base when an insertion at the same position raises DP. REF is missing for calls VarDict labels Complex, MNVs included, whatever their TYPE after trimming, as VarDict counts only their first base and can count a read as both, and REF is the only value when there is no ALT allele.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=ADF,Number=R,Type=Integer,Description="Reads on the forward strand (SAM flag 0x10 unset) supporting REF then ALT, the forward half of AD as VarDict counts it: REF is counted where AD's is (sometimes the following base), is missing where AD's is and is the only value when there is no ALT allele. When VarDict runs with -u, overlapping mates count only through the reverse read.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=ADR,Number=R,Type=Integer,Description="Reads on the reverse strand (SAM flag 0x10 set) supporting REF then ALT, the reverse half of AD as VarDict counts it: REF is counted where AD's is (sometimes the following base), is missing where AD's is and is the only value when there is no ALT allele. When VarDict runs with -u, overlapping mates count only through the reverse read.">"#.as_bytes());
-    header.push_record(r#"##FORMAT=<ID=STRAND_BIAS_FISHER_P,Number=A,Type=Float,Description="Two-sided Fisher exact p-value that the ALT allele's forward/reverse read split differs from REF's, from VarDict's table of REF and ALT reads by SAM strand, not a test against 50:50; its REF counts are VarDict's, including the overcount on Complex calls. Rounded by VarDict to 5 decimals, so values below 0.000005 read 0. Missing when no read carries the ALT allele.">"#.as_bytes());
+    header.push_record(r#"##FORMAT=<ID=STRAND_BIAS_FISHER_P,Number=A,Type=Float,Description="Two-sided Fisher exact p-value that the ALT allele's forward/reverse read split differs from REF's, from VarDict's table of REF and ALT reads by SAM strand, not a test against 50:50; its REF counts are VarDict's, including the overcount on Complex calls. Computed by vartovcf at full precision rather than read from VarDictJava's -fisher column, which rounds it to 5 decimals; stored as a 32-bit float, so values below about 1e-45 read 0. Missing when no read carries the ALT allele.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read depth as VarDict counts it at the variant's first internal base where VarDict placed the variant, which is POS+1 for a deletion that normalization did not move left, the denominator of FORMAT AF and usually of VarDict's own AF: reads with any base quality, reads whose deletion spans the base, reference-matching soft-clipped bases, reads VarDict reassigned by realignment, and N calls only under -K; overlapping mates count twice unless VarDict ran with -u or -UN, and an insertion at the same position can make it the following base's depth. REF and ALT depths need not sum to DP.">"#.as_bytes());
     header.push_record(r#"##FORMAT=<ID=AF,Number=A,Type=Float,Description="Fraction of reads carrying the ALT allele, AD[1] / DP, computed by vartovcf at full precision and clamped to [0, 1] because VarDict's ALT count can exceed DP; AD and DP keep the raw counts. VarDict's own AF column is rounded to 4 decimals and its denominator can differ from DP, for example at a position shared with an insertion. Missing when there is no ALT allele or DP is 0.">"#.as_bytes());
     let hicnt = "ALT reads whose per-read variant quality, the one QMEAN averages (the base's quality for SNVs, the better flanking base's for deletions and so on), is at least VarDict's -q; mapping quality is not considered. Missing when there is no ALT allele.";
@@ -834,12 +796,12 @@ mod tests {
         let dup_info = SvInfo { supporting_split_reads: 1, supporting_pairs: 1, supporting_clusters: 1 };
         let del_info = SvInfo { supporting_split_reads: 1, supporting_pairs: 1, supporting_clusters: 1 };
         vec![
-            TumorOnlyVariant { sample: "dna00001", interval_name: "PTPN11", contig: "chr12", start: 112450447, end: 123513818, ref_allele: "A", alt_allele: "<INV>", depth: 6775, alt_depth: 1, ref_forward: 3991, ref_reverse: 2588, alt_forward: 1, alt_reverse: 0, gt: "A/<INV11063372>", af: 0.0001, strand_bias: "2;0", mean_position_in_read: 58.0, stdev_position_in_read: 1.0, base_quality_mean: 90.0, stdev_base_stdev: 1.0, strand_bias_p_value: 1.0, strand_bias_odds_ratio: 0.0, mean_mapping_quality: 33.0, signal_to_noise: 2.0, af_high_quality_bases: 0.0002, af_adjusted: 0.0001, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 0.0, microsatellite_length: 0, mean_mismatches_in_reads: 0.0, high_quality_variant_reads: 1, high_quality_total_reads: 6582, flank_seq_5_prime: "GAACATCACGGGCAATTAAA", flank_seq_3_prime: "GGGACCTAGATTTTAAGAGA", segment: "chr12:112450168-112450587", variant_type: "INV", duplication_rate: None, sv_info: Some(inv_info), distance_to_crispr_site: None },
-            TumorOnlyVariant { sample: "dna00001", interval_name: "PTPN11", contig: "chr12", start: 112450447, end: 123513818, ref_allele: "A", alt_allele: "<DUP>", depth: 6775, alt_depth: 1, ref_forward: 3991, ref_reverse: 2588, alt_forward: 1, alt_reverse: 0, gt: "A/<DUP11063372>", af: 0.0001, strand_bias: "2;0", mean_position_in_read: 58.0, stdev_position_in_read: 1.0, base_quality_mean: 90.0, stdev_base_stdev: 1.0, strand_bias_p_value: 1.0, strand_bias_odds_ratio: 10.0, mean_mapping_quality: 33.0, signal_to_noise: 2.0, af_high_quality_bases: 0.0002, af_adjusted: 0.0001, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 0.0, microsatellite_length: 0, mean_mismatches_in_reads: 0.0, high_quality_variant_reads: 1, high_quality_total_reads: 6582, flank_seq_5_prime: "GAACATCACGGGCAATTAAA", flank_seq_3_prime: "GGGACCTAGATTTTAAGAGA", segment: "chr12:112450168-112450587", variant_type: "DUP", duplication_rate: Some(0.001), sv_info: Some(dup_info), distance_to_crispr_site: None },
-            TumorOnlyVariant { sample: "dna00001", interval_name: "NRAS-Q61", contig: "chr1", start: 114713883, end: 114713883, ref_allele: "G", alt_allele: "A", depth: 8104, alt_depth: 1, ref_forward: 2766, ref_reverse: 5280, alt_forward: 1, alt_reverse: 0, gt: "G/A", af: 0.0001, strand_bias: "2;0", mean_position_in_read: 13.0, stdev_position_in_read: 0.0, base_quality_mean: 90.0, stdev_base_stdev: 0.0, strand_bias_p_value: 0.34385, strand_bias_odds_ratio: 4.0, mean_mapping_quality: 60.0, signal_to_noise: 2.0, af_high_quality_bases: 0.0001, af_adjusted: 0.0, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 1.0, microsatellite_length: 1, mean_mismatches_in_reads: 2.0, high_quality_variant_reads: 1, high_quality_total_reads: 8048, flank_seq_5_prime: "TCGCCTGTCCTCATGTATTG", flank_seq_3_prime: "TCTCTCATGGCACTGTACTC", segment: "chr1:114713749-114713988", variant_type: "SNV", duplication_rate: None, sv_info: None, distance_to_crispr_site: None },
-            TumorOnlyVariant { sample: "dna00001", interval_name: "FLT3", contig: "chr13", start: 24684729, end: 28034141, ref_allele: "G", alt_allele: "<DEL>", depth: 7463, alt_depth: 2, ref_forward: 7463, ref_reverse: 0, alt_forward: 0, alt_reverse: 2, gt: "-3349412/-3349412", af: 0.0003, strand_bias: "0;0", mean_position_in_read: 60.5, stdev_position_in_read: 1.0, base_quality_mean: 90.0, stdev_base_stdev: 1.0, strand_bias_p_value: 1.0, strand_bias_odds_ratio: 2.0, mean_mapping_quality: 60.0, signal_to_noise: 4.0, af_high_quality_bases: 1.0000, af_adjusted: 0.0003, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 0.0, microsatellite_length: 0, mean_mismatches_in_reads: 0.0, high_quality_variant_reads: 2, high_quality_total_reads: 2, flank_seq_5_prime: "TGCTGTAGTCTAATGATTCT", flank_seq_3_prime: "CAACGTAGAAGTACTCATTA", segment: "chr13:28033879-28034298", variant_type: "DEL", duplication_rate: None, sv_info: Some(del_info), distance_to_crispr_site: None },
-            TumorOnlyVariant { sample: "dna00001", interval_name: "NRAS-Q61", contig: "chr1", start: 114713883, end: 114713883, ref_allele: "G", alt_allele: "T", depth: 8104, alt_depth: 1, ref_forward: 2766, ref_reverse: 5280, alt_forward: 0, alt_reverse: 1, gt: "G/T", af: 0.0001, strand_bias: "2;0", mean_position_in_read: 28.0, stdev_position_in_read: 0.0, base_quality_mean: 90.0, stdev_base_stdev: 0.0, strand_bias_p_value: 1.0, strand_bias_odds_ratio: 0.0, mean_mapping_quality: 60.0, signal_to_noise: 2.0, af_high_quality_bases: 0.0001, af_adjusted: 0.0, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 1.0, microsatellite_length: 1, mean_mismatches_in_reads: 1.0, high_quality_variant_reads: 1, high_quality_total_reads: 8048, flank_seq_5_prime: "TCGCCTGTCCTCATGTATTG", flank_seq_3_prime: "TCTCTCATGGCACTGTACTC", segment: "chr1:114713749-114713988", variant_type: "SNV", duplication_rate: None, sv_info: None, distance_to_crispr_site: None },
-            TumorOnlyVariant { sample: "dna00001", interval_name: "NRAS-Q61", contig: "chr1", start: 114713880, end: 114713880, ref_allele: "T", alt_allele: "A", depth: 8211, alt_depth: 1, ref_forward: 3001, ref_reverse: 5130, alt_forward: 1, alt_reverse: 0, gt: "T/A", af: 0.0001, strand_bias: "2;0", mean_position_in_read: 18.0, stdev_position_in_read: 0.0, base_quality_mean: 90.0, stdev_base_stdev: 0.0, strand_bias_p_value: 0.36916, strand_bias_odds_ratio: 0.0, mean_mapping_quality: 60.0, signal_to_noise: 2.0, af_high_quality_bases: 0.0001, af_adjusted: 0.0, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 2.0, microsatellite_length: 1, mean_mismatches_in_reads: 1.0, high_quality_variant_reads: 1, high_quality_total_reads: 8132, flank_seq_5_prime: "CCTTCGCCTGTCCTCATGTA", flank_seq_3_prime: "TGGTCTCTCATGGCACTGTA", segment: "chr1:114713749-114713988", variant_type: "SNV", duplication_rate: None, sv_info: None, distance_to_crispr_site: None },
+            TumorOnlyVariant { sample: "dna00001", interval_name: "PTPN11", contig: "chr12", start: 112450447, end: 123513818, ref_allele: "A", alt_allele: "<INV>", depth: 6775, alt_depth: 1, ref_forward: 3991, ref_reverse: 2588, alt_forward: 1, alt_reverse: 0, gt: "A/<INV11063372>", af: 0.0001, strand_bias: "2;0", mean_position_in_read: 58.0, stdev_position_in_read: 1.0, base_quality_mean: 90.0, stdev_base_stdev: 1.0, mean_mapping_quality: 33.0, signal_to_noise: 2.0, af_high_quality_bases: 0.0002, af_adjusted: 0.0001, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 0.0, microsatellite_length: 0, mean_mismatches_in_reads: 0.0, high_quality_variant_reads: 1, high_quality_total_reads: 6582, flank_seq_5_prime: "GAACATCACGGGCAATTAAA", flank_seq_3_prime: "GGGACCTAGATTTTAAGAGA", segment: "chr12:112450168-112450587", variant_type: "INV", duplication_rate: None, sv_info: Some(inv_info), distance_to_crispr_site: None },
+            TumorOnlyVariant { sample: "dna00001", interval_name: "PTPN11", contig: "chr12", start: 112450447, end: 123513818, ref_allele: "A", alt_allele: "<DUP>", depth: 6775, alt_depth: 1, ref_forward: 3991, ref_reverse: 2588, alt_forward: 1, alt_reverse: 0, gt: "A/<DUP11063372>", af: 0.0001, strand_bias: "2;0", mean_position_in_read: 58.0, stdev_position_in_read: 1.0, base_quality_mean: 90.0, stdev_base_stdev: 1.0, mean_mapping_quality: 33.0, signal_to_noise: 2.0, af_high_quality_bases: 0.0002, af_adjusted: 0.0001, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 0.0, microsatellite_length: 0, mean_mismatches_in_reads: 0.0, high_quality_variant_reads: 1, high_quality_total_reads: 6582, flank_seq_5_prime: "GAACATCACGGGCAATTAAA", flank_seq_3_prime: "GGGACCTAGATTTTAAGAGA", segment: "chr12:112450168-112450587", variant_type: "DUP", duplication_rate: Some(0.001), sv_info: Some(dup_info), distance_to_crispr_site: None },
+            TumorOnlyVariant { sample: "dna00001", interval_name: "NRAS-Q61", contig: "chr1", start: 114713883, end: 114713883, ref_allele: "G", alt_allele: "A", depth: 8104, alt_depth: 1, ref_forward: 2766, ref_reverse: 5280, alt_forward: 1, alt_reverse: 0, gt: "G/A", af: 0.0001, strand_bias: "2;0", mean_position_in_read: 13.0, stdev_position_in_read: 0.0, base_quality_mean: 90.0, stdev_base_stdev: 0.0, mean_mapping_quality: 60.0, signal_to_noise: 2.0, af_high_quality_bases: 0.0001, af_adjusted: 0.0, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 1.0, microsatellite_length: 1, mean_mismatches_in_reads: 2.0, high_quality_variant_reads: 1, high_quality_total_reads: 8048, flank_seq_5_prime: "TCGCCTGTCCTCATGTATTG", flank_seq_3_prime: "TCTCTCATGGCACTGTACTC", segment: "chr1:114713749-114713988", variant_type: "SNV", duplication_rate: None, sv_info: None, distance_to_crispr_site: None },
+            TumorOnlyVariant { sample: "dna00001", interval_name: "FLT3", contig: "chr13", start: 24684729, end: 28034141, ref_allele: "G", alt_allele: "<DEL>", depth: 7463, alt_depth: 2, ref_forward: 7463, ref_reverse: 0, alt_forward: 0, alt_reverse: 2, gt: "-3349412/-3349412", af: 0.0003, strand_bias: "0;0", mean_position_in_read: 60.5, stdev_position_in_read: 1.0, base_quality_mean: 90.0, stdev_base_stdev: 1.0, mean_mapping_quality: 60.0, signal_to_noise: 4.0, af_high_quality_bases: 1.0000, af_adjusted: 0.0003, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 0.0, microsatellite_length: 0, mean_mismatches_in_reads: 0.0, high_quality_variant_reads: 2, high_quality_total_reads: 2, flank_seq_5_prime: "TGCTGTAGTCTAATGATTCT", flank_seq_3_prime: "CAACGTAGAAGTACTCATTA", segment: "chr13:28033879-28034298", variant_type: "DEL", duplication_rate: None, sv_info: Some(del_info), distance_to_crispr_site: None },
+            TumorOnlyVariant { sample: "dna00001", interval_name: "NRAS-Q61", contig: "chr1", start: 114713883, end: 114713883, ref_allele: "G", alt_allele: "T", depth: 8104, alt_depth: 1, ref_forward: 2766, ref_reverse: 5280, alt_forward: 0, alt_reverse: 1, gt: "G/T", af: 0.0001, strand_bias: "2;0", mean_position_in_read: 28.0, stdev_position_in_read: 0.0, base_quality_mean: 90.0, stdev_base_stdev: 0.0, mean_mapping_quality: 60.0, signal_to_noise: 2.0, af_high_quality_bases: 0.0001, af_adjusted: 0.0, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 1.0, microsatellite_length: 1, mean_mismatches_in_reads: 1.0, high_quality_variant_reads: 1, high_quality_total_reads: 8048, flank_seq_5_prime: "TCGCCTGTCCTCATGTATTG", flank_seq_3_prime: "TCTCTCATGGCACTGTACTC", segment: "chr1:114713749-114713988", variant_type: "SNV", duplication_rate: None, sv_info: None, distance_to_crispr_site: None },
+            TumorOnlyVariant { sample: "dna00001", interval_name: "NRAS-Q61", contig: "chr1", start: 114713880, end: 114713880, ref_allele: "T", alt_allele: "A", depth: 8211, alt_depth: 1, ref_forward: 3001, ref_reverse: 5130, alt_forward: 1, alt_reverse: 0, gt: "T/A", af: 0.0001, strand_bias: "2;0", mean_position_in_read: 18.0, stdev_position_in_read: 0.0, base_quality_mean: 90.0, stdev_base_stdev: 0.0, mean_mapping_quality: 60.0, signal_to_noise: 2.0, af_high_quality_bases: 0.0001, af_adjusted: 0.0, num_bases_3_prime_shift_for_deletions: 0, microsatellite: 2.0, microsatellite_length: 1, mean_mismatches_in_reads: 1.0, high_quality_variant_reads: 1, high_quality_total_reads: 8132, flank_seq_5_prime: "CCTTCGCCTGTCCTCATGTA", flank_seq_3_prime: "TGGTCTCTCATGGCACTGTA", segment: "chr1:114713749-114713988", variant_type: "SNV", duplication_rate: None, sv_info: None, distance_to_crispr_site: None },
         ]
     }
 
@@ -1104,9 +1066,20 @@ mod tests {
     fn test_tumor_only_variant_strand_bias_fisher_p_value_on_an_alt_call(
         variants: Vec<TumorOnlyVariant<'static>>,
     ) {
+        let variant = variants.into_iter().nth(2).unwrap();
+        let p = variant.strand_bias_fisher_p_value() as f64;
+        assert!((p - 0.343_854_852_740_151_5).abs() < 1e-7, "{p}");
+    }
+
+    #[rstest]
+    fn test_tumor_only_variant_strand_bias_fisher_p_value_is_computed_from_the_strand_counts(
+        variants: Vec<TumorOnlyVariant<'static>>,
+    ) {
         let mut variant = variants.into_iter().nth(2).unwrap();
-        variant.strand_bias_p_value = 0.34385;
-        assert_eq!(variant.strand_bias_fisher_p_value(), 0.34385);
+        (variant.ref_forward, variant.ref_reverse) = (500, 500);
+        (variant.alt_forward, variant.alt_reverse) = (2, 60);
+        let p = variant.strand_bias_fisher_p_value() as f64;
+        assert!((p - 3.328_906_454_641_75e-15).abs() < 1e-21, "{p}");
     }
 
     #[rstest]
@@ -1275,40 +1248,6 @@ mod tests {
         }
     }
 
-    #[rstest]
-    #[case("Inf", 0.0)]
-    #[case("inf", 0.0)]
-    #[case("0.5", 2.0)]
-    #[case("0.25", 4.0)]
-    #[case("0.1", 10.0)]
-    #[case("10.0", 10.0)]
-    #[case("2.0", 2.0)]
-    #[case("1.0", 1.0)]
-    #[case("0.0", 0.0)]
-    fn test_maybe_infinite_f32_odds_ratio(#[case] input: &'static str, #[case] expected: f32) {
-        use serde::Deserialize;
-        use serde_test::{Token, assert_de_tokens};
-
-        #[derive(Debug, Deserialize, PartialEq)]
-        struct TestStruct {
-            #[serde(deserialize_with = "maybe_infinite_f32_odds_ratio")]
-            value: f32,
-        }
-
-        assert_de_tokens(
-            &TestStruct { value: expected },
-            &[
-                Token::Struct {
-                    name: "TestStruct",
-                    len: 1,
-                },
-                Token::BorrowedStr("value"),
-                Token::BorrowedStr(input),
-                Token::StructEnd,
-            ],
-        );
-    }
-
     #[test]
     fn test_tumor_only_header() {
         let header = tumor_only_header("dna00001", &FilterThresholds::default(), false);
@@ -1322,15 +1261,25 @@ mod tests {
         assert!(samples.iter().all(|&s| s == "dna00001".as_bytes()));
     }
 
-    fn tumor_normal_records() -> Vec<csv::StringRecord> {
+    /// Reads the rows of a tumor-normal fixture written with `-fisher`, without its Fisher columns.
+    fn paired_records(path: &str) -> Vec<csv::StringRecord> {
+        let columns = crate::Columns::new(crate::Layout::TumorNormal, true);
         csv::ReaderBuilder::new()
             .delimiter(b'\t')
             .has_headers(false)
-            .from_path("tests/calls.tumor-normal.var")
+            .from_path(path)
             .expect("Cannot open the tumor-normal fixture!")
             .records()
-            .collect::<Result<_, _>>()
-            .expect("Cannot read the tumor-normal fixture!")
+            .map(|record| {
+                let mut record = record.expect("Cannot read the tumor-normal fixture!");
+                columns.drop_fisher_columns(&mut record, &mut csv::StringRecord::new());
+                record
+            })
+            .collect()
+    }
+
+    fn tumor_normal_records() -> Vec<csv::StringRecord> {
+        paired_records("tests/calls.tumor-normal.var")
     }
 
     #[test]
@@ -1386,14 +1335,7 @@ mod tests {
     }
 
     fn hicnt_records() -> Vec<csv::StringRecord> {
-        csv::ReaderBuilder::new()
-            .delimiter(b'\t')
-            .has_headers(false)
-            .from_path("tests/calls.tumor-normal.hicnt.var")
-            .expect("Cannot open the HICNT fixture!")
-            .records()
-            .collect::<Result<_, _>>()
-            .expect("Cannot read the HICNT fixture!")
+        paired_records("tests/calls.tumor-normal.hicnt.var")
     }
 
     #[rstest]

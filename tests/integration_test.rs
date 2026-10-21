@@ -650,21 +650,37 @@ mod tests {
     }
 
     #[rstest]
-    #[case("tests/calls.no-fisher.reference.var")]
-    #[case("tests/calls.no-fisher.variant.var")]
+    #[case(
+        "tests/calls.no-fisher.var",
+        &["--reference", "tests/reference.fa", "--sample", "dna00001"],
+        "tests/calls.vcf"
+    )]
+    #[case(
+        "tests/calls.tumor-normal.no-fisher.var",
+        &[
+            "--reference", "tests/tumor-normal.fa",
+            "--filter-low-mean-mapq", "30",
+            "--filter-low-af", "0.05",
+            "--filter-low-dp", "10",
+        ],
+        "tests/calls.tumor-normal.vcf"
+    )]
     #[rustfmt::skip]
-    fn run_end_to_end_refuses_rows_without_fisher_columns(#[case] input: &str) -> Result<(), Box<dyn std::error::Error>> {
+    fn run_end_to_end_reads_rows_without_fisher_columns(
+        #[case] input: &str,
+        #[case] args: &[&str],
+        #[case] expected: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let output = NamedTempFile::new().expect("Cannot create temporary file!");
+        let output = output.path().to_str().unwrap();
         let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
-        let assert = cmd
-            .arg("--reference").arg("tests/reference.fa")
-            .arg("--sample").arg("dna00001")
-            .pipe_stdin(input)?
-            .assert()
-            .code(1)
-            .stdout("");
+        cmd
+            .args(args)
+            .arg("--input").arg(input)
+            .arg("--output").arg(output)
+            .unwrap().assert().success();
 
-        let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
-        assert!(stderr.contains("run VarDictJava with --fisher!"), "{stderr}");
+        assert!(diff(output, expected));
         Ok(())
     }
 
