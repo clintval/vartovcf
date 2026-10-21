@@ -96,13 +96,13 @@ impl FilterThresholds {
         if let Some(min_copies) = self.homopolymer_indel {
             let af_limit = af_limit_clause(self.homopolymer_indel_max_af);
             lines.push(format!(
-                r#"##FILTER=<ID={HOMOPOLYMER_INDEL},Description="Insertion or deletion of exactly one base in a homopolymer of at least {min_copies} copies (INFO REPEAT_UNIT_COPIES with REPEAT_UNIT_LEN 1){af_limit}, the signature of polymerase slippage.">"#
+                r#"##FILTER=<ID={HOMOPOLYMER_INDEL},Description="Call exactly one base longer or shorter than REF (an insertion, a deletion or a Complex call) in a homopolymer of at least {min_copies} copies (INFO REPEAT_UNIT_COPIES with REPEAT_UNIT_LEN 1){af_limit}, the signature of polymerase slippage.">"#
             ));
         }
         if let Some(min_copies) = self.tandem_repeat_indel {
             let af_limit = af_limit_clause(self.tandem_repeat_indel_max_af);
             lines.push(format!(
-                r#"##FILTER=<ID={TANDEM_REPEAT_INDEL},Description="Insertion or deletion of exactly one repeat unit in a 2-6 bp tandem repeat of at least {min_copies} copies (INFO REPEAT_UNIT_COPIES and REPEAT_UNIT_LEN){af_limit}, the signature of polymerase slippage.">"#
+                r#"##FILTER=<ID={TANDEM_REPEAT_INDEL},Description="Call exactly one repeat unit longer or shorter than REF (an insertion, a deletion or a Complex call) in a 2-6 bp tandem repeat of at least {min_copies} copies (INFO REPEAT_UNIT_COPIES and REPEAT_UNIT_LEN){af_limit}, the signature of polymerase slippage.">"#
             ));
         }
         if let Some(max_mean_mismatches) = self.high_mean_mismatches {
@@ -494,8 +494,8 @@ mod tests {
         assert_eq!(
             filters.header_lines(),
             vec![
-                r#"##FILTER=<ID=HOMOPOLYMER_INDEL,Description="Insertion or deletion of exactly one base in a homopolymer of at least 13 copies (INFO REPEAT_UNIT_COPIES with REPEAT_UNIT_LEN 1) at an AF (FORMAT AF) below 0.275, the signature of polymerase slippage.">"#,
-                r#"##FILTER=<ID=TANDEM_REPEAT_INDEL,Description="Insertion or deletion of exactly one repeat unit in a 2-6 bp tandem repeat of at least 13 copies (INFO REPEAT_UNIT_COPIES and REPEAT_UNIT_LEN), the signature of polymerase slippage.">"#,
+                r#"##FILTER=<ID=HOMOPOLYMER_INDEL,Description="Call exactly one base longer or shorter than REF (an insertion, a deletion or a Complex call) in a homopolymer of at least 13 copies (INFO REPEAT_UNIT_COPIES with REPEAT_UNIT_LEN 1) at an AF (FORMAT AF) below 0.275, the signature of polymerase slippage.">"#,
+                r#"##FILTER=<ID=TANDEM_REPEAT_INDEL,Description="Call exactly one repeat unit longer or shorter than REF (an insertion, a deletion or a Complex call) in a 2-6 bp tandem repeat of at least 13 copies (INFO REPEAT_UNIT_COPIES and REPEAT_UNIT_LEN), the signature of polymerase slippage.">"#,
             ]
         );
     }

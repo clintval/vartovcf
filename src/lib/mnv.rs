@@ -43,8 +43,8 @@ pub struct Merged<'a> {
 /// child is a sub-event of a parent when it lies within the parent's span and its ALT bases equal
 /// the parent's over that span, so it changes no base the parent does not and changes the bases it
 /// covers as the parent does; it can claim the child when, in every sample, it has at least
-/// `2 * child - 1` ALT reads. Rows are visited from the most to the least supported, and a row no
-/// earlier root can claim is a root itself. A row that several roots can claim goes to the one that
+/// `2 * child - 1` ALT reads. Rows are visited from the most to the least supported, and an MNV row
+/// no earlier root can claim is a root itself. A row that several roots can claim goes to the one that
 /// needs the fewest breaks to leave it, one for each end of the child inside the root's span, since
 /// every break is a rare event in a read; then to the root with the most ALT reads. A child starting
 /// at the root's first base is folded only while the root's ALT reads and those of the children it
