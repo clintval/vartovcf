@@ -25,6 +25,7 @@ Or build from source with Rust 1.89 or newer, a C toolchain, and libclang (used 
 ### Features
 
 - Sorts in bounded memory, where VarDict's Perl script holds every record, see [Sorting](#sorting)
+- Indexes a bgzipped output file as `tabix -p vcf` does, see [Output](#output)
 - Stays lean on purpose: converts formats and applies FILTER labels only when asked
 - Writes VCF compliant with the v4.2 and v4.3 specifications
 - Normalizes like `bcftools norm -f` and writes uppercase alleles, see [Normalization](#normalization)
@@ -170,6 +171,15 @@ Each call is written once. Rows of one VarDict region that normalize to one call
 ### Sorting
 
 Records are sorted by contig, in the reference's order, then by POS, REF and ALT, as `bcftools sort` does, so `bcftools sort` is not needed, and they are written only once the input ends. Up to 64 MiB of records are held in memory, plus one VarDict region's rows with `--fix-leaky-mnv`, and the rest spill to `--tmp-dir`, `$TMPDIR` by default, which is cleaned up when `vartovcf` exits or fails. A SIGINT or SIGTERM stops it at its next input row or the next record written and removes the output file, though output already sent to standard output may end in a partial record; a second signal exits at once and leaves its temporary files and an incomplete output file.
+
+### Output
+
+Records go to standard output unless `--output` names a file, which is bgzipped when its name ends in `.gz`.
+A bgzipped regular file is indexed once it is complete, as `tabix -p vcf` would index it, so `bcftools index` is not needed.
+The index is a tabix index beside it, `<output>.tbi`, or a CSI index, `<output>.csi`, when a reference contig is longer than the 2^29 bases (512 Mbp) a tabix index can address.
+Standard output, a plain `.vcf` file, a FIFO and a device such as `/dev/null` get no index.
+Any index an earlier run left beside a bgzipped output file is removed when the run starts, so none outlives the file it described.
+When the run fails, or a SIGINT or SIGTERM stops it, even while the index is being written, the output file and its index are both removed.
 
 ### Benchmarks
 

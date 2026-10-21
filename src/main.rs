@@ -35,7 +35,7 @@ struct Opt {
     #[arg(short, long)]
     input: Option<PathBuf>,
 
-    /// Output VCF file or stream [default: /dev/stdout]
+    /// Output VCF file or stream, bgzipped when it ends in .gz; a bgzipped regular file is then indexed beside it as <output>.tbi, or as <output>.csi when a reference contig is longer than the 2^29 bases a tabix index can address [default: /dev/stdout]
     #[arg(short, long)]
     output: Option<PathBuf>,
 

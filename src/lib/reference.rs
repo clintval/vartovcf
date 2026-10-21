@@ -69,6 +69,11 @@ impl Reference {
         })
     }
 
+    /// Returns the length of the longest contig.
+    pub fn longest_contig_length(&self) -> u64 {
+        self.lengths.values().copied().max().unwrap_or(0)
+    }
+
     /// Holds the window of a contig around `start..end`.
     fn fetch(&mut self, contig: &str, start: u64, end: u64) -> Result<(), String> {
         let length = self.length(contig)?;
@@ -205,6 +210,7 @@ pub(crate) mod tests {
         assert_eq!(reference.base("c2", 0).unwrap(), b'T');
         assert_eq!(reference.bases("c1", 0, 12).unwrap(), b"ACGTACGTNNAC");
         assert_eq!(reference.length("c2").unwrap(), 8);
+        assert_eq!(reference.longest_contig_length(), 12);
         assert_eq!(reference.bases("c1", 4, 4).unwrap(), b"");
         assert_eq!(reference.bases("c2", 4, 4).unwrap(), b"");
         assert!(reference.bases("c9", 4, 4).is_err());

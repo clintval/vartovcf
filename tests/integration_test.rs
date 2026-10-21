@@ -794,10 +794,148 @@ mod tests {
         Ok(())
     }
 
+    /// The CHROM to ALT fields of the records a bgzipped VCF's index finds over a 1-based region.
+    fn query(
+        path: &std::path::Path,
+        contig: &str,
+        start: u64,
+        end: u64,
+    ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        use rust_htslib::tbx::{Read, Reader};
+
+        let mut reader = Reader::from_path(path)?;
+        let tid = reader.tid(contig)?;
+        reader.fetch(tid, start - 1, end)?;
+        let mut records = Vec::new();
+        for record in reader.records() {
+            let record = String::from_utf8(record?)?;
+            records.push(record.split('\t').take(5).collect::<Vec<_>>().join(" "));
+        }
+        Ok(records)
+    }
+
+    #[test]
+    fn run_end_to_end_indexes_a_bgzipped_output() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = TempDir::new()?;
+        let output = dir.path().join("out.vcf.gz");
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        cmd.args(["--reference", "tests/reference.fa", "--sample", "dna00001"])
+            .args(["--input", "tests/calls.var"])
+            .arg("--output")
+            .arg(&output)
+            .assert()
+            .success();
+        assert!(dir.path().join("out.vcf.gz.tbi").exists());
+        assert!(!dir.path().join("out.vcf.gz.csi").exists());
+        assert_eq!(
+            query(&output, "chr1", 881, 883)?,
+            ["chr1 883 . G A", "chr1 883 . G T"]
+        );
+        assert_eq!(
+            query(&output, "chr13", 2000, 2000)?,
+            ["chr13 1141 . G <DEL>"]
+        );
+        assert!(query(&output, "chr12", 1, 446)?.is_empty());
+        Ok(())
+    }
+
+    #[rstest]
+    #[case(Some("out.vcf"), &["out.vcf"])]
+    #[case(Some("-"), &[])]
+    #[case(None, &[])]
+    fn run_end_to_end_indexes_no_plain_output(
+        #[case] output: Option<&str>,
+        #[case] expected: &[&str],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = TempDir::new()?;
+        let tests = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        cmd.current_dir(dir.path())
+            .arg("--reference")
+            .arg(tests.join("reference.fa"))
+            .arg("--input")
+            .arg(tests.join("calls.var"));
+        if let Some(output) = output {
+            cmd.args(["--output", output]);
+        }
+        cmd.assert().success();
+        let mut files: Vec<String> = std::fs::read_dir(dir.path())?
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        files.sort();
+        assert_eq!(files, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn run_end_to_end_writes_a_csi_index_for_a_contig_too_long_for_tabix()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::{Seek, SeekFrom, Write};
+
+        let dir = TempDir::new()?;
+        let length: u64 = (1 << 29) + 1000;
+        let position = length - 500;
+        let header = b">chrBig\n";
+        let fasta = dir.path().join("reference.fa");
+        let mut file = std::fs::File::create(&fasta)?;
+        file.write_all(header)?;
+        // A sparse file: only the bases around the call are written.
+        file.set_len(header.len() as u64 + length + 1)?;
+        file.seek(SeekFrom::End(-50_001))?;
+        file.write_all(&[b'A'; 50_000])?;
+        file.write_all(b"\n")?;
+        drop(file);
+        std::fs::write(
+            dir.path().join("reference.fa.fai"),
+            format!(
+                "chrBig\t{length}\t{}\t{length}\t{}\n",
+                header.len(),
+                length + 1
+            ),
+        )?;
+
+        let row = read_to_string("tests/calls.var")?;
+        let mut fields: Vec<String> = row
+            .lines()
+            .nth(2)
+            .unwrap()
+            .split('\t')
+            .map(String::from)
+            .collect();
+        fields[2] = "chrBig".to_string();
+        fields[3] = position.to_string();
+        fields[4] = position.to_string();
+        fields[5] = "A".to_string();
+        fields[6] = "C".to_string();
+        fields[13] = "A/C".to_string();
+        fields[34] = format!("chrBig:{}-{}", position - 100, position + 100);
+
+        let output = dir.path().join("out.vcf.gz");
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        cmd.arg("--reference")
+            .arg(&fasta)
+            .args(["--sample", "dna00001"])
+            .arg("--output")
+            .arg(&output)
+            .write_stdin(format!("{}\n", fields.join("\t")))
+            .assert()
+            .success();
+        assert!(dir.path().join("out.vcf.gz.csi").exists());
+        assert!(!dir.path().join("out.vcf.gz.tbi").exists());
+        assert_eq!(
+            query(&output, "chrBig", position, position)?,
+            [format!("chrBig {position} . A C")]
+        );
+        Ok(())
+    }
+
     #[test]
     fn run_end_to_end_removes_the_output_after_an_error() -> Result<(), Box<dyn std::error::Error>>
     {
         let dir = TempDir::new()?;
+        for index in ["out.vcf.gz.tbi", "out.vcf.gz.csi"] {
+            std::fs::write(dir.path().join(index), "stale")?;
+        }
         for name in ["out.vcf", "out.vcf.gz"] {
             let output = dir.path().join(name);
             let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
@@ -822,13 +960,14 @@ mod tests {
     fn run_end_to_end_cleans_up_when_a_signal_stops_it(
         #[case] signal: &str,
         #[case] code: i32,
+        #[values("out.vcf", "out.vcf.gz")] name: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
         use std::io::Write;
         use std::process::Stdio;
         use std::time::{Duration, Instant};
 
         let dir = TempDir::new()?;
-        let output = dir.path().join("out.vcf");
+        let output = dir.path().join(name);
         let mut child =
             std::process::Command::new(assert_cmd::cargo::cargo_bin(env!("CARGO_PKG_NAME")))
                 .args(["--reference", "tests/reference.fa", "--sample", "dna00001"])
