@@ -1284,10 +1284,11 @@ mod tests {
         path
     }
 
-    /// The tumor-only reads of `tests/calls.reads.var`: 10 reads of the MNV; G>C at 1100 on a
-    /// read whose mate proves the MNV molecule, one with a no-call at 1101 and one with the
-    /// reference there; G>A at 1101 on two reads with a no-call at 1100; G>T at 1100 on two
-    /// reads; and five reference reads.
+    /// The tumor-only reads of `tests/calls.reads.var`, which is VarDictJava 1.8.4's output for
+    /// them with `-q 30 -Q 20 -F 0x504 -z 1 -P 0 -K`: 10 reads of the MNV GG>CA at 1100-1101; G>C
+    /// at 1100 on a read whose mate proves the MNV molecule, one with a no-call at 1101 and one with
+    /// the reference there; G>A at 1101 on two reads with a no-call at 1100, which VarDict folds
+    /// into the MNV itself; G>T at 1100 on two reads; and five reference reads.
     fn tumor_only_reads() -> SamBuilder {
         let mut builder = SamBuilder::new().read_length(40);
         for index in 0..10 {
@@ -1346,34 +1347,40 @@ mod tests {
         Ok(())
     }
 
-    /// The tumor and normal reads of `tests/calls.tumor-normal.reads.var`: both carry the MNV on
-    /// 10 reads; the tumor has G>C at 1100 on a read with a no-call at 1101 and one with the
-    /// reference there, and G>A at 1101 on two reads with a no-call at 1100; the normal has G>C on
-    /// one read with a no-call at 1101.
+    /// The tumor and normal reads of `tests/calls.tumor-normal.reads.var`, which is VarDictJava
+    /// 1.8.4's output for them with `-q 30 -Q 20 -F 0x504 -z 1 -P 0 -K`, over the three-base MNV
+    /// GGG>CAC at 1100-1102: both samples carry it on 10 reads. The tumor has G>C at 1100 on a read
+    /// with the reference at 1101 and 1102 and one with a no-call at 1101, and GG>CA at 1100-1101 on
+    /// two reads whose mates prove the MNV molecule; the normal has G>C on a read with a no-call at
+    /// 1101 and GG>CA on a read with a no-call at 1102.
     fn tumor_normal_reads() -> (SamBuilder, SamBuilder) {
         let mut tumor = SamBuilder::new().read_length(40);
         let mut normal = SamBuilder::new().read_length(40);
+        let mnv = [(1100, b'C'), (1101, b'A'), (1102, b'C')];
         for builder in [&mut tumor, &mut normal] {
             for index in 0..10 {
-                builder.add_frag(frag(
-                    &format!("m{index}"),
-                    &[(1100, b'C'), (1101, b'A')],
-                    &[],
-                ));
+                builder.add_frag(frag(&format!("m{index}"), &mnv, &[]));
             }
             for index in 0..5 {
                 builder.add_frag(frag(&format!("r{index}"), &[], &[]));
             }
-            builder.add_frag(frag("p1", &[(1100, b'C'), (1101, b'N')], &[]));
         }
-        tumor.add_frag(frag("p2", &[(1100, b'C')], &[]));
+        tumor.add_frag(frag("s1", &[(1100, b'C')], &[]));
+        tumor.add_frag(frag("s2", &[(1100, b'C'), (1101, b'N'), (1102, b'C')], &[]));
         for index in 0..2 {
-            tumor.add_frag(frag(
-                &format!("a{index}"),
-                &[(1100, b'N'), (1101, b'A')],
-                &[],
-            ));
+            tumor.add_pair(
+                Pair::at(1081, 1081)
+                    .name(format!("p{index}"))
+                    .bases1(read(&mnv))
+                    .quals1(quals(&[(1102, 20)]))
+                    .bases2(read(&mnv))
+                    .quals2(quals(&[]))
+                    .strand2(Strand::Minus)
+                    .attr(Tag::EDIT_DISTANCE, 3),
+            );
         }
+        normal.add_frag(frag("n1", &[(1100, b'C'), (1101, b'N'), (1102, b'C')], &[]));
+        normal.add_frag(frag("n2", &[(1100, b'C'), (1101, b'A'), (1102, b'N')], &[]));
         (tumor, normal)
     }
 

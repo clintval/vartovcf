@@ -287,6 +287,12 @@ fn convert<I: Read>(
                 )
                 .into());
             }
+            let names: Vec<&str> = std::iter::once(sample.as_str())
+                .chain(normal_sample.as_deref())
+                .collect();
+            for warning in sources.sample_warnings(&names) {
+                warn!("{warning}");
+            }
             Some(Folder::Reads(sources))
         }
     };
@@ -352,6 +358,12 @@ fn convert<I: Read>(
             "Reads decided {} partial row(s) and sample(s) under {} MNV pileup(s); {} reconciled with VarDict's ALT reads.",
             summary.decisions, summary.pileups, summary.reconciled
         );
+        if summary.decisions > 0 && summary.reconciled * 2 < summary.decisions {
+            warn!(
+                "Only {} of {} partial rows and samples found the reads VarDict counted; rows that did not keep every read. Check that --reads names the BAMs VarDict was run on, in sample order, and that --reads-base-quality, --reads-min-mapq, --reads-exclude-flags, --reads-max-mismatches and --reads-mnv-gap match the run.",
+                summary.reconciled, summary.decisions
+            );
+        }
     }
     if sink.folder.is_some() {
         let folds = sink.folds;

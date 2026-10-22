@@ -30,6 +30,7 @@ use noodles::sam::alignment::record::Flags;
 use noodles::sam::alignment::record::cigar::op::Kind;
 use noodles::sam::alignment::record::data::field::Tag;
 use noodles::sam::header::record::value::map::header::tag::SORT_ORDER;
+use noodles::sam::header::record::value::map::read_group::tag::SAMPLE;
 use noodles::sam::header::record::value::{Map, map};
 use noodles::sam::{self};
 use streampile::{
@@ -128,7 +129,11 @@ impl ReadSources {
         let samples = paths
             .iter()
             .map(|path| {
-                let describe = |error| format!("Could not open the reads {path:?}: {error}!");
+                let describe = |error| {
+                    format!(
+                        "Could not open the reads {path:?} or their index (.bai or .csi beside them): {error}!"
+                    )
+                };
                 let mut reader = bam::io::indexed_reader::Builder::default()
                     .build_from_path(path)
                     .map_err(describe)?;
@@ -157,15 +162,43 @@ impl ReadSources {
         self.samples.len()
     }
 
+    /// Warnings for BAMs whose read groups name a sample other than the one they stand for, given
+    /// the sample names in BAM order: a swapped or wrong BAM reconciles with nothing.
+    pub fn sample_warnings(&self, names: &[&str]) -> Vec<String> {
+        self.samples
+            .iter()
+            .zip(names)
+            .filter_map(|(sample, name)| {
+                let samples: Vec<String> = sample
+                    .header
+                    .read_groups()
+                    .values()
+                    .filter_map(|group| group.other_fields().get(&SAMPLE))
+                    .map(|sample| sample.to_string())
+                    .collect();
+                (!samples.is_empty() && !samples.iter().any(|sample| sample == name)).then(|| {
+                    format!(
+                        "The reads {} name the sample(s) {} in their read groups, not '{name}': give --reads the BAMs VarDict was run on, in sample order!",
+                        sample.path.display(),
+                        samples.join(", ")
+                    )
+                })
+            })
+            .collect()
+    }
+
     /// Decides the fate of every partial row of a region under every MNV row it is a sub-event of,
     /// from the reads of each sample, keyed by (MNV row, partial row). Rows already written are not
-    /// partials here, as they are never folded again.
+    /// partials here, as they are never folded again. The fold applies a fate only when the MNV
+    /// claims the row, so a row visited before its MNV, as a better supported one is, keeps every
+    /// read whatever its fate says.
     pub fn fates<'a>(
         &mut self,
         rows: &[&[TumorOnlyVariant<'a>]],
         written: &[bool],
         reference: &mut Reference,
     ) -> Result<ReadFates<'a>, String> {
+        let options = self.options;
         let mut fates = ReadFates::new();
         let with_reads = |row: usize| {
             is_substitution(&rows[row][0]) && rows[row].iter().any(|call| call.alt_depth > 0)
@@ -181,58 +214,64 @@ impl ReadSources {
             if partials.is_empty() {
                 continue;
             }
-            let mut per_partial: Vec<ReadFate<'a>> = partials
-                .iter()
-                .map(|_| ReadFate {
-                    moved: Vec::new(),
-                    kept: Vec::new(),
-                })
-                .collect();
-            for (sample, calls) in rows[mnv].iter().enumerate() {
-                let partial_calls: Vec<&TumorOnlyVariant<'a>> =
-                    partials.iter().map(|&row| &rows[row][sample]).collect();
-                let decided = self.decide(sample, calls, &partial_calls, reference)?;
-                for (fate, (moved, kept)) in per_partial.iter_mut().zip(decided) {
-                    fate.moved.push(moved);
-                    fate.kept.push(kept);
+            let window = Window::around(&rows[mnv][0], options, reference)?;
+            let surveys = (0..rows[mnv].len())
+                .map(|sample| self.survey_sample(sample, &window))
+                .collect::<Result<Vec<Survey>, String>>()?;
+            for row in partials {
+                let partial_calls: Vec<&TumorOnlyVariant<'a>> = rows[row].iter().collect();
+                let classified: Vec<Classified> = surveys
+                    .iter()
+                    .zip(&partial_calls)
+                    .map(|(survey, partial)| {
+                        classify(survey, &window, &rows[mnv][0], partial, options)
+                    })
+                    .collect();
+                let (fate, outcomes) = resolve(&classified, rows[mnv], &partial_calls, options);
+                for (sample, (classified, outcome)) in classified.iter().zip(&outcomes).enumerate()
+                {
+                    let partial = partial_calls[sample];
+                    if partial.alt_depth == 0 {
+                        continue;
+                    }
+                    self.summary.decisions += 1;
+                    self.summary.reconciled += usize::from(classified.decision.unmatched == 0);
+                    debug!(
+                        "{contig}:{} {}>{} under {contig}:{} {}>{} in sample {}: VarDict counted {} reads; {} are the MNV's molecules, {} another allele's, {} prove nothing, {} unmatched; the reads would move {} and keep {}; {:.3} of the templates prove nothing there.",
+                        partial.start,
+                        partial.ref_allele,
+                        partial.alt_allele,
+                        rows[mnv][0].start,
+                        rows[mnv][0].ref_allele,
+                        rows[mnv][0].alt_allele,
+                        sample + 1,
+                        partial.alt_depth,
+                        classified.decision.proven,
+                        classified.decision.separate,
+                        classified.decision.ambiguous,
+                        classified.decision.unmatched,
+                        outcome.0,
+                        outcome.1,
+                        classified.decision.ambiguity,
+                        contig = partial.contig,
+                    );
                 }
-            }
-            for (row, fate) in partials.into_iter().zip(per_partial) {
                 fates.insert((mnv, row), fate);
             }
         }
         Ok(fates)
     }
 
-    /// Decides one sample's reads of each partial of an MNV: the call of the reads that go to the
-    /// MNV and the call of the reads that stay, per partial.
-    fn decide<'a>(
-        &mut self,
-        sample: usize,
-        mnv: &TumorOnlyVariant<'a>,
-        partials: &[&TumorOnlyVariant<'a>],
-        reference: &mut Reference,
-    ) -> Result<Vec<(TumorOnlyVariant<'a>, TumorOnlyVariant<'a>)>, String> {
+    /// Piles up one sample's reads over a window.
+    fn survey_sample(&mut self, sample: usize, window: &Window) -> Result<Survey, String> {
         let options = self.options;
-        let contig = mnv.contig;
-        let length = reference.length(contig)?;
-        let start = (mnv.start - 1).saturating_sub(options.flank() as u64);
-        let end = (mnv.end + options.flank() as u64).min(length);
-        let window = Window {
-            start: start as usize,
-            reference: reference.bases(contig, start, end)?.to_vec(),
-        };
         let source = &mut self.samples[sample];
-        let region = Region::new(
-            contig,
-            Position::try_from(start as usize + 1).map_err(|error| error.to_string())?
-                ..=Position::try_from(end as usize).map_err(|error| error.to_string())?,
-        );
+        let contig = window.contig.as_str();
+        let (start, end) = (window.start + 1, window.start + window.reference.len());
         let describe = |error: &dyn std::fmt::Display| {
             format!(
-                "Could not read the reads of {} over {contig}:{}-{end}: {error}!",
-                source.path.display(),
-                start + 1
+                "Could not read the reads of {} over {contig}:{start}-{end}: {error}!",
+                source.path.display()
             )
         };
         let header = &source.header;
@@ -246,43 +285,19 @@ impl ReadSources {
                 source.path.display()
             ));
         }
+        let region = Region::new(
+            contig,
+            Position::try_from(start).map_err(|error| error.to_string())?
+                ..=Position::try_from(end).map_err(|error| error.to_string())?,
+        );
         let query = source
             .reader
             .query(header, &region)
             .map_err(|error| describe(&error))?;
-        let survey = survey(Query(query), header, contig, &window, options)
-            .map_err(|error| describe(&error))?;
+        let survey =
+            survey(Query(query), header, window, options).map_err(|error| describe(&error))?;
         self.summary.pileups += 1;
-        let decided = partials
-            .iter()
-            .map(|partial| {
-                let (moved, kept, decision) = fate(&survey, &window, mnv, partial, options);
-                if partial.alt_depth > 0 {
-                    self.summary.decisions += 1;
-                    self.summary.reconciled += usize::from(decision.unmatched == 0);
-                    debug!(
-                        "{contig}:{} {}>{} under {contig}:{} {}>{} in sample {}: VarDict counted {} reads; {} are the MNV's molecules, {} another allele's, {} prove nothing, {} unmatched; {} move and {} stay; {:.3} of the templates prove nothing there.",
-                        partial.start,
-                        partial.ref_allele,
-                        partial.alt_allele,
-                        mnv.start,
-                        mnv.ref_allele,
-                        mnv.alt_allele,
-                        sample + 1,
-                        partial.alt_depth,
-                        decision.proven,
-                        decision.separate,
-                        decision.ambiguous,
-                        decision.unmatched,
-                        moved.alt_depth,
-                        kept.alt_depth,
-                        decision.ambiguity
-                    );
-                }
-                (moved, kept)
-            })
-            .collect();
-        Ok(decided)
+        Ok(survey)
     }
 }
 
@@ -299,11 +314,28 @@ impl<R: bgzf::io::BufRead + bgzf::io::Seek> RecordSource for Query<'_, R> {
 
 /// The reference bases over the span piled up, starting at a 0-based position.
 struct Window {
+    contig: String,
     start: usize,
     reference: Vec<u8>,
 }
 
 impl Window {
+    /// The window around an MNV row: its span plus a flank on each side, within the contig.
+    fn around(
+        mnv: &TumorOnlyVariant,
+        options: ReadOptions,
+        reference: &mut Reference,
+    ) -> Result<Self, String> {
+        let length = reference.length(mnv.contig)?;
+        let start = (mnv.start - 1).saturating_sub(options.flank() as u64);
+        let end = (mnv.end + options.flank() as u64).min(length);
+        Ok(Window {
+            contig: mnv.contig.to_string(),
+            start: start as usize,
+            reference: reference.bases(mnv.contig, start, end)?.to_vec(),
+        })
+    }
+
     /// The column of a 1-based position, if it is in the window.
     fn column(&self, position: u64) -> Option<usize> {
         let column = position.checked_sub(self.start as u64 + 1)? as usize;
@@ -324,7 +356,8 @@ struct Base {
 struct ReadView {
     template: usize,
     bases: Vec<Option<Base>>,
-    indel: bool,
+    /// The columns where the read has an insertion, a deletion or a skip.
+    indels: Vec<usize>,
     reverse: bool,
     mapping_quality: u8,
     mismatches: f64,
@@ -349,27 +382,31 @@ struct Survey {
 }
 
 /// Piles up a sample's reads over the window and records what each read and each template holds
-/// at each column, filtering reads as VarDict does.
+/// at each column, filtering reads as VarDict does: by the flags, and every supplementary record
+/// whenever a flag filter is set at all, by mapping quality, and by mismatches.
 fn survey<S: RecordSource<Record = bam::Record>>(
     source: S,
     header: &sam::Header,
-    contig: &str,
     window: &Window,
     options: ReadOptions,
 ) -> streampile::Result<Survey> {
     let columns = window.reference.len();
     let max_mismatches = options.max_mismatches;
+    let mut exclude_flags = Flags::from_bits_retain(options.exclude_flags);
+    if !exclude_flags.is_empty() {
+        exclude_flags |= Flags::SUPPLEMENTARY;
+    }
     let mut builder = StreamingPileupBuilder::new(source, header)?
         .min_mapping_quality(options.min_mapping_quality)
-        .exclude_flags(Flags::from_bits_retain(options.exclude_flags))
+        .exclude_flags(exclude_flags)
         .min_base_quality(options.floor())
         .read_filter(move |record: &bam::Record| {
             substitution_mismatches(record).is_none_or(|mismatches| mismatches <= max_mismatches)
         });
     let mut survey = Survey::default();
     let mut templates: HashMap<Vec<u8>, usize> = HashMap::new();
-    let mut reads: HashMap<(usize, bool), usize> = HashMap::new();
-    let mut sweep = builder.columns(contig, window.start, window.start + columns)?;
+    let mut reads: HashMap<(usize, u16, i64), usize> = HashMap::new();
+    let mut sweep = builder.columns(&window.contig, window.start, window.start + columns)?;
     for column in 0..columns {
         let Some(pileup) = sweep.next_pileup() else {
             break;
@@ -377,20 +414,24 @@ fn survey<S: RecordSource<Record = bam::Record>>(
         let pileup = pileup?;
         for entry in pileup.iter() {
             let record = entry.record();
-            let name = record
-                .name()
-                .map_or(&b"*"[..], |name| name.as_ref())
-                .to_vec();
-            let next = templates.len();
-            let template = *templates.entry(name).or_insert(next);
-            if template == survey.templates.len() {
-                survey.templates.push(TemplateView {
-                    called: vec![None; columns],
-                    present: vec![false; columns],
-                });
-            }
+            let name: &[u8] = record.name().map_or(&b"*"[..], |name| name.as_ref());
+            let template = match templates.get(name) {
+                Some(&template) => template,
+                None => {
+                    templates.insert(name.to_vec(), survey.templates.len());
+                    survey.templates.push(TemplateView {
+                        called: vec![None; columns],
+                        present: vec![false; columns],
+                    });
+                    survey.templates.len() - 1
+                }
+            };
             survey.templates[template].present[column] = true;
-            let key = (template, entry.flags().is_last_segment());
+            let start = record
+                .alignment_start()
+                .and_then(Result::ok)
+                .map_or(-1, |start| usize::from(start) as i64);
+            let key = (template, record.flags().bits(), start);
             let next = survey.reads.len();
             let read = *reads.entry(key).or_insert(next);
             if read == survey.reads.len() {
@@ -409,7 +450,9 @@ fn survey<S: RecordSource<Record = bam::Record>>(
                         });
                     }
                 }
-                EntryKind::Insertion | EntryKind::Deletion | EntryKind::Skip => view.indel = true,
+                EntryKind::Insertion | EntryKind::Deletion | EntryKind::Skip => {
+                    view.indels.push(column)
+                }
                 _ => {}
             }
         }
@@ -464,7 +507,7 @@ impl ReadView {
         ReadView {
             template,
             bases: vec![None; columns],
-            indel: false,
+            indels: Vec::new(),
             reverse: record.flags().is_reverse_complemented(),
             mapping_quality: record.mapping_quality().map_or(255, u8::from),
             mismatches: substitution_mismatches(record).unwrap_or(0) as f64,
@@ -476,13 +519,11 @@ impl ReadView {
     /// The alleles VarDict counts this read toward over the window, by replaying its walk: an
     /// allele starts at each mismatch and grows through the following bases as an MNV while they
     /// are contiguous in the read, not no-calls, at least `-q` plus 5, and either mismatches or
-    /// matches bridged within the gap to a mismatch. A read with an indel in the window feeds no
-    /// substitution row, as VarDict folds a nearby mismatch into a complex allele.
+    /// matches bridged within the gap to a mismatch. An allele with an insertion, deletion or skip
+    /// within the gap of either end feeds no substitution row, as VarDict folds it into a complex
+    /// allele with the indel.
     fn alleles(&self, window: &Window, options: ReadOptions) -> Vec<Found> {
         let mut found = Vec::new();
-        if self.indel {
-            return found;
-        }
         let reference = &window.reference;
         let bases = &self.bases;
         let mut column = 0;
@@ -548,7 +589,11 @@ impl ReadView {
                     last = to;
                 }
             }
-            if !dropped {
+            let near_indel = self.indels.iter().any(|&indel| {
+                (indel < column && indel + options.mnv_gap >= column)
+                    || (indel >= last && indel <= last + options.mnv_gap)
+            });
+            if !dropped && !near_indel {
                 let in_read =
                     bases[last].expect("the last base is held").query_position - self.leading_clip;
                 let from_end = self.aligned_length.saturating_sub(in_read);
@@ -601,6 +646,8 @@ enum Molecule {
 
 impl TemplateView {
     /// Whose molecule this template is, by its called bases at the MNV's other changed columns.
+    /// A base under the pileup's floor never votes, so the quality check here only catches two
+    /// disagreeing mates, whose called quality is the difference of theirs.
     fn molecule(&self, others: &[(usize, u8)], options: ReadOptions) -> Molecule {
         let mut ambiguous = false;
         for &(column, alt) in others {
@@ -645,31 +692,18 @@ impl Reads {
         self.mismatches += found.mismatches;
     }
 
-    /// The row's call holding `count` of these reads, with their means, or the row's own means
-    /// when none of these reads was found.
-    fn call<'a>(&self, row: &TumorOnlyVariant<'a>, count: i32) -> TumorOnlyVariant<'a> {
+    /// The row's call holding exactly these reads, with their counts and means.
+    fn call<'a>(&self, row: &TumorOnlyVariant<'a>) -> TumorOnlyVariant<'a> {
         if self.count == 0 {
-            let forward = row.alt_forward.clamp(0, count);
-            return TumorOnlyVariant {
-                alt_depth: count,
-                alt_forward: forward,
-                alt_reverse: count - forward,
-                high_quality_variant_reads: if row.high_quality_variant_reads < 0 {
-                    row.high_quality_variant_reads
-                } else {
-                    row.high_quality_variant_reads.min(count)
-                },
-                ..row.clone()
-            };
+            return without_reads(row);
         }
         let reads = f64::from(self.count);
-        let forward = self.forward.min(count);
         let positions_vary = self.positions.windows(2).any(|pair| pair[0] != pair[1]);
         TumorOnlyVariant {
-            alt_depth: count,
-            alt_forward: forward,
-            alt_reverse: count - forward,
-            high_quality_variant_reads: self.high_quality.min(count),
+            alt_depth: self.count,
+            alt_forward: self.forward,
+            alt_reverse: self.count - self.forward,
+            high_quality_variant_reads: self.high_quality,
             mean_position_in_read: (self.positions.iter().map(|&p| f64::from(p)).sum::<f64>()
                 / reads) as f32,
             stdev_position_in_read: if positions_vary { 1.0 } else { 0.0 },
@@ -681,7 +715,18 @@ impl Reads {
     }
 }
 
-/// How one partial's reads in one sample were decided.
+/// The row's call with none of its ALT reads.
+fn without_reads<'a>(row: &TumorOnlyVariant<'a>) -> TumorOnlyVariant<'a> {
+    TumorOnlyVariant {
+        alt_depth: 0,
+        alt_forward: 0,
+        alt_reverse: 0,
+        high_quality_variant_reads: 0,
+        ..row.clone()
+    }
+}
+
+/// How one partial's reads in one sample were classified.
 #[derive(Clone, Debug, Default, PartialEq)]
 struct Decision {
     /// Reads whose template is the MNV's molecule.
@@ -690,33 +735,28 @@ struct Decision {
     separate: i32,
     /// Reads whose template proves nothing.
     ambiguous: i32,
-    /// Reads VarDict counted that no read in the pileup feeds, or fed by more reads than it counted.
+    /// Reads VarDict counted that no read in the pileup feeds, or, below zero, reads in the
+    /// pileup feeding the row beyond VarDict's count.
     unmatched: i32,
     /// The fraction of the templates at the MNV's other changed positions that prove nothing there.
     ambiguity: f64,
 }
 
-/// Decides one partial's reads in one sample: the call of the reads that go to the MNV, the call of
-/// the reads that stay, and how they were decided.
-///
-/// A read whose template is the MNV's molecule moves whatever the MNV's count in the sample. A read
-/// whose template is another allele's stays. A read whose template proves nothing follows the row's
-/// other reads: it moves when no template of the row in the sample is shown to be another allele's
-/// and the MNV has reads there, since a row with no read shown to be its own is leakage far more
-/// often than an allele that lost the base in every read, and nothing can leak from an MNV with no
-/// reads; it stays once a template of the row is shown to be another allele's, as the allele is then
-/// real and a read of it that lost the other base is not told from a leak. The fraction of all
-/// templates that prove nothing at those positions is reported, as it bounds how often an allele's
-/// `k` reads all prove nothing: that fraction to the power `k`. A row moves at most as many reads as
-/// VarDict counted on it and keeps the rest, so reads VarDict counted that no read in the pileup
-/// feeds stay.
-fn fate<'a>(
-    survey: &Survey,
+/// One sample's reads feeding a partial, each with whose molecule its template is.
+struct Classified<'s> {
+    feeding: Vec<(&'s ReadView, Found, Molecule)>,
+    decision: Decision,
+}
+
+/// Classifies one sample's reads of a partial under an MNV by their templates' bases at the MNV's
+/// changed positions outside the partial.
+fn classify<'s>(
+    survey: &'s Survey,
     window: &Window,
-    mnv: &TumorOnlyVariant<'a>,
-    partial: &TumorOnlyVariant<'a>,
+    mnv: &TumorOnlyVariant,
+    partial: &TumorOnlyVariant,
     options: ReadOptions,
-) -> (TumorOnlyVariant<'a>, TumorOnlyVariant<'a>, Decision) {
+) -> Classified<'s> {
     let others: Vec<(usize, u8)> = mnv
         .ref_allele
         .bytes()
@@ -769,29 +809,90 @@ fn fate<'a>(
     } else {
         1.0
     };
-    let ambiguous_leak = mnv.alt_depth > 0 && decision.separate == 0;
-    let mut moved = Reads::default();
-    let mut kept = Reads::default();
-    for (read, allele, molecule) in &feeding {
-        let goes = match molecule {
-            Molecule::Mnv => true,
-            Molecule::Ambiguous => ambiguous_leak,
-            Molecule::Separate => false,
-        };
-        if goes {
-            moved.add(read, allele, options);
-        } else {
-            kept.add(read, allele, options);
-        }
-    }
     decision.unmatched = partial.alt_depth - feeding.len() as i32;
-    let moved_count = moved.count.min(partial.alt_depth);
-    let kept_count = partial.alt_depth - moved_count;
-    (
-        moved.call(partial, moved_count),
-        kept.call(partial, kept_count),
-        decision,
-    )
+    Classified { feeding, decision }
+}
+
+/// Decides a partial's reads in every sample at once, the tumor (or only) sample first, from each
+/// sample's classified reads: the fate of the row, and the reads each sample would move and keep.
+///
+/// A read whose template is the MNV's molecule moves whatever the MNV's count in the sample. A read
+/// whose template is another allele's stays. A read whose template proves nothing follows the row's
+/// other reads: it moves only when no template of the row in any sample is shown to be another
+/// allele's, since a row with no read shown to be its own is leakage far more often than an allele
+/// that lost the base in every read, while an allele shown real in one sample is real in the
+/// individual; only when the MNV has reads in its sample, since nothing leaks from an MNV with none;
+/// and, in a sample after the tumor, only when the tumor keeps no read of the row, so a normal never
+/// gives up the reads that say it carries an allele the tumor keeps. The fraction of all templates
+/// that prove nothing at those positions bounds how often an allele's `k` reads all prove nothing:
+/// that fraction to the power `k`.
+///
+/// A sample's reads are split between the MNV and the row only when the reads found are exactly the
+/// reads VarDict counted, so every count and mean written comes from a read seen. When the pileup
+/// feeds the row more reads than VarDict counted, the row moves whole, with VarDict's own values,
+/// only if every read found would move; otherwise, and whenever it feeds fewer, the sample keeps
+/// VarDict's row whole, since which of its reads VarDict counted is not known.
+fn resolve<'a>(
+    classified: &[Classified],
+    mnv: &[TumorOnlyVariant<'a>],
+    partials: &[&TumorOnlyVariant<'a>],
+    options: ReadOptions,
+) -> (ReadFate<'a>, Vec<(i32, i32)>) {
+    let separate_anywhere = classified.iter().any(|sample| sample.decision.separate > 0);
+    let mut fate = ReadFate {
+        moved: Vec::new(),
+        kept: Vec::new(),
+    };
+    let mut outcomes = Vec::new();
+    let mut tumor_keeps = false;
+    for (sample, (classified, partial)) in classified.iter().zip(partials).enumerate() {
+        let ambiguous_moves =
+            mnv[sample].alt_depth > 0 && !separate_anywhere && (sample == 0 || !tumor_keeps);
+        let (moved, kept) = settle(classified, partial, ambiguous_moves, options);
+        if sample == 0 {
+            tumor_keeps = kept.alt_depth > 0;
+        }
+        outcomes.push((moved.alt_depth, kept.alt_depth));
+        fate.moved.push(moved);
+        fate.kept.push(kept);
+    }
+    (fate, outcomes)
+}
+
+/// One sample's calls of a partial's reads that move and that stay, as [`resolve`] decides them.
+fn settle<'a>(
+    classified: &Classified,
+    partial: &TumorOnlyVariant<'a>,
+    ambiguous_moves: bool,
+    options: ReadOptions,
+) -> (TumorOnlyVariant<'a>, TumorOnlyVariant<'a>) {
+    let goes = |molecule: Molecule| match molecule {
+        Molecule::Mnv => true,
+        Molecule::Ambiguous => ambiguous_moves,
+        Molecule::Separate => false,
+    };
+    let found = classified.feeding.len() as i32;
+    if partial.alt_depth > 0 && found == partial.alt_depth {
+        let mut moved = Reads::default();
+        let mut kept = Reads::default();
+        for (read, allele, molecule) in &classified.feeding {
+            if goes(*molecule) {
+                moved.add(read, allele, options);
+            } else {
+                kept.add(read, allele, options);
+            }
+        }
+        return (moved.call(partial), kept.call(partial));
+    }
+    let every_read_moves = found > partial.alt_depth
+        && classified
+            .feeding
+            .iter()
+            .all(|(_, _, molecule)| goes(*molecule));
+    if partial.alt_depth > 0 && every_read_moves {
+        return (partial.clone(), without_reads(partial));
+    }
+    (without_reads(partial), partial.clone())
 }
 
 /// Parses VarDict's `-F` flag value: hexadecimal with a `0x` prefix, or decimal.
@@ -826,6 +927,7 @@ mod tests {
 
     fn window() -> Window {
         Window {
+            contig: "chr1".to_string(),
             start: 100,
             reference: REFERENCE.to_vec(),
         }
@@ -883,7 +985,6 @@ mod tests {
         survey(
             builder.to_source(),
             builder.header(),
-            "chr1",
             &window(),
             ReadOptions::default(),
         )
@@ -982,7 +1083,6 @@ mod tests {
         let survey = survey(
             builder.to_source(),
             builder.header(),
-            "chr1",
             &window(),
             ReadOptions::default(),
         )
@@ -991,7 +1091,7 @@ mod tests {
     }
 
     #[test]
-    fn test_a_read_with_an_indel_in_the_window_feeds_nothing() {
+    fn test_a_read_with_an_indel_past_the_gap_feeds_its_allele() {
         let mut builder = SamBuilder::new().read_length(REFERENCE.len());
         let bases = edited(&[(105, b'T'), (106, b'A')]);
         builder.add_frag(
@@ -1003,13 +1103,12 @@ mod tests {
         let survey = survey(
             builder.to_source(),
             builder.header(),
-            "chr1",
             &window(),
             ReadOptions::default(),
         )
         .unwrap();
-        assert!(survey.reads[0].indel);
-        assert_eq!(alleles(&survey), vec![Vec::<(u64, String)>::new()]);
+        assert_eq!(survey.reads[0].indels, vec![10]);
+        assert_eq!(alleles(&survey), vec![vec![(105, "TA".to_string())]]);
     }
 
     #[test]
@@ -1026,7 +1125,6 @@ mod tests {
         let survey = survey(
             builder.to_source(),
             builder.header(),
-            "chr1",
             &window(),
             ReadOptions::default(),
         )
@@ -1059,7 +1157,6 @@ mod tests {
         let survey = survey(
             builder.to_source(),
             builder.header(),
-            "chr1",
             &window(),
             ReadOptions::default(),
         )
@@ -1080,21 +1177,56 @@ mod tests {
             min_mapping_quality: 20,
             ..ReadOptions::default()
         };
-        let survey = survey(
-            builder.to_source(),
-            builder.header(),
-            "chr1",
-            &window(),
-            options,
-        )
-        .unwrap();
+        let survey = survey(builder.to_source(), builder.header(), &window(), options).unwrap();
         assert!(survey.reads.is_empty());
     }
 
     /// A pair of mates, each given as (bases, quals).
     type Mates<'a> = ((&'a str, Vec<u8>), (&'a str, Vec<u8>));
 
-    /// Decides one partial under one MNV from paired reads.
+    /// Builds paired reads over the window, mate 2 reverse, named `q0`, `q1`, ...
+    fn pairs_of(pairs: &[Mates]) -> SamBuilder {
+        let mut builder = SamBuilder::new().read_length(REFERENCE.len());
+        for (index, (read1, read2)) in pairs.iter().enumerate() {
+            builder.add_pair(
+                Pair::at(101, 101)
+                    .name(format!("q{index}"))
+                    .bases1(read1.0)
+                    .quals1(read1.1.clone())
+                    .bases2(read2.0)
+                    .quals2(read2.1.clone())
+                    .strand2(Strand::Minus),
+            );
+        }
+        builder
+    }
+
+    /// Decides one partial under one MNV in one sample from a survey.
+    fn decide_survey(
+        survey: &Survey,
+        mnv: &TumorOnlyVariant<'static>,
+        partial: &TumorOnlyVariant<'static>,
+    ) -> (
+        TumorOnlyVariant<'static>,
+        TumorOnlyVariant<'static>,
+        Decision,
+    ) {
+        let options = ReadOptions::default();
+        let classified = classify(survey, &window(), mnv, partial, options);
+        let (fate, _) = resolve(
+            std::slice::from_ref(&classified),
+            std::slice::from_ref(mnv),
+            &[partial],
+            options,
+        );
+        (
+            fate.moved[0].clone(),
+            fate.kept[0].clone(),
+            classified.decision,
+        )
+    }
+
+    /// Decides one partial under one MNV from paired reads, with whether the reads reconciled.
     fn decide_pairs(
         pairs: &[Mates],
         mnv: &TumorOnlyVariant<'static>,
@@ -1113,27 +1245,15 @@ mod tests {
         TumorOnlyVariant<'static>,
         Decision,
     ) {
-        let mut builder = SamBuilder::new().read_length(REFERENCE.len());
-        for (index, (read1, read2)) in pairs.iter().enumerate() {
-            builder.add_pair(
-                Pair::at(101, 101)
-                    .name(format!("q{index}"))
-                    .bases1(read1.0)
-                    .quals1(read1.1.clone())
-                    .bases2(read2.0)
-                    .quals2(read2.1.clone())
-                    .strand2(Strand::Minus),
-            );
-        }
+        let builder = pairs_of(pairs);
         let survey = survey(
             builder.to_source(),
             builder.header(),
-            "chr1",
             &window(),
             ReadOptions::default(),
         )
         .unwrap();
-        fate(&survey, &window(), mnv, partial, ReadOptions::default())
+        decide_survey(&survey, mnv, partial)
     }
 
     #[test]
@@ -1281,7 +1401,7 @@ mod tests {
     }
 
     #[test]
-    fn test_reads_vardict_counted_that_no_template_feeds_stay_with_the_rows_own_means() {
+    fn test_a_row_with_reads_no_template_feeds_keeps_vardicts_row_whole() {
         let mnv = row(105, "AC", "TA", 10);
         let partial = row(105, "A", "T", 3);
         let read1 = (edited(&[(105, b'T'), (106, b'A')]), quals(&[(106, 20)]));
@@ -1291,9 +1411,357 @@ mod tests {
             &mnv,
             &partial,
         );
-        assert_eq!((moved.alt_depth, kept.alt_depth, reconciled), (1, 2, false));
-        assert_eq!(kept.base_quality_mean, 33.0);
-        assert_eq!((kept.alt_forward, kept.alt_reverse), (2, 0));
+        assert_eq!((moved.alt_depth, kept.alt_depth, reconciled), (0, 3, false));
+        assert_eq!(kept, partial);
+    }
+
+    #[test]
+    fn test_a_row_fed_more_reads_than_vardict_counted_keeps_them_all_when_one_is_another_alleles() {
+        // Two templates prove the MNV molecule and one carries the reference, but VarDict counted
+        // only two reads, so which two is not known and nothing moves.
+        let mnv = row(105, "AC", "TA", 10);
+        let partial = row(105, "A", "T", 2);
+        let proven = (edited(&[(105, b'T'), (106, b'A')]), quals(&[(106, 20)]));
+        let mate = (edited(&[(105, b'T'), (106, b'A')]), quals(&[]));
+        let separate = (edited(&[(105, b'T')]), quals(&[]));
+        let pairs = [
+            (
+                (&proven.0[..], proven.1.clone()),
+                (&mate.0[..], mate.1.clone()),
+            ),
+            (
+                (&proven.0[..], proven.1.clone()),
+                (&mate.0[..], mate.1.clone()),
+            ),
+            (
+                (&separate.0[..], separate.1.clone()),
+                (&separate.0[..], separate.1.clone()),
+            ),
+        ];
+        let (moved, kept, decision) = decide_pairs_fully(&pairs, &mnv, &partial);
+        assert_eq!(
+            (decision.proven, decision.separate, decision.unmatched),
+            (2, 2, -2)
+        );
+        assert_eq!((moved.alt_depth, kept.alt_depth), (0, 2));
+        assert_eq!(kept, partial);
+    }
+
+    #[test]
+    fn test_a_row_fed_more_reads_than_vardict_counted_moves_whole_when_every_read_would() {
+        let mnv = row(105, "AC", "TA", 10);
+        let partial = row(105, "A", "T", 2);
+        let ambiguous = (edited(&[(105, b'T'), (106, b'N')]), quals(&[]));
+        let pairs = [
+            (
+                (&ambiguous.0[..], ambiguous.1.clone()),
+                (&ambiguous.0[..], ambiguous.1.clone()),
+            ),
+            (
+                (&ambiguous.0[..], ambiguous.1.clone()),
+                (&ambiguous.0[..], ambiguous.1.clone()),
+            ),
+        ];
+        let (moved, kept, decision) = decide_pairs_fully(&pairs, &mnv, &partial);
+        assert_eq!((decision.ambiguous, decision.unmatched), (4, -2));
+        // VarDict's own row moves, not a count made from the reads found.
+        assert_eq!(moved, partial);
+        assert_eq!(kept.alt_depth, 0);
+    }
+
+    #[test]
+    fn test_a_kept_read_below_q_is_not_a_high_quality_read() {
+        let mnv = row(105, "AC", "TA", 10);
+        let partial = row(105, "A", "T", 2);
+        let low = (edited(&[(105, b'T')]), quals(&[(105, 20)]));
+        let pairs = [((&low.0[..], low.1.clone()), (&low.0[..], low.1.clone()))];
+        let (moved, kept, _) = decide_pairs_fully(&pairs, &mnv, &partial);
+        assert_eq!((moved.alt_depth, kept.alt_depth), (0, 2));
+        assert_eq!(kept.high_quality_variant_reads, 0);
+        assert_eq!(kept.base_quality_mean, 20.0);
+    }
+
+    #[test]
+    fn test_disagreeing_mates_are_called_to_the_higher_quality_base_at_the_difference() {
+        // At the other changed base, ALT at 90 against the reference at 40 calls ALT at 50, a good
+        // call, and the reference at 90 against ALT at 40 calls the reference at 50.
+        let mnv = row(105, "AC", "TA", 10);
+        let partial = row(105, "A", "T", 4);
+        let alt_90 = (
+            edited(&[(105, b'T'), (106, b'A')]),
+            quals(&[(105, 20), (106, 90)]),
+        );
+        let alt_40 = (edited(&[(105, b'T'), (106, b'A')]), quals(&[(105, 20)]));
+        let ref_90 = (edited(&[(105, b'T')]), quals(&[(106, 90)]));
+        let ref_40 = (edited(&[(105, b'T')]), quals(&[]));
+        let pairs = [
+            (
+                (&ref_40.0[..], ref_40.1.clone()),
+                (&alt_90.0[..], alt_90.1.clone()),
+            ),
+            (
+                (&ref_90.0[..], ref_90.1.clone()),
+                (&alt_40.0[..], alt_40.1.clone()),
+            ),
+        ];
+        let (moved, kept, decision) = decide_pairs_fully(&pairs, &mnv, &partial);
+        assert_eq!(
+            (decision.proven, decision.separate, decision.ambiguous),
+            (2, 2, 0)
+        );
+        assert_eq!((moved.alt_depth, kept.alt_depth), (2, 2));
+    }
+
+    #[test]
+    fn test_the_ambiguity_rate_counts_only_templates_at_the_other_changed_base() {
+        let mnv = row(105, "AC", "TA", 10);
+        let partial = row(105, "A", "T", 1);
+        let mut builder = SamBuilder::new().read_length(REFERENCE.len());
+        builder.add_frag(
+            Frag::at(101)
+                .bases(edited(&[(105, b'T'), (106, b'N')]))
+                .quals(quals(&[])),
+        );
+        for _ in 0..3 {
+            builder.add_frag(Frag::at(101).bases(edited(&[])).quals(quals(&[])));
+        }
+        // Reads ending before the other changed base are not at it, so they do not count.
+        for _ in 0..4 {
+            builder.add_frag(
+                Frag::at(101)
+                    .bases(&edited(&[])[..5])
+                    .quals(vec![40; 5])
+                    .cigar("5M"),
+            );
+        }
+        let survey = survey(
+            builder.to_source(),
+            builder.header(),
+            &window(),
+            ReadOptions::default(),
+        )
+        .unwrap();
+        let (_, _, decision) = decide_survey(&survey, &mnv, &partial);
+        assert!((decision.ambiguity - 0.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_an_unchanged_base_inside_the_mnv_is_not_read() {
+        // The MNV ACG>TCA keeps its middle base, so the reference there proves nothing against it.
+        let mnv = row(105, "ACG", "TCA", 10);
+        let partial = row(105, "A", "T", 1);
+        let read1 = (edited(&[(105, b'T'), (107, b'A')]), quals(&[(107, 20)]));
+        let read2 = (edited(&[(105, b'T'), (107, b'A')]), quals(&[]));
+        let (moved, kept, decision) = decide_pairs_fully(
+            &[(
+                (&read1.0[..], read1.1.clone()),
+                (&read2.0[..], read2.1.clone()),
+            )],
+            &mnv,
+            &partial,
+        );
+        assert_eq!(decision.proven, 1);
+        assert_eq!((moved.alt_depth, kept.alt_depth), (1, 0));
+    }
+
+    #[test]
+    fn test_a_shorter_mnv_under_an_mnv_is_decided_by_the_bases_outside_it() {
+        let mnv = row(105, "ACGT", "TAGA", 10);
+        let sub_mnv = row(105, "AC", "TA", 1);
+        // Read 1 grows through the first two bases and stops at the last, which its mate holds.
+        let read1 = (
+            edited(&[(105, b'T'), (106, b'A'), (108, b'A')]),
+            quals(&[(108, 20)]),
+        );
+        let read2 = (edited(&[(105, b'T'), (106, b'A'), (108, b'A')]), quals(&[]));
+        let (moved, kept, decision) = decide_pairs_fully(
+            &[(
+                (&read1.0[..], read1.1.clone()),
+                (&read2.0[..], read2.1.clone()),
+            )],
+            &mnv,
+            &sub_mnv,
+        );
+        assert_eq!((decision.proven, decision.unmatched), (1, 0));
+        assert_eq!((moved.alt_depth, kept.alt_depth), (1, 0));
+    }
+
+    /// Surveys fragments at 101 with these flag bits added, under these options.
+    fn survey_flagged(bits: &[u16], options: ReadOptions) -> Survey {
+        let mut built = SamBuilder::new().read_length(REFERENCE.len());
+        let mut builder = SamBuilder::new().read_length(REFERENCE.len());
+        for (index, &bits) in bits.iter().enumerate() {
+            let record = built
+                .add_frag(
+                    Frag::at(101)
+                        .name(format!("r{index}"))
+                        .bases(edited(&[(105, b'T')]))
+                        .quals(quals(&[])),
+                )
+                .remove(0);
+            builder.extend([SamBuilder::with_flags(record, bits)]);
+        }
+        survey(builder.to_source(), builder.header(), &window(), options).unwrap()
+    }
+
+    #[rstest]
+    #[case::duplicate(0x400, 0x504, 0)]
+    #[case::qc_fail_counted_by_default(0x200, 0x504, 1)]
+    #[case::qc_fail_excluded(0x200, 0xF00, 0)]
+    #[case::supplementary_skipped_with_any_filter(0x800, 0x504, 0)]
+    #[case::supplementary_counted_without_a_filter(0x800, 0, 1)]
+    fn test_reads_are_left_out_as_vardict_leaves_them_out(
+        #[case] bits: u16,
+        #[case] exclude_flags: u16,
+        #[case] expected: usize,
+    ) {
+        let options = ReadOptions {
+            exclude_flags,
+            ..ReadOptions::default()
+        };
+        assert_eq!(survey_flagged(&[bits], options).reads.len(), expected);
+    }
+
+    #[test]
+    fn test_two_records_of_one_name_are_two_reads() {
+        let mut builder = SamBuilder::new().read_length(REFERENCE.len());
+        builder.add_frag(
+            Frag::at(101)
+                .name("r")
+                .bases(edited(&[(105, b'T')]))
+                .quals(quals(&[])),
+        );
+        builder.add_frag(
+            Frag::at(102)
+                .name("r")
+                .bases(&edited(&[(105, b'T')])[1..])
+                .quals(vec![40; 19])
+                .cigar("19M"),
+        );
+        let survey = survey(
+            builder.to_source(),
+            builder.header(),
+            &window(),
+            ReadOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(survey.reads.len(), 2);
+        assert_eq!(survey.templates.len(), 1);
+    }
+
+    #[rstest]
+    #[case::adjacent(5, 0)]
+    #[case::within_the_gap(6, 0)]
+    #[case::past_the_gap(7, 1)]
+    fn test_an_indel_within_the_gap_of_an_allele_makes_it_complex(
+        #[case] deleted: usize,
+        #[case] expected: usize,
+    ) {
+        // The read carries T at 105 (column 4) and lacks the reference base at `deleted`.
+        let mut bases = edited(&[(105, b'T')]).into_bytes();
+        bases.remove(deleted);
+        bases.push(b'A');
+        let mut builder = SamBuilder::new().read_length(REFERENCE.len());
+        builder.add_frag(
+            Frag::at(101)
+                .bases(String::from_utf8(bases).unwrap())
+                .quals(quals(&[]))
+                .cigar(format!("{deleted}M1D{}M", 20 - deleted)),
+        );
+        let survey = survey(
+            builder.to_source(),
+            builder.header(),
+            &window(),
+            ReadOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(survey.reads[0].indels, vec![deleted]);
+        let found = survey.reads[0].alleles(&window(), ReadOptions::default());
+        assert_eq!(found.len(), expected, "{found:?}");
+    }
+
+    /// Resolves one partial across samples from each sample's classes, given as
+    /// (proven, separate, ambiguous) reads, under MNVs with these reads.
+    fn resolve_classes(samples: &[((i32, i32, i32), i32)]) -> Vec<(i32, i32)> {
+        let options = ReadOptions::default();
+        let mut surveys = Vec::new();
+        let mut partials = Vec::new();
+        let mut mnvs = Vec::new();
+        for &((proven, separate, ambiguous), mnv_reads) in samples {
+            let proven_read = (edited(&[(105, b'T'), (106, b'A')]), quals(&[(106, 20)]));
+            let proven_mate = (edited(&[(105, b'T'), (106, b'A')]), quals(&[]));
+            let separate_read = (edited(&[(105, b'T')]), quals(&[]));
+            let ambiguous_read = (edited(&[(105, b'T'), (106, b'N')]), quals(&[]));
+            let mut pairs: Vec<Mates> = Vec::new();
+            for _ in 0..proven {
+                pairs.push((
+                    (&proven_read.0, proven_read.1.clone()),
+                    (&proven_mate.0, proven_mate.1.clone()),
+                ));
+            }
+            for _ in 0..separate {
+                pairs.push((
+                    (&separate_read.0, separate_read.1.clone()),
+                    (&separate_read.0, separate_read.1.clone()),
+                ));
+            }
+            for _ in 0..ambiguous {
+                pairs.push((
+                    (&ambiguous_read.0, ambiguous_read.1.clone()),
+                    (&ambiguous_read.0, ambiguous_read.1.clone()),
+                ));
+            }
+            let builder = pairs_of(&pairs);
+            surveys
+                .push(survey(builder.to_source(), builder.header(), &window(), options).unwrap());
+            partials.push(row(105, "A", "T", proven + 2 * separate + 2 * ambiguous));
+            mnvs.push(row(105, "AC", "TA", mnv_reads));
+        }
+        let partial_refs: Vec<&TumorOnlyVariant> = partials.iter().collect();
+        let classified: Vec<Classified> = surveys
+            .iter()
+            .zip(&partial_refs)
+            .map(|(survey, partial)| classify(survey, &window(), &mnvs[0], partial, options))
+            .collect();
+        resolve(&classified, &mnvs, &partial_refs, options).1
+    }
+
+    #[test]
+    fn test_a_normal_keeps_its_ambiguous_reads_while_the_tumor_keeps_reads_of_the_row() {
+        // Tumor: one separate template and one ambiguous; normal: one ambiguous template.
+        assert_eq!(
+            resolve_classes(&[((0, 1, 1), 10), ((0, 0, 1), 10)]),
+            vec![(0, 4), (0, 2)]
+        );
+    }
+
+    #[test]
+    fn test_a_normal_moves_its_ambiguous_reads_once_the_tumor_keeps_none() {
+        assert_eq!(
+            resolve_classes(&[((1, 0, 0), 10), ((0, 0, 1), 10)]),
+            vec![(1, 0), (2, 0)]
+        );
+        // A tumor with no reads of the row keeps none either.
+        assert_eq!(
+            resolve_classes(&[((0, 0, 0), 10), ((0, 0, 1), 10)]),
+            vec![(0, 0), (2, 0)]
+        );
+    }
+
+    #[test]
+    fn test_a_separate_read_in_the_normal_keeps_the_tumors_ambiguous_reads() {
+        assert_eq!(
+            resolve_classes(&[((0, 0, 2), 10), ((0, 1, 0), 10)]),
+            vec![(0, 4), (0, 2)]
+        );
+    }
+
+    #[test]
+    fn test_a_proven_molecule_in_the_normal_moves_whatever_the_tumor_keeps() {
+        assert_eq!(
+            resolve_classes(&[((0, 1, 0), 10), ((1, 0, 0), 10)]),
+            vec![(0, 2), (1, 0)]
+        );
     }
 
     #[rstest]
