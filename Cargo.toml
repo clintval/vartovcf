@@ -33,6 +33,7 @@ clap = { version = "4.6.7", features = ["derive"] }
 csv = "1.4.0"
 env_logger = "0.11.11"
 log = "0.4.34"
+noodles = { version = "0.116.0", features = ["bgzf"] }
 proglog = "0.4.0"
 rust-htslib = "1.0.1"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -43,7 +44,7 @@ tempfile = "3.27.0"
 [dev-dependencies]
 assert_cmd = "2.2.2"
 file_diff = "1.0.0"
-noodles = { version = "0.116.0", features = ["vcf"] }
+noodles = { version = "0.116.0", features = ["fasta", "vcf"] }
 pretty_assertions = "1.4.1"
 rstest = "0.27.0"
 
