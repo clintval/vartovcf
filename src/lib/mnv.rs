@@ -10,16 +10,15 @@
 //! A partial row is folded when its reads are plausible leakage from the MNV. Each read of an MNV
 //! molecule lands in any one partial row with a small probability, the leak rate, which depends on
 //! the library: read length, fragment size, base-quality and no-call rates. A partial with `c` reads
-//! under an MNV with `n` is then a draw from a binomial over the `n + c` molecules observed, and it
-//! is folded when `c` is within that binomial's upper [`LEAK_TAIL`] at [`LeakRate`], and smaller
-//! than `n`: a row with at least as many reads as the MNV is a separate allele, or the MNV's own
-//! reads counted again, whatever the rate.
+//! under an MNV with `n` is then a draw from a binomial over the `n + c` reads, and it is folded
+//! when `c < n` and `P(X >= c) >= LEAK_TAIL` at [`LeakRate`]. A row with at least as many reads as
+//! the MNV is a separate allele, or the MNV's reads counted again, at any rate.
 
 use rust_htslib::bcf::record::Numeric;
 
 use crate::record::TumorOnlyVariant;
 
-/// The upper tail of the leak binomial a partial's reads may fall in and still be folded.
+/// The least `P(X >= c)` a partial's `c` reads may have under the leak binomial and still be folded.
 pub const LEAK_TAIL: f64 = 0.05;
 
 /// The probability that a read of an MNV molecule is counted toward any one partial row.
@@ -53,8 +52,8 @@ impl LeakRate {
     }
 
     /// Whether an MNV with `mnv_reads` ALT reads explains a partial with `partial_reads` as leakage:
-    /// the partial has fewer reads than the MNV, and at least as many are leaked from the `mnv_reads
-    /// + partial_reads` molecules with probability [`LEAK_TAIL`] or more.
+    /// `partial_reads < mnv_reads` and `P(X >= partial_reads) >= LEAK_TAIL` for
+    /// `X ~ Binomial(mnv_reads + partial_reads, rate)`.
     pub fn explains(self, mnv_reads: i32, partial_reads: i32) -> bool {
         partial_reads < mnv_reads
             && binomial_upper_tail(
@@ -85,7 +84,8 @@ impl LeakRate {
     }
 }
 
-/// `P(X >= successes)` for `X ~ Binomial(trials, p)`, as 1 minus the lower tail summed in log space.
+/// `P(X >= successes)` for `X ~ Binomial(trials, p)`: 1 minus the lower tail, each term computed in
+/// log space.
 fn binomial_upper_tail(trials: i64, successes: i64, p: f64) -> f64 {
     if successes <= 0 {
         return 1.0;
@@ -130,18 +130,24 @@ pub struct Merged<'a> {
 /// A row takes part when it is a substitution (an SNV or an MNV) with ALT reads in some sample. A
 /// child is a sub-event of a parent when it lies within the parent's span and its ALT bases equal
 /// the parent's over that span, so it changes no base the parent does not and changes the bases it
-/// covers as the parent does; it can claim the child when, in every sample with reads of the child,
-/// its own reads explain the child's as leakage at `leak_rate`. Each test uses the parent's own
-/// reads, not those of the children it took, so a child's fate depends only on its counts and the
-/// parent's, not on the order the rows are visited in. Rows are visited from the most to the least
-/// supported, and an MNV row no earlier root can claim is a root itself; a row a root claims is
-/// never a root, as every sub-event of it is a sub-event of that root. A row that several roots can
-/// claim goes to the one that needs the fewest breaks to leave it, one for each end of the child
-/// inside the root's span, since every break is a rare event in a read; then to the root with the
-/// most ALT reads. A child starting at the root's first base is folded only while the root's ALT
-/// reads and those of the children it took there fit in that base's DP, as VarDict counts each
-/// read's base there once. A row marked `written`, already written for an earlier region, can be a
-/// root but is never claimed.
+/// covers as the parent does. A parent can claim a child when, in every sample with reads of the
+/// child, its own reads explain the child's as leakage at `leak_rate`; the test uses only the
+/// parent's own reads, not those of the children it took.
+///
+/// Rows are visited from the most to the least supported: by ALT reads summed over the samples,
+/// then the longer row, the earlier start and the ALT allele, so the fold does not depend on the
+/// order VarDict wrote the rows in. An MNV row that no root takes becomes a root, including one a
+/// root could claim but has no DP room for at its first base; an SNV no root takes is written as it
+/// is. A row that several roots can claim goes to the one that needs the fewest breaks to leave it,
+/// one for each end of the child inside the root's span, since every break is a rare event in a
+/// read; then to the root visited first, the one with the most ALT reads.
+///
+/// A child starting at a root's first base is taken only while the root's ALT reads and those of
+/// the children it took there fit in that base's DP, as VarDict counts each read's base there once;
+/// otherwise it goes to the next root that can claim it, so what happens to it depends on the
+/// siblings visited before it. A row marked `written`, already written for an earlier region, can
+/// be a root but is never claimed; a child such a root takes is folded into a record that is not
+/// written again, so it is dropped.
 pub fn fold_partials<'a>(
     rows: &[&[TumorOnlyVariant<'a>]],
     written: &[bool],
@@ -669,7 +675,7 @@ mod tests {
     }
 
     #[test]
-    fn test_a_partial_is_tested_against_the_roots_own_reads_whatever_it_took() {
+    fn test_partials_do_not_share_a_leak_budget() {
         let folds = fold(&[
             call(10, "GGG", "CAT", 100, 200),
             call(10, "GG", "CA", 6, 200),
