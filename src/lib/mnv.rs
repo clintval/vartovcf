@@ -162,6 +162,7 @@ pub fn fold_partials<'a>(
             -reads,
             -(rows[row][0].ref_allele.len() as i64),
             rows[row][0].start,
+            rows[row][0].alt_allele,
             row,
         )
     });
@@ -776,6 +777,18 @@ mod tests {
         let forward = fold(&rows);
         let backward = fold(&reversed);
         assert_eq!(merged(&forward, 0), merged(&backward, 3));
+    }
+
+    #[test]
+    fn test_two_mnvs_tied_on_reads_take_a_partial_in_alt_allele_order_whatever_the_input_order() {
+        let rows = [
+            call(10, "GG", "CT", 50, 200),
+            call(10, "GG", "CA", 50, 200),
+            call(10, "G", "C", 2, 200),
+        ];
+        let swapped = [rows[1].clone(), rows[0].clone(), rows[2].clone()];
+        assert_eq!(targets(&fold(&rows)), vec![None, None, Some(1)]);
+        assert_eq!(targets(&fold(&swapped)), vec![None, None, Some(0)]);
     }
 
     #[test]
