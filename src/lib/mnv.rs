@@ -36,13 +36,13 @@ impl Default for LeakRate {
 }
 
 impl LeakRate {
-    /// A leak rate, which must be above 0 and below 0.5.
+    /// A leak rate, which must be at least 0.001 and below 0.5.
     pub fn new(rate: f64) -> Result<Self, String> {
-        if rate > 0.0 && rate < 0.5 {
+        if (0.001..0.5).contains(&rate) {
             Ok(LeakRate(rate))
         } else {
             Err(format!(
-                "The leak rate must be above 0 and below 0.5, not {rate}!"
+                "The leak rate must be at least 0.001 and below 0.5, not {rate}!"
             ))
         }
     }
@@ -72,11 +72,24 @@ impl LeakRate {
             .unwrap_or(0)
     }
 
-    /// The fewest reads an MNV needs to explain a partial with `partial_reads`.
+    /// The fewest reads an MNV needs to explain a partial with `partial_reads`, found by bisection,
+    /// as more MNV reads never stop explaining a partial.
     pub fn fewest_mnv_reads(self, partial_reads: i32) -> i32 {
-        (partial_reads + 1..)
-            .find(|&reads| self.explains(reads, partial_reads))
-            .expect("some count of MNV reads explains any partial")
+        let mut low = partial_reads;
+        let mut high = partial_reads + 1;
+        while !self.explains(high, partial_reads) {
+            low = high;
+            high = high.saturating_mul(2);
+        }
+        while high - low > 1 {
+            let middle = low + (high - low) / 2;
+            if self.explains(middle, partial_reads) {
+                high = middle;
+            } else {
+                low = middle;
+            }
+        }
+        high
     }
 }
 
@@ -617,11 +630,31 @@ mod tests {
     #[rstest]
     #[case(0.0)]
     #[case(-0.1)]
+    #[case(0.0009)]
     #[case(0.5)]
     #[case(1.0)]
     #[case(f64::NAN)]
-    fn test_a_leak_rate_outside_the_open_interval_is_refused(#[case] rate: f64) {
+    fn test_a_leak_rate_below_the_floor_or_at_the_ceiling_is_refused(#[case] rate: f64) {
         assert!(LeakRate::new(rate).is_err());
+    }
+
+    #[rstest]
+    #[case(0.001)]
+    #[case(0.05)]
+    #[case(0.49)]
+    fn test_the_fewest_mnv_reads_is_where_a_count_up_first_explains_the_partial(#[case] rate: f64) {
+        let rate = LeakRate::new(rate).unwrap();
+        for partial_reads in [1, 2, 5, 10] {
+            let fewest = rate.fewest_mnv_reads(partial_reads);
+            assert!(rate.explains(fewest, partial_reads));
+            assert!(!rate.explains(fewest - 1, partial_reads));
+            if rate.value() > 0.01 {
+                let counted = (partial_reads + 1..)
+                    .find(|&reads| rate.explains(reads, partial_reads))
+                    .unwrap();
+                assert_eq!(fewest, counted);
+            }
+        }
     }
 
     #[test]
