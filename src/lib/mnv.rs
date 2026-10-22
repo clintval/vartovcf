@@ -13,9 +13,18 @@
 //! under an MNV with `n` is then a draw from a binomial over the `n + c` reads, and it is folded
 //! when `c < n` and `P(X >= c) >= LEAK_TAIL` at [`LeakRate`]. A row with at least as many reads as
 //! the MNV is a separate allele, or the MNV's reads counted again, at any rate.
+//!
+//! With the reads VarDict counted, the partial's own reads decide instead ([`Rule::Reads`]): each
+//! read's template is followed to the MNV's other changed bases, as [`crate::reads`] does, and the
+//! reads that are the MNV's molecules, or consistent with leakage, move to the MNV while the reads
+//! of another allele stay on the partial, which is then written with only them.
+
+use std::collections::HashMap;
+use std::path::PathBuf;
 
 use rust_htslib::bcf::record::Numeric;
 
+use crate::reads::ReadOptions;
 use crate::record::TumorOnlyVariant;
 
 /// The least `P(X >= c)` a partial's `c` reads may have under the leak binomial and still be folded.
@@ -103,6 +112,44 @@ fn binomial_upper_tail(trials: i64, successes: i64, p: f64) -> f64 {
     (1.0 - lower).max(0.0)
 }
 
+/// How the partial rows of a region are folded: by their counts, or by their reads.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LeakyMnvFix {
+    /// Fold a partial whose reads are plausible leakage at this rate.
+    Counts(LeakRate),
+    /// Fold the reads of a partial that the BAMs VarDict read show to be the MNV's molecules or
+    /// consistent with leakage, one BAM per sample.
+    Reads {
+        /// The indexed BAMs, the tumor (or only) sample's first.
+        bams: Vec<PathBuf>,
+        /// How VarDict read them.
+        options: ReadOptions,
+    },
+}
+
+/// What the reads say about a partial row under an MNV, per sample, the tumor (or only) sample
+/// first: a call holding the partial's reads that go to the MNV, and one holding the reads that
+/// stay.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReadFate<'a> {
+    /// The reads that are the MNV's molecules or consistent with leakage, as a call of the partial.
+    pub moved: Vec<TumorOnlyVariant<'a>>,
+    /// The reads of another allele, as a call of the partial.
+    pub kept: Vec<TumorOnlyVariant<'a>>,
+}
+
+/// The read fates of a region's rows, keyed by (MNV row, partial row).
+pub type ReadFates<'a> = HashMap<(usize, usize), ReadFate<'a>>;
+
+/// How a partial row is told from a separate allele.
+#[derive(Clone, Copy, Debug)]
+pub enum Rule<'r, 'a> {
+    /// By its reads' count against the MNV's, at this leak rate.
+    Counts(LeakRate),
+    /// By what its reads' templates hold at the MNV's other changed bases.
+    Reads(&'r ReadFates<'a>),
+}
+
 /// How a row is written once the partial rows of its region are folded.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Fold<'a> {
@@ -110,6 +157,17 @@ pub enum Fold<'a> {
     Keep,
     /// The row is a partial of the row at this index and is not written.
     Into(usize),
+    /// The row is a partial of the row at this index that kept some reads: it is written with
+    /// these calls, one per sample, holding the reads that stayed, and `moved` reads per sample
+    /// went to the MNV.
+    Split {
+        /// The MNV row the reads went to.
+        into: usize,
+        /// The row's calls holding the reads that stayed, one per sample.
+        calls: Vec<TumorOnlyVariant<'a>>,
+        /// The reads that went to the MNV, one count per sample.
+        moved: Vec<i32>,
+    },
     /// The row is an MNV that absorbed partial rows, written with these calls, one per sample.
     Merged(Merged<'a>),
 }
@@ -130,9 +188,12 @@ pub struct Merged<'a> {
 /// A row takes part when it is a substitution (an SNV or an MNV) with ALT reads in some sample. A
 /// child is a sub-event of a parent when it lies within the parent's span and its ALT bases equal
 /// the parent's over that span, so it changes no base the parent does not and changes the bases it
-/// covers as the parent does. A parent can claim a child when, in every sample with reads of the
-/// child, its own reads explain the child's as leakage at `leak_rate`; the test uses only the
-/// parent's own reads, not those of the children it took.
+/// covers as the parent does. By counts, a parent can claim a child when, in every sample with
+/// reads of the child, its own reads explain the child's as leakage at the leak rate; the test uses
+/// only the parent's own reads, not those of the children it took, and a claimed child is folded
+/// whole. By reads, a parent can claim a child when some sample moves at least one of the child's
+/// reads to it; the child is folded whole when every sample moves every read, and is otherwise
+/// written with the reads that stayed.
 ///
 /// Rows are visited from the most to the least supported: by ALT reads summed over the samples,
 /// then the longer row, the earlier start and the ALT allele, so the fold does not depend on the
@@ -151,7 +212,7 @@ pub struct Merged<'a> {
 pub fn fold_partials<'a>(
     rows: &[&[TumorOnlyVariant<'a>]],
     written: &[bool],
-    leak_rate: LeakRate,
+    rule: Rule<'_, 'a>,
 ) -> Vec<Fold<'a>> {
     let mut folds = vec![Fold::Keep; rows.len()];
     let mut nodes: Vec<usize> = (0..rows.len())
@@ -174,11 +235,14 @@ pub fn fold_partials<'a>(
     });
     let mut roots: Vec<Root> = Vec::new();
     for &node in &nodes {
-        let mut candidates: Vec<(usize, usize)> = roots
+        let mut candidates: Vec<(usize, usize, Vec<TumorOnlyVariant<'a>>)> = roots
             .iter()
             .enumerate()
-            .filter(|(_, root)| !written[node] && can_claim(rows[root.row], rows[node], leak_rate))
-            .map(|(rank, root)| (breaks(&rows[root.row][0], &rows[node][0]), rank))
+            .filter(|_| !written[node])
+            .filter_map(|(rank, root)| {
+                claimed(rule, rows, root.row, node)
+                    .map(|claimed| (breaks(&rows[root.row][0], &rows[node][0]), rank, claimed))
+            })
             .collect();
         if candidates.is_empty() {
             if rows[node][0].ref_allele.len() > 1 {
@@ -186,36 +250,81 @@ pub fn fold_partials<'a>(
             }
             continue;
         }
-        candidates.sort_unstable();
-        if let Some(&(_, rank)) = candidates
-            .iter()
-            .find(|(_, rank)| roots[*rank].admits(rows, node))
-        {
-            roots[rank].take(rows, node);
+        candidates.sort_by_key(|(breaks, rank, _)| (*breaks, *rank));
+        let taker = candidates
+            .into_iter()
+            .find(|(_, rank, claimed)| roots[*rank].admits(rows, node, claimed));
+        if let Some((_, rank, claimed)) = taker {
+            roots[rank].take(rows, node, claimed);
         } else if rows[node][0].ref_allele.len() > 1 {
             roots.push(Root::new(node, rows[node]));
         }
     }
     for root in roots.iter_mut().filter(|root| !root.children.is_empty()) {
-        root.children.sort_unstable();
-        for &child in &root.children {
-            folds[child] = Fold::Into(root.row);
+        root.children.sort_by_key(|(child, _)| *child);
+        for (child, claimed) in &root.children {
+            folds[*child] = match rule {
+                Rule::Counts(_) => Fold::Into(root.row),
+                Rule::Reads(fates) => {
+                    let kept = &fates[&(root.row, *child)].kept;
+                    if kept.iter().all(|call| call.alt_depth == 0) {
+                        Fold::Into(root.row)
+                    } else {
+                        Fold::Split {
+                            into: root.row,
+                            calls: kept.clone(),
+                            moved: claimed.iter().map(|call| call.alt_depth).collect(),
+                        }
+                    }
+                }
+            };
         }
-        let children: Vec<&[TumorOnlyVariant<'a>]> =
-            root.children.iter().map(|&child| rows[child]).collect();
+        let children: Vec<&[TumorOnlyVariant<'a>]> = root
+            .children
+            .iter()
+            .map(|(_, claimed)| claimed.as_slice())
+            .collect();
         folds[root.row] = Fold::Merged(merge(rows[root.row], &children));
     }
     folds
 }
 
-/// An MNV row that partial rows fold into, with the ALT reads it holds at its first base.
-struct Root {
+/// The calls of a child's reads a parent row claims, one per sample, or `None` when it claims
+/// none: by counts, the child is the parent's sub-event and, in every sample with reads of the
+/// child, the parent's reads explain them as leakage, and every read is claimed; by reads, some
+/// sample moves a read of the child to the parent, and the moved reads are claimed.
+fn claimed<'a>(
+    rule: Rule<'_, 'a>,
+    rows: &[&[TumorOnlyVariant<'a>]],
+    parent: usize,
+    child: usize,
+) -> Option<Vec<TumorOnlyVariant<'a>>> {
+    let (parent_calls, child_calls) = (rows[parent], rows[child]);
+    match rule {
+        Rule::Counts(leak_rate) => {
+            let explained = is_sub_event(&parent_calls[0], &child_calls[0])
+                && parent_calls
+                    .iter()
+                    .zip(child_calls)
+                    .all(|(p, c)| c.alt_depth <= 0 || leak_rate.explains(p.alt_depth, c.alt_depth));
+            explained.then(|| child_calls.to_vec())
+        }
+        Rule::Reads(fates) => fates
+            .get(&(parent, child))
+            .filter(|fate| fate.moved.iter().any(|call| call.alt_depth > 0))
+            .map(|fate| fate.moved.clone()),
+    }
+}
+
+/// An MNV row that partial rows fold into, with the ALT reads it holds at its first base and the
+/// calls it claimed of each child.
+struct Root<'a> {
     row: usize,
-    children: Vec<usize>,
+    children: Vec<(usize, Vec<TumorOnlyVariant<'a>>)>,
     first_base_reads: Vec<i64>,
 }
 
-impl Root {
+impl<'a> Root<'a> {
     /// A root without children yet.
     fn new(row: usize, calls: &[TumorOnlyVariant]) -> Self {
         Root {
@@ -225,38 +334,39 @@ impl Root {
         }
     }
 
-    /// Whether a child's reads fit beside this root's: always for a child starting after the root's
-    /// first base, and otherwise only while every sample's ALT reads at that base stay within its DP.
-    fn admits(&self, rows: &[&[TumorOnlyVariant]], child: usize) -> bool {
+    /// Whether a child's claimed reads fit beside this root's: always for a child starting after the
+    /// root's first base, and otherwise only while every sample's ALT reads at that base stay within
+    /// its DP.
+    fn admits(
+        &self,
+        rows: &[&[TumorOnlyVariant]],
+        child: usize,
+        claimed: &[TumorOnlyVariant],
+    ) -> bool {
         rows[child][0].start != rows[self.row][0].start
             || rows[self.row]
                 .iter()
-                .zip(rows[child])
+                .zip(claimed)
                 .zip(&self.first_base_reads)
                 .all(|((root, call), &reads)| {
                     call.alt_depth == 0 || reads + call.alt_depth as i64 <= root.depth as i64
                 })
     }
 
-    /// Takes a child into this root.
-    fn take(&mut self, rows: &[&[TumorOnlyVariant]], child: usize) {
+    /// Takes a child's claimed reads into this root.
+    fn take(
+        &mut self,
+        rows: &[&[TumorOnlyVariant]],
+        child: usize,
+        claimed: Vec<TumorOnlyVariant<'a>>,
+    ) {
         if rows[child][0].start == rows[self.row][0].start {
-            for (reads, call) in self.first_base_reads.iter_mut().zip(rows[child]) {
+            for (reads, call) in self.first_base_reads.iter_mut().zip(&claimed) {
                 *reads += call.alt_depth as i64;
             }
         }
-        self.children.push(child);
+        self.children.push((child, claimed));
     }
-}
-
-/// Whether a parent row can claim a child row: the child is its sub-event and, in every sample with
-/// reads of the child, the parent's reads explain them as leakage.
-fn can_claim(parent: &[TumorOnlyVariant], child: &[TumorOnlyVariant], leak_rate: LeakRate) -> bool {
-    is_sub_event(&parent[0], &child[0])
-        && parent
-            .iter()
-            .zip(child)
-            .all(|(p, c)| c.alt_depth <= 0 || leak_rate.explains(p.alt_depth, c.alt_depth))
 }
 
 /// The breaks a read of `parent` needs to leave only `child`: one for each end of the child that
@@ -266,7 +376,7 @@ fn breaks(parent: &TumorOnlyVariant, child: &TumorOnlyVariant) -> usize {
 }
 
 /// Whether a call is a substitution of one or more bases with a simple ALT allele.
-fn is_substitution(call: &TumorOnlyVariant) -> bool {
+pub(crate) fn is_substitution(call: &TumorOnlyVariant) -> bool {
     call.ref_allele.len() == call.alt_allele.len()
         && call.ref_allele != call.alt_allele
         && call
@@ -276,7 +386,7 @@ fn is_substitution(call: &TumorOnlyVariant) -> bool {
 }
 
 /// Whether `child` lies within `parent`'s span and carries `parent`'s ALT bases over its own span.
-fn is_sub_event(parent: &TumorOnlyVariant, child: &TumorOnlyVariant) -> bool {
+pub(crate) fn is_sub_event(parent: &TumorOnlyVariant, child: &TumorOnlyVariant) -> bool {
     if child.ref_allele.len() >= parent.ref_allele.len() || child.start < parent.start {
         return false;
     }
@@ -433,7 +543,11 @@ mod tests {
     /// Folds tumor-only rows.
     fn fold(rows: &[TumorOnlyVariant<'static>]) -> Vec<Fold<'static>> {
         let rows: Vec<&[TumorOnlyVariant]> = rows.iter().map(std::slice::from_ref).collect();
-        fold_partials(&rows, &vec![false; rows.len()], LeakRate::default())
+        fold_partials(
+            &rows,
+            &vec![false; rows.len()],
+            Rule::Counts(LeakRate::default()),
+        )
     }
 
     /// The rows each row folds into, `None` for a row that is written.
@@ -668,8 +782,16 @@ mod tests {
     fn test_a_higher_leak_rate_folds_more_reads() {
         let rows = [call(10, "GG", "CA", 100, 200), call(10, "G", "C", 9, 200)];
         let calls: Vec<&[TumorOnlyVariant]> = rows.iter().map(std::slice::from_ref).collect();
-        let strict = fold_partials(&calls, &[false, false], LeakRate::new(0.03).unwrap());
-        let loose = fold_partials(&calls, &[false, false], LeakRate::new(0.05).unwrap());
+        let strict = fold_partials(
+            &calls,
+            &[false, false],
+            Rule::Counts(LeakRate::new(0.03).unwrap()),
+        );
+        let loose = fold_partials(
+            &calls,
+            &[false, false],
+            Rule::Counts(LeakRate::new(0.05).unwrap()),
+        );
         assert_eq!(targets(&strict), vec![None, None]);
         assert_eq!(targets(&loose), vec![None, Some(0)]);
     }
@@ -805,9 +927,17 @@ mod tests {
             call(11, "G", "A", 4, 205),
         ];
         let calls: Vec<&[TumorOnlyVariant]> = rows.iter().map(std::slice::from_ref).collect();
-        let folds = fold_partials(&calls, &[false, true, false], LeakRate::default());
+        let folds = fold_partials(
+            &calls,
+            &[false, true, false],
+            Rule::Counts(LeakRate::default()),
+        );
         assert_eq!(targets(&folds), vec![None, None, Some(0)]);
-        let folds = fold_partials(&calls, &[true, false, false], LeakRate::default());
+        let folds = fold_partials(
+            &calls,
+            &[true, false, false],
+            Rule::Counts(LeakRate::default()),
+        );
         assert_eq!(targets(&folds), vec![None, Some(0), Some(0)]);
     }
 
@@ -881,7 +1011,11 @@ mod tests {
     /// Folds tumor-normal rows given as (tumor, normal) pairs.
     fn fold_pairs(rows: &[[TumorOnlyVariant<'static>; 2]]) -> Vec<Fold<'static>> {
         let rows: Vec<&[TumorOnlyVariant]> = rows.iter().map(|row| &row[..]).collect();
-        fold_partials(&rows, &vec![false; rows.len()], LeakRate::default())
+        fold_partials(
+            &rows,
+            &vec![false; rows.len()],
+            Rule::Counts(LeakRate::default()),
+        )
     }
 
     #[test]
@@ -920,5 +1054,148 @@ mod tests {
             [call(10, "G", "C", 4, 200), call(10, "G", "C", 0, 100)],
         ]);
         assert_eq!(targets(&folds), vec![None, Some(0)]);
+    }
+
+    /// A fate of one sample: `moved` and `kept` reads of a row's call.
+    fn fate(row: &TumorOnlyVariant<'static>, moved: i32, kept: i32) -> ReadFate<'static> {
+        let with = |reads: i32| TumorOnlyVariant {
+            alt_depth: reads,
+            alt_forward: reads,
+            alt_reverse: 0,
+            high_quality_variant_reads: reads,
+            ..row.clone()
+        };
+        ReadFate {
+            moved: vec![with(moved)],
+            kept: vec![with(kept)],
+        }
+    }
+
+    /// Folds tumor-only rows by read fates keyed by (MNV row, partial row).
+    fn fold_by_reads(
+        rows: &[TumorOnlyVariant<'static>],
+        fates: &[((usize, usize), ReadFate<'static>)],
+    ) -> Vec<Fold<'static>> {
+        let rows: Vec<&[TumorOnlyVariant]> = rows.iter().map(std::slice::from_ref).collect();
+        let fates: ReadFates = fates.iter().cloned().collect();
+        fold_partials(&rows, &vec![false; rows.len()], Rule::Reads(&fates))
+    }
+
+    #[test]
+    fn test_by_reads_a_partial_whose_every_read_moves_is_folded_whole() {
+        let rows = [call(10, "GG", "CA", 20, 200), call(10, "G", "C", 15, 200)];
+        let folds = fold_by_reads(&rows, &[((0, 1), fate(&rows[1], 15, 0))]);
+        assert_eq!(targets(&folds), vec![None, Some(0)]);
+        let merged = merged(&folds, 0);
+        assert_eq!(
+            (merged.calls[0].alt_depth, merged.calls[0].depth),
+            (35, 200)
+        );
+        assert_eq!(merged.partial_reads, vec![15]);
+    }
+
+    #[test]
+    fn test_by_reads_a_partial_that_keeps_reads_is_written_with_them() {
+        let rows = [call(10, "GG", "CA", 100, 200), call(11, "G", "A", 5, 210)];
+        let folds = fold_by_reads(&rows, &[((0, 1), fate(&rows[1], 2, 3))]);
+        match &folds[1] {
+            Fold::Split { into, calls, moved } => {
+                assert_eq!((*into, moved), (0, &vec![2]));
+                assert_eq!((calls[0].alt_depth, calls[0].depth), (3, 210));
+            }
+            other => panic!("not split: {other:?}"),
+        }
+        let merged = merged(&folds, 0);
+        assert_eq!(
+            (merged.calls[0].alt_depth, merged.calls[0].depth),
+            (102, 202)
+        );
+        assert_eq!(
+            (merged.partials, merged.partial_reads.clone()),
+            (1, vec![2])
+        );
+    }
+
+    #[test]
+    fn test_by_reads_a_partial_with_no_read_moving_is_kept_and_claims_nothing() {
+        let rows = [call(10, "GG", "CA", 100, 200), call(10, "G", "C", 2, 200)];
+        let folds = fold_by_reads(&rows, &[((0, 1), fate(&rows[1], 0, 2))]);
+        assert_eq!(folds, vec![Fold::Keep, Fold::Keep]);
+    }
+
+    #[test]
+    fn test_by_reads_the_count_rule_does_not_apply() {
+        // Counts would refuse 40 reads under 100, and would fold 1 read under 100.
+        let rows = [
+            call(10, "GG", "CA", 100, 200),
+            call(10, "G", "C", 40, 200),
+            call(11, "G", "A", 1, 201),
+        ];
+        let folds = fold_by_reads(
+            &rows,
+            &[
+                ((0, 1), fate(&rows[1], 40, 0)),
+                ((0, 2), fate(&rows[2], 0, 1)),
+            ],
+        );
+        assert_eq!(targets(&folds), vec![None, Some(0), None]);
+        assert_eq!(folds[2], Fold::Keep);
+    }
+
+    #[test]
+    fn test_by_reads_a_partial_at_the_first_base_fits_in_dp_with_its_moved_reads() {
+        let rows = [call(10, "GG", "CA", 100, 103), call(10, "G", "C", 5, 103)];
+        let fits = fold_by_reads(&rows, &[((0, 1), fate(&rows[1], 3, 2))]);
+        assert!(matches!(fits[1], Fold::Split { .. }));
+        let overflows = fold_by_reads(&rows, &[((0, 1), fate(&rows[1], 4, 1))]);
+        assert_eq!(overflows, vec![Fold::Keep, Fold::Keep]);
+    }
+
+    #[test]
+    fn test_by_reads_a_tumor_normal_partial_is_folded_whole_only_when_both_samples_move_every_read()
+    {
+        let rows: Vec<[TumorOnlyVariant; 2]> = vec![
+            [
+                call(10, "GG", "CA", 100, 200),
+                call(10, "GG", "CA", 50, 100),
+            ],
+            [call(11, "G", "A", 4, 210), call(11, "G", "A", 2, 105)],
+        ];
+        let calls: Vec<&[TumorOnlyVariant]> = rows.iter().map(|row| &row[..]).collect();
+        let fates = |normal_moved: i32, normal_kept: i32| {
+            let tumor = fate(&rows[1][0], 4, 0);
+            let normal = fate(&rows[1][1], normal_moved, normal_kept);
+            ReadFates::from([(
+                (0usize, 1usize),
+                ReadFate {
+                    moved: vec![tumor.moved[0].clone(), normal.moved[0].clone()],
+                    kept: vec![tumor.kept[0].clone(), normal.kept[0].clone()],
+                },
+            )])
+        };
+        let whole = fold_partials(&calls, &[false, false], Rule::Reads(&fates(2, 0)));
+        assert_eq!(targets(&whole), vec![None, Some(0)]);
+        assert_eq!(merged(&whole, 0).partial_reads, vec![4, 2]);
+        let split = fold_partials(&calls, &[false, false], Rule::Reads(&fates(0, 2)));
+        match &split[1] {
+            Fold::Split { calls, moved, .. } => {
+                assert_eq!(moved, &vec![4, 0]);
+                assert_eq!(
+                    calls.iter().map(|call| call.alt_depth).collect::<Vec<_>>(),
+                    vec![0, 2]
+                );
+            }
+            other => panic!("not split: {other:?}"),
+        }
+        assert_eq!(merged(&split, 0).partial_reads, vec![4, 0]);
+    }
+
+    #[test]
+    fn test_by_reads_a_row_written_before_is_not_claimed() {
+        let rows = [call(10, "GG", "CA", 100, 200), call(10, "G", "C", 5, 200)];
+        let calls: Vec<&[TumorOnlyVariant]> = rows.iter().map(std::slice::from_ref).collect();
+        let fates = ReadFates::from([((0usize, 1usize), fate(&rows[1], 5, 0))]);
+        let folds = fold_partials(&calls, &[false, true], Rule::Reads(&fates));
+        assert_eq!(folds, vec![Fold::Keep, Fold::Keep]);
     }
 }
