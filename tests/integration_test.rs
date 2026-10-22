@@ -539,7 +539,7 @@ mod tests {
         "tests/calls.leaky-mnv.partial-first.var",
         vec!["chr1 1100 G C 300,5", "chr1 1100 GG CA .,101"]
     )]
-    #[case::partial_folded_by_an_earlier_region(
+    #[case::partial_taken_by_an_mnv_an_earlier_region_wrote_is_dropped(
         "tests/calls.leaky-mnv.three-regions.var",
         vec!["chr1 1100 GG CA .,100"]
     )]
