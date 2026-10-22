@@ -7,8 +7,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use csv::ReaderBuilder;
-use rust_htslib::bcf::Header;
 use serde::{Deserialize, Serialize};
+
+use crate::vcf::Header;
 
 /// A FASTA FAI index record.
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -42,7 +43,7 @@ pub fn fai_file<I: AsRef<Path> + Debug>(fasta: I) -> PathBuf {
 /// Add a collection of VCF contig header records to the supplied VCF header.
 pub fn contigs_to_vcf_header(contigs: &[String], header: &mut Header) {
     for contig in contigs.iter() {
-        header.push_record(contig.as_bytes());
+        header.push_record(contig);
     }
 }
 
@@ -92,7 +93,7 @@ where
     I: AsRef<Path> + Debug,
 {
     match fasta.as_ref().to_str() {
-        Some(path) => header.push_record(format!("##reference={path}").as_bytes()),
+        Some(path) => header.push_record(&format!("##reference={path}")),
         None => return Err("Could not create a string out of the FASTA path".into()),
     };
     Ok(())
@@ -103,13 +104,24 @@ mod tests {
     use std::io::Write;
 
     use anyhow::Result;
+    use noodles::vcf;
+    use noodles::vcf::header::record::value::Collection;
+    use noodles::vcf::header::record::value::map::{Contig, Map};
     use pretty_assertions::assert_eq;
     use rstest::*;
-    use rust_htslib::bcf::{Format, HeaderRecord, Read};
-    use rust_htslib::bcf::{Reader as VcfReader, Writer as VcfWriter};
     use tempfile::NamedTempFile;
 
     use super::*;
+
+    /// Writes a header to a file and reads it back.
+    fn read_back(header: &Header, file: &NamedTempFile) -> vcf::Header {
+        std::fs::write(file.path(), header.to_bytes()).unwrap();
+        vcf::io::reader::Builder::default()
+            .build_from_path(file.path())
+            .expect("Error opening tempfile!")
+            .read_header()
+            .unwrap()
+    }
 
     #[test]
     fn test_fai_to_vcf_contig_record() {
@@ -185,20 +197,12 @@ mod tests {
         contigs_to_vcf_header(&actual, &mut header);
 
         let file = NamedTempFile::new().expect("Cannot create temporary file!");
-        let _ = VcfWriter::from_path(file.path(), &header, true, Format::Vcf).unwrap();
-        let reader = VcfReader::from_path(file.path()).expect("Error opening tempfile!");
-        let records = reader.header().header_records();
+        let header = read_back(&header, &file);
+        let records = header.contigs();
 
-        fn header_record_matches_contig(record: &HeaderRecord, line: &str) -> bool {
-            match record {
-                HeaderRecord::Contig { key, values } => {
-                    line == format!(
-                        "##{}=<ID={},length={}>",
-                        key, values["ID"], values["length"]
-                    )
-                }
-                _ => false,
-            }
+        fn header_record_matches_contig(record: (&String, &Map<Contig>), line: &str) -> bool {
+            let (id, contig) = record;
+            line == format!("##contig=<ID={},length={}>", id, contig.length().unwrap())
         }
 
         let value = contig_header_lines.iter().all(|contig| {
@@ -217,13 +221,13 @@ mod tests {
             .expect("Could not add the FASTA file path to the VCF header!");
 
         let file = NamedTempFile::new().expect("Cannot create temporary file!");
-        let _ = VcfWriter::from_path(file.path(), &header, true, Format::Vcf).unwrap();
-        let reader = VcfReader::from_path(file.path()).expect("Error opening tempfile!");
-        let records = reader.header().header_records();
+        let header = read_back(&header, &file);
+        let records = header.other_records();
 
         let test = records.iter().any(|rec| match rec {
-            HeaderRecord::Generic { key, value } => {
-                key == "reference" && value == "/references/hg19.fa"
+            (key, Collection::Unstructured(values)) => {
+                key.as_ref() == "reference"
+                    && values.iter().any(|value| value == "/references/hg19.fa")
             }
             _ => false,
         });

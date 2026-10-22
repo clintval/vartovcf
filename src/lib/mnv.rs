@@ -14,9 +14,8 @@
 //! when `c < n` and `P(X >= c) >= LEAK_TAIL` at [`LeakRate`]. A row with at least as many reads as
 //! the MNV is a separate allele, or the MNV's reads counted again, at any rate.
 
-use rust_htslib::bcf::record::Numeric;
-
 use crate::record::TumorOnlyVariant;
+use crate::vcf::Numeric;
 
 /// The least `P(X >= c)` a partial's `c` reads may have under the leak binomial and still be folded.
 pub const LEAK_TAIL: f64 = 0.05;
