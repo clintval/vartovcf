@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::fai::{fasta_contigs_to_vcf_header, fasta_path_to_vcf_header};
 use crate::filter::FilterThresholds;
-use crate::mnv::{Fold, Merged, fold_partials};
+use crate::mnv::{Fold, LeakRate, Merged, fold_partials};
 use crate::normalize::{Normalized, normalize};
 use crate::output::{Index, Output};
 use crate::record::MIN_HOM_ALT_AF;
@@ -167,8 +167,9 @@ pub struct Options<'a> {
     pub normal_sample: Option<&'a str>,
     /// Skip non-variant sites (where ref_allele == alt_allele).
     pub skip_non_variants: bool,
-    /// Fold the partial rows of each MNV back into it, see [`mnv`].
-    pub fix_leaky_mnv: bool,
+    /// The leak rate to fold the partial rows of each MNV back into it at, or `None` to not fold;
+    /// see [`mnv`].
+    pub fix_leaky_mnv: Option<LeakRate>,
     /// The FILTER labels to apply.
     pub filters: FilterThresholds,
     /// The directory to spill records to while sorting, resolved by [`sort::resolve_tmp_dir`].
@@ -274,6 +275,7 @@ fn convert<I: Read>(
         sorter: RecordSorter::new(tmp_dir)?,
         seen: SeenRows::default(),
         filters,
+        fix_leaky_mnv: options.fix_leaky_mnv,
         progress: ProgLogBuilder::new()
             .name("main")
             .verb("Processed")
@@ -313,7 +315,7 @@ fn convert<I: Read>(
             segment.clear();
             segment.push_str(field(column));
         }
-        if options.fix_leaky_mnv {
+        if options.fix_leaky_mnv.is_some() {
             region.push(compact(&carry, columns));
         } else {
             columns.drop_fisher_columns(&mut carry, &mut scratch);
@@ -371,6 +373,7 @@ struct Sink<'r> {
     sorter: RecordSorter,
     seen: SeenRows,
     filters: &'r FilterThresholds,
+    fix_leaky_mnv: Option<LeakRate>,
     progress: proglog::ProgLog,
 }
 
@@ -441,7 +444,11 @@ impl Sink<'_> {
             .zip(&normalized)
             .map(|(row, call)| self.seen.contains(row[0].contig, call))
             .collect();
-        for (row, fold) in fold_partials(&calls, &written).into_iter().enumerate() {
+        let folds = match self.fix_leaky_mnv {
+            Some(leak_rate) => fold_partials(&calls, &written, leak_rate),
+            None => vec![Fold::Keep; calls.len()],
+        };
+        for (row, fold) in folds.into_iter().enumerate() {
             match fold {
                 _ if written[row] => {}
                 Fold::Keep => self.add_normalized(
@@ -1107,7 +1114,7 @@ mod tests {
         let options = Options {
             reference: PathBuf::from(reference),
             normal_sample: path.contains("tumor-normal").then_some("N"),
-            fix_leaky_mnv,
+            fix_leaky_mnv: fix_leaky_mnv.then_some(LeakRate::default()),
             filters: FilterThresholds {
                 near_read_end: Some(8.0),
                 low_mean_mapq: Some(10.0),
@@ -1509,7 +1516,7 @@ mod tests {
                 output: Some(output.path().into()),
                 reference: PathBuf::from("tests/reference.fa"),
                 sample: Some("dna00001"),
-                fix_leaky_mnv,
+                fix_leaky_mnv: fix_leaky_mnv.then_some(LeakRate::default()),
                 ..Default::default()
             },
         )?;

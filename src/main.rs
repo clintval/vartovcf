@@ -14,6 +14,7 @@ use signal_hook::consts::{SIGINT, SIGTERM};
 use signal_hook::flag;
 
 use vartovcflib::filter::FilterThresholds;
+use vartovcflib::mnv::LeakRate;
 use vartovcflib::{Options, vartovcf};
 
 #[derive(Clone, Debug, Parser)]
@@ -50,6 +51,10 @@ struct Opt {
     /// Fold the partial rows VarDict writes for a multi-nucleotide variant (MNV), from reads that end, have a no-call (N) or a low-quality base inside it, back into the MNV; see the README
     #[arg(long)]
     fix_leaky_mnv: bool,
+
+    /// Probability that a read of an MNV molecule counts toward any one partial row, at least 0.001 and below 0.5; with --fix-leaky-mnv, a partial folds when it has fewer reads (c) than its MNV (n) and P(Binomial(n + c, rate) >= c) >= 0.05. The rate varies with the library and the MNV's sequence context; see the README to estimate it
+    #[arg(long, value_name = "RATE", default_value_t = LeakRate::default().value(), requires = "fix_leaky_mnv")]
+    leaky_mnv_rate: f64,
 
     /// Label calls NEAR_READ_END when their mean distance to the nearer read end is below this; not applied when not given
     #[arg(long, value_name = "MIN_MEAN_DIST")]
@@ -150,7 +155,12 @@ fn main() -> Result<(), Error> {
         sample: opt.sample.as_deref(),
         normal_sample: opt.normal_sample.as_deref(),
         skip_non_variants: opt.skip_non_variants,
-        fix_leaky_mnv: opt.fix_leaky_mnv,
+        fix_leaky_mnv: opt.fix_leaky_mnv.then(|| {
+            LeakRate::new(opt.leaky_mnv_rate).unwrap_or_else(|message| {
+                error!("{message}");
+                process::exit(1)
+            })
+        }),
         tmp_dir: opt.tmp_dir,
         signal: Some(&signal),
         filters: FilterThresholds {
