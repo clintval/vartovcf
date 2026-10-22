@@ -64,14 +64,6 @@ impl LeakRate {
             ) >= LEAK_TAIL
     }
 
-    /// The most reads a partial may have and still be explained by an MNV with `mnv_reads`.
-    pub fn bound(self, mnv_reads: i32) -> i32 {
-        (0..mnv_reads)
-            .rev()
-            .find(|&reads| self.explains(mnv_reads, reads))
-            .unwrap_or(0)
-    }
-
     /// The fewest reads an MNV needs to explain a partial with `partial_reads`, found by bisection,
     /// as more MNV reads never stop explaining a partial.
     pub fn fewest_mnv_reads(self, partial_reads: i32) -> i32 {
@@ -588,12 +580,20 @@ mod tests {
         assert!((tail - expected).abs() < 5e-5, "{tail} is not {expected}");
     }
 
+    /// The most reads a partial may have and still be explained by an MNV with `mnv_reads`.
+    fn bound(rate: LeakRate, mnv_reads: i32) -> i32 {
+        (0..mnv_reads)
+            .rev()
+            .find(|&reads| rate.explains(mnv_reads, reads))
+            .unwrap_or(0)
+    }
+
     #[test]
     fn test_the_default_leak_rate_bounds_a_partials_reads_by_the_mnvs() {
         let rate = LeakRate::default();
         let bounds: Vec<(i32, i32)> = [1, 2, 5, 6, 10, 15, 20, 25, 50, 100, 200, 1000]
             .into_iter()
-            .map(|reads| (reads, rate.bound(reads)))
+            .map(|reads| (reads, bound(rate, reads)))
             .collect();
         assert_eq!(
             bounds,

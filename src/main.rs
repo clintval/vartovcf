@@ -52,8 +52,8 @@ struct Opt {
     #[arg(long)]
     fix_leaky_mnv: bool,
 
-    /// The probability that a read of an MNV molecule is counted toward any one partial row; with --fix-leaky-mnv, a partial is folded when it has fewer reads than its MNV and no more than a binomial over the two rows' reads at this rate gives with probability 0.05 or more. The rate varies with the library and the MNV's sequence context; the README describes how to estimate it
-    #[arg(long, value_name = "RATE", default_value_t = LeakRate::default().value())]
+    /// Probability that a read of an MNV molecule counts toward any one partial row, at least 0.001 and below 0.5; with --fix-leaky-mnv, a partial folds when it has fewer reads (c) than its MNV (n) and P(Binomial(n + c, rate) >= c) >= 0.05. The rate varies with the library and the MNV's sequence context; see the README to estimate it
+    #[arg(long, value_name = "RATE", default_value_t = LeakRate::default().value(), requires = "fix_leaky_mnv")]
     leaky_mnv_rate: f64,
 
     /// Label calls NEAR_READ_END when their mean distance to the nearer read end is below this; not applied when not given
@@ -155,10 +155,11 @@ fn main() -> Result<(), Error> {
         sample: opt.sample.as_deref(),
         normal_sample: opt.normal_sample.as_deref(),
         skip_non_variants: opt.skip_non_variants,
-        fix_leaky_mnv: opt.fix_leaky_mnv,
-        leak_rate: LeakRate::new(opt.leaky_mnv_rate).unwrap_or_else(|message| {
-            error!("{message}");
-            process::exit(1)
+        fix_leaky_mnv: opt.fix_leaky_mnv.then(|| {
+            LeakRate::new(opt.leaky_mnv_rate).unwrap_or_else(|message| {
+                error!("{message}");
+                process::exit(1)
+            })
         }),
         tmp_dir: opt.tmp_dir,
         signal: Some(&signal),
