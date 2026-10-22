@@ -213,7 +213,7 @@ pub struct TumorOnlyVariant<'a> {
     pub segment: &'a str,
     /// The type of variant this call is.
     pub variant_type: &'a str,
-    /// The fraction of reads VarDict's -t removed as duplicates; VarDictJava 1.8.4 always prints 0,
+    /// The fraction of reads VarDict's -t removed as duplicates; VarDictJava 1.8.4 of the joachimwolff fork always prints 0,
     /// which parses as `None`.
     #[serde(deserialize_with = "maybe_duplication_rate")]
     pub duplication_rate: Option<f32>,
@@ -554,13 +554,13 @@ pub struct TumorNormalVariant<'a> {
     pub status: &'a str,
     /// The type of variant this call is.
     pub variant_type: &'a str,
-    /// The tumor's duplication rate, which VarDictJava 1.8.4 always prints as 0.
+    /// The tumor's duplication rate, which VarDictJava 1.8.4 of the joachimwolff fork always prints as 0.
     #[serde(deserialize_with = "maybe_duplication_rate")]
     pub tumor_duplication_rate: Option<f32>,
     /// The tumor's structural variant read counts.
     #[serde(deserialize_with = "maybe_sv_info")]
     pub tumor_sv_info: Option<SvInfo>,
-    /// The normal's duplication rate, which VarDictJava 1.8.4 always prints as 0.
+    /// The normal's duplication rate, which VarDictJava 1.8.4 of the joachimwolff fork always prints as 0.
     #[serde(deserialize_with = "maybe_duplication_rate")]
     pub normal_duplication_rate: Option<f32>,
     /// The normal's structural variant read counts.
