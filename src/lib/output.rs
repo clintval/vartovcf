@@ -1,10 +1,18 @@
 //! The VCF output: standard output, a plain file, or a bgzipped and indexed file for a `.gz` path.
 use std::fs::File;
-use std::io::{BufWriter, ErrorKind, Read, Seek, SeekFrom, Stdout, Write};
+use std::io::{self, BufRead, BufWriter, ErrorKind, Read, Seek, SeekFrom, Stdout, Write};
 use std::path::{Path, PathBuf};
 
-use rust_htslib::bcf::index::{Type, build};
-use rust_htslib::bgzf;
+use ahash::AHashMap;
+use noodles::bgzf;
+use noodles::core::Position;
+use noodles::csi::binning_index::index::ReferenceSequence;
+use noodles::csi::binning_index::index::header::Builder as IndexHeader;
+use noodles::csi::binning_index::index::reference_sequence::bin::Chunk;
+use noodles::csi::binning_index::index::reference_sequence::index::{BinnedIndex, LinearIndex};
+use noodles::csi::binning_index::{self, Indexer, ReferenceSequence as _};
+use noodles::csi::{self, BinningIndex};
+use noodles::tabix;
 
 use crate::io::has_gzip_ext;
 
@@ -26,6 +34,15 @@ pub enum Index {
 impl Index {
     /// The longest contig a tabix index can address.
     pub const MAX_TBI_CONTIG_LENGTH: u64 = 1 << 29;
+
+    /// The width of the smallest bin of either index, as a power of 2.
+    const MIN_SHIFT: u8 = 14;
+
+    /// The levels of bins in a tabix index.
+    const TBI_DEPTH: u8 = 5;
+
+    /// The fewest levels of bins in a CSI index.
+    const MIN_CSI_DEPTH: u8 = 6;
 
     /// The index that can address every contig of a reference whose longest contig has this length.
     pub fn for_longest_contig(length: u64) -> Self {
@@ -49,19 +66,258 @@ impl Index {
     /// Writes this index of a bgzipped VCF file beside it and syncs it to disk.
     fn write(self, output: &Path) -> Result<(), String> {
         let path = self.path(output);
-        let kind = match self {
-            Index::Tbi => Type::Tbx,
-            Index::Csi => Type::Csi(14),
-        };
-        build(output, Some(path.as_path()), 0, kind)
-            .map_err(|error| error.msg)
-            .and_then(|()| {
-                File::open(&path)
-                    .and_then(|file| file.sync_all())
-                    .map_err(|error| error.to_string())
+        index_vcf(output, self)
+            .and_then(|index| match self {
+                Index::Tbi => tabix::fs::write(&path, &index),
+                Index::Csi => csi::fs::write(&path, &to_csi(&index)),
             })
+            .and_then(|()| File::open(&path).and_then(|file| file.sync_all()))
             .map_err(|error| format!("Could not write the index {path:?}: {error}!"))
     }
+
+    /// The levels of bins this index has for a VCF whose `##contig` lines give this longest length,
+    /// as `tabix` chooses them: a CSI index adds levels until its bins span the contig and 256 bases.
+    fn depth(self, longest_contig: u64) -> u8 {
+        match self {
+            Index::Tbi => Self::TBI_DEPTH,
+            Index::Csi => {
+                let mut depth = Self::MIN_CSI_DEPTH;
+                while longest_contig.saturating_add(256) > span(depth) {
+                    depth += 1;
+                }
+                depth
+            }
+        }
+    }
+}
+
+/// The bases the bins of an index of this depth span.
+fn span(depth: u8) -> u64 {
+    1u64.checked_shl(u32::from(Index::MIN_SHIFT + 3 * depth))
+        .unwrap_or(u64::MAX)
+}
+
+/// Indexes a bgzipped VCF file as `tabix -p vcf` does, with bins of the depth the kind of index
+/// has; [`to_csi`] makes a CSI index of it. Each line not starting with `#` is a record on its
+/// CHROM from its POS to the end of its REF allele, or to its INFO END when that is later; a line
+/// without a numeric POS is skipped. A CSI depth comes from the longest `##contig` length, or from
+/// 100 Gbp without one. Refuses records of a contig that are not together, or not sorted by POS,
+/// and records beyond what the index can address.
+fn index_vcf(path: &Path, kind: Index) -> io::Result<tabix::Index> {
+    let mut reader = bgzf::io::Reader::new(File::open(path)?);
+    let mut line = Vec::new();
+    let mut longest_contig = 0;
+    let mut indexer: Option<(Indexer<LinearIndex>, u64)> = None;
+    let mut names: Vec<String> = Vec::new();
+    let mut ids: AHashMap<String, usize> = AHashMap::new();
+    let mut last: Option<(usize, u64)> = None;
+    let mut chunk_start = reader.virtual_position();
+    loop {
+        line.clear();
+        if reader.read_until(b'\n', &mut line)? == 0 {
+            break;
+        }
+        let chunk_end = reader.virtual_position();
+        if line.ends_with(b"\n") {
+            line.pop();
+        }
+        if line.ends_with(b"\r") {
+            line.pop();
+        }
+        if line.first() == Some(&b'#') {
+            if indexer.is_none() {
+                longest_contig = longest_contig.max(contig_length(&line));
+                chunk_start = chunk_end;
+            }
+            continue;
+        }
+        let (indexer, max_position) = indexer.get_or_insert_with(|| {
+            let longest = if longest_contig == 0 {
+                100 << 30
+            } else {
+                longest_contig
+            };
+            let depth = kind.depth(longest);
+            (Indexer::new(Index::MIN_SHIFT, depth), span(depth))
+        });
+        let Some((name, start, end)) = parse_interval(&line) else {
+            continue;
+        };
+        if start > *max_position || end > *max_position {
+            return Err(io::Error::other(format!(
+                "{name}:{} ends at {end}, beyond the {max_position} bases this index can address",
+                start + 1
+            )));
+        }
+        let id = match ids.get(name) {
+            Some(&id) => id,
+            None => {
+                names.push(name.to_string());
+                ids.insert(name.to_string(), names.len() - 1);
+                names.len() - 1
+            }
+        };
+        match last {
+            Some((last_id, _)) if last_id != id && id < last_id => {
+                return Err(io::Error::other(format!(
+                    "the records of {name} are not together, as {} comes between them",
+                    names[last_id]
+                )));
+            }
+            Some((last_id, last_start)) if last_id == id && last_start > start => {
+                return Err(io::Error::other(format!(
+                    "the records of {name} are not sorted: {} comes before {}",
+                    last_start + 1,
+                    start + 1
+                )));
+            }
+            _ => {}
+        }
+        if end < start {
+            return Err(io::Error::other(format!(
+                "{name}:{} ends at {end}, before it starts",
+                start + 1
+            )));
+        }
+        last = Some((id, start));
+        let position =
+            |position: u64| Position::try_from(position as usize).map_err(io::Error::other);
+        indexer.add_record(
+            Some((id, position(start + 1)?, position(end)?, true)),
+            Chunk::new(chunk_start, chunk_end),
+        )?;
+        chunk_start = chunk_end;
+    }
+    let indexer = match indexer {
+        Some((indexer, _)) => indexer,
+        None => Indexer::new(Index::MIN_SHIFT, kind.depth(0)),
+    };
+    let count = names.len();
+    let header = IndexHeader::vcf()
+        .set_reference_sequence_names(names.into_iter().map(Into::into).collect())
+        .build();
+    Ok(indexer.set_header(header).build(count))
+}
+
+/// The CSI index of an index built with a CSI depth. Each bin's offset is the linear index's at the
+/// bin's first window, as htslib sets it: a reader skips the chunks that end before the offset of
+/// the bin a query starts in, so the offset must not pass a longer record, of a larger bin, that
+/// overlaps the window.
+fn to_csi(index: &tabix::Index) -> csi::Index {
+    let depth = index.depth();
+    let reference_sequences = index
+        .reference_sequences()
+        .iter()
+        .map(|reference_sequence| {
+            let windows = reference_sequence.index();
+            let offsets: BinnedIndex = reference_sequence
+                .bins()
+                .keys()
+                .map(|&bin| {
+                    let offset = windows.get(first_window(bin, depth)).copied();
+                    (bin, offset.unwrap_or_default())
+                })
+                .collect();
+            ReferenceSequence::new(
+                reference_sequence.bins().clone(),
+                offsets,
+                reference_sequence.metadata().cloned(),
+            )
+        })
+        .collect();
+    let mut builder = binning_index::Index::builder()
+        .set_min_shift(index.min_shift())
+        .set_depth(depth)
+        .set_reference_sequences(reference_sequences);
+    if let Some(header) = index.header() {
+        builder = builder.set_header(header.clone());
+    }
+    if let Some(count) = index.unplaced_unmapped_record_count() {
+        builder = builder.set_unplaced_unmapped_record_count(count);
+    }
+    builder.build()
+}
+
+/// The first window of the smallest bins that a bin of an index of this depth spans.
+fn first_window(bin: usize, depth: u8) -> usize {
+    let mut level = 0;
+    let mut ancestor = bin;
+    while ancestor > 0 {
+        ancestor = (ancestor - 1) >> 3;
+        level += 1;
+    }
+    let first_of_level = ((1 << (3 * level)) - 1) / 7;
+    (bin - first_of_level) << (3 * (usize::from(depth) - level))
+}
+
+/// The length a `##contig` line gives, or 0 for any other line.
+fn contig_length(line: &[u8]) -> u64 {
+    let Some(rest) = line.strip_prefix(b"##contig") else {
+        return 0;
+    };
+    let Some(at) = rest.windows(6).position(|window| window == b"length") else {
+        return 0;
+    };
+    let value = &rest[at + 6..];
+    let value = &value[value
+        .iter()
+        .take_while(|&&byte| byte == b' ' || byte == b'=')
+        .count()..];
+    leading_integer(value).map_or(0, |length| length.max(0) as u64)
+}
+
+/// The CHROM of a record line and the 0-based, half-open interval tabix indexes it over.
+fn parse_interval(line: &[u8]) -> Option<(&str, u64, u64)> {
+    let mut fields = line.split(|&byte| byte == b'\t');
+    let name = std::str::from_utf8(fields.next()?).ok()?;
+    let start = leading_integer(fields.next()?)?.saturating_sub(1).max(0) as u64;
+    let mut end = 1;
+    if let Some(ref_allele) = fields.nth(1).filter(|field| !field.is_empty()) {
+        end = start + ref_allele.len() as u64;
+    }
+    if let Some(info_end) = fields.nth(3).and_then(info_end)
+        && info_end > start as i64
+    {
+        end = info_end as u64;
+    }
+    Some((name, start, end))
+}
+
+/// The value of an INFO field's END key, read as tabix reads it: 0 when it holds no number.
+fn info_end(info: &[u8]) -> Option<i64> {
+    let value = if let Some(value) = info.strip_prefix(b"END=") {
+        value
+    } else {
+        let at = info.windows(5).position(|window| window == b";END=")?;
+        &info[at + 5..]
+    };
+    if value.first() == Some(&b'.') {
+        return None;
+    }
+    Some(leading_integer(value).unwrap_or(0))
+}
+
+/// The decimal integer a field starts with, with an optional sign, saturating at the limits of an
+/// `i64`; `None` when the field does not start with a digit.
+fn leading_integer(field: &[u8]) -> Option<i64> {
+    let (negative, digits) = match field.first() {
+        Some(b'-') => (true, &field[1..]),
+        Some(b'+') => (false, &field[1..]),
+        _ => (false, field),
+    };
+    let digits = &digits[..digits
+        .iter()
+        .take_while(|byte| byte.is_ascii_digit())
+        .count()];
+    if digits.is_empty() {
+        return None;
+    }
+    let magnitude = digits.iter().fold(0i64, |value, digit| {
+        value
+            .saturating_mul(10)
+            .saturating_add(i64::from(digit - b'0'))
+    });
+    Some(if negative { -magnitude } else { magnitude })
 }
 
 /// Removes any tabix or CSI index beside a bgzipped file.
@@ -94,7 +350,7 @@ pub enum Output {
     /// A plain text file, and whether it is a regular file.
     Plain(PathBuf, BufWriter<File>, bool),
     /// A bgzipped file, and whether it is a regular file.
-    Bgzf(PathBuf, bgzf::Writer, bool),
+    Bgzf(PathBuf, bgzf::io::Writer<File>, bool),
 }
 
 impl Output {
@@ -105,7 +361,9 @@ impl Output {
         };
         match path {
             Some(path) if path.as_os_str() != "-" && has_gzip_ext(&path) => {
-                let writer = bgzf::Writer::from_path(path).map_err(|error| describe(&error))?;
+                let writer = File::create(path)
+                    .map(bgzf::io::Writer::new)
+                    .map_err(|error| describe(&error))?;
                 let regular = std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file());
                 if regular && let Err(error) = remove_indexes(path) {
                     drop(writer);
@@ -136,10 +394,9 @@ impl Output {
     }
 
     /// Flushes everything written and closes the output, checking each step, and removes a regular
-    /// file that could not be completed. A bgzipped regular file is closed by htslib, which does not
-    /// report a failure, so it is read back to check that it ends with the BGZF end-of-file block,
-    /// and is then indexed. Returns false, after removing the file and its index, when `stop` asks
-    /// the run to stop once the index is written.
+    /// file that could not be completed. A bgzipped regular file is read back once closed to check
+    /// that it ends with the BGZF end-of-file block, and is then indexed. Returns false, after
+    /// removing the file and its index, when `stop` asks the run to stop once the index is written.
     pub fn finish(self, index: Index, stop: &dyn Fn() -> bool) -> Result<bool, String> {
         let describe =
             |error: &dyn std::fmt::Display| format!("Could not write the output: {error}!");
@@ -158,9 +415,8 @@ impl Output {
                 }
                 result.map(|()| true).map_err(|error| describe(&error))
             }
-            Output::Bgzf(path, mut writer, regular) => {
-                let flushed = writer.flush();
-                drop(writer);
+            Output::Bgzf(path, writer, regular) => {
+                let flushed = writer.finish().map(drop);
                 if !regular {
                     return flushed.map(|()| true).map_err(|error| describe(&error));
                 }
@@ -242,11 +498,21 @@ impl Write for Output {
 mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
-    use rust_htslib::bgzf::Reader;
-    use rust_htslib::tbx::{self, Read as TbxRead};
     use tempfile::TempDir;
 
     use super::*;
+
+    /// A reader of the text of a bgzipped file.
+    fn bgzf_reader(path: impl AsRef<Path>) -> bgzf::io::Reader<File> {
+        File::open(path).map(bgzf::io::Reader::new).unwrap()
+    }
+
+    /// Whether a file starts with a BGZF block header, as htslib's `bgzf_is_bgzf` checks.
+    fn is_bgzip(path: &Path) -> io::Result<bool> {
+        let mut start = [0u8; 16];
+        File::open(path)?.read_exact(&mut start)?;
+        Ok(start == BGZF_EOF[..16])
+    }
 
     /// A VCF of one contig `c` of this length, with a record at each 1-based position in turn.
     fn vcf(length: u64, positions: &[u64]) -> String {
@@ -272,16 +538,50 @@ mod tests {
 
     /// The positions of the records an index of a bgzipped VCF finds over a 1-based region of `c`.
     fn query(path: &Path, start: u64, end: u64) -> Vec<String> {
-        let mut reader = tbx::Reader::from_path(path).unwrap();
-        let tid = reader.tid("c").unwrap();
-        reader.fetch(tid, start - 1, end).unwrap();
-        reader
-            .records()
-            .map(|record| {
-                let record = String::from_utf8(record.unwrap()).unwrap();
-                record.split('\t').nth(1).unwrap().to_string()
+        let csi = Index::Csi.path(path);
+        let chunks = if csi.exists() {
+            bin_chunks(&csi::fs::read(csi).unwrap(), start, end)
+        } else {
+            bin_chunks(&tabix::fs::read(Index::Tbi.path(path)).unwrap(), start, end)
+        };
+        let mut reader = bgzf_reader(path);
+        let mut positions = Vec::new();
+        for chunk in chunks {
+            reader.seek(chunk.start()).unwrap();
+            while reader.virtual_position() < chunk.end() {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let fields: Vec<&str> = line.split('\t').collect();
+                let position: u64 = fields[1].parse().unwrap();
+                if position <= end && position + fields[3].len() as u64 > start {
+                    positions.push(fields[1].to_string());
+                }
+            }
+        }
+        positions
+    }
+
+    /// The chunks of the bins of the first contig that overlap a 1-based region, in file order;
+    /// noodles refuses to query the last base a tabix index can address, so the bins are found here.
+    fn bin_chunks<I: noodles::csi::binning_index::index::reference_sequence::Index>(
+        index: &binning_index::Index<I>,
+        start: u64,
+        end: u64,
+    ) -> Vec<Chunk> {
+        let (min_shift, depth) = (u32::from(index.min_shift()), u32::from(index.depth()));
+        let (start, end) = ((start - 1) as usize, (end - 1) as usize);
+        let bins = index.reference_sequences()[0].bins();
+        let mut chunks: Vec<Chunk> = (0..=depth)
+            .flat_map(|level| {
+                let shift = min_shift + 3 * (depth - level);
+                let first = ((1usize << (3 * level)) - 1) / 7;
+                (first + (start >> shift))..=(first + (end >> shift))
             })
-            .collect()
+            .filter_map(|id| bins.get(&id))
+            .flat_map(|bin| bin.chunks().iter().copied())
+            .collect();
+        chunks.sort_by_key(|chunk| chunk.start());
+        chunks
     }
 
     /// The names of the files in a directory, sorted.
@@ -309,12 +609,9 @@ mod tests {
         let path = dir.path().join("out.vcf.gz");
         let text = vcf(100, &[10]);
         assert!(write(&path, &text, Index::Tbi, &|| false).unwrap());
-        assert!(bgzf::is_bgzip(&path).unwrap());
+        assert!(is_bgzip(&path).unwrap());
         let mut written = String::new();
-        Reader::from_path(&path)
-            .unwrap()
-            .read_to_string(&mut written)
-            .unwrap();
+        bgzf_reader(&path).read_to_string(&mut written).unwrap();
         assert_eq!(written, text);
     }
 
@@ -334,8 +631,7 @@ mod tests {
         assert!(write(&path, &vcf(100, &[10, 20, 30]), index, &|| false).unwrap());
         assert_eq!(files(&dir), ["out.vcf.gz", name]);
         let mut start = [0u8; 4];
-        Reader::from_path(dir.path().join(name))
-            .unwrap()
+        bgzf_reader(dir.path().join(name))
             .read_exact(&mut start)
             .unwrap();
         assert_eq!(&start, magic);
@@ -426,5 +722,81 @@ mod tests {
                 .unwrap()
                 .starts_with("Could not create the output")
         );
+    }
+
+    #[rstest]
+    #[case(Index::Tbi, 0, 5)]
+    #[case(Index::Tbi, 1 << 40, 5)]
+    #[case(Index::Csi, 0, 6)]
+    #[case(Index::Csi, (1 << 32) - 256, 6)]
+    #[case(Index::Csi, (1 << 32) - 255, 7)]
+    #[case(Index::Csi, 100 << 30, 8)]
+    fn test_index_depth_spans_the_longest_contig_as_tabix_chooses_it(
+        #[case] index: Index,
+        #[case] longest_contig: u64,
+        #[case] depth: u8,
+    ) {
+        assert_eq!(index.depth(longest_contig), depth);
+    }
+
+    #[rstest]
+    #[case(b"c\t10\t.\tA\tC\t.\t.\t.", Some(("c", 9, 10)))]
+    #[case(b"c\t10\t.\tACGT\tA\t.\t.\t.", Some(("c", 9, 13)))]
+    #[case(b"c\t10\t.\tA\t<DEL>\t.\t.\tTYPE=DEL;END=40", Some(("c", 9, 40)))]
+    #[case(b"c\t10\t.\tA\t<DEL>\t.\t.\tEND=40;TYPE=DEL", Some(("c", 9, 40)))]
+    #[case(b"c\t10\t.\tA\t<DEL>\t.\t.\tEND=5", Some(("c", 9, 10)))]
+    #[case(b"c\t10\t.\tA\t<DEL>\t.\t.\tEND=.", Some(("c", 9, 10)))]
+    #[case(b"c\t10\t.\tA\t<DEL>\t.\t.\tSVEND=40", Some(("c", 9, 10)))]
+    #[case(b"c\t0\t.\tA\tC\t.\t.\t.", Some(("c", 0, 1)))]
+    #[case(b"c\t10\t.\t\tC\t.\t.\t.", Some(("c", 9, 1)))]
+    #[case(b"c\tx\t.\tA\tC\t.\t.\t.", None)]
+    #[case(b"c", None)]
+    fn test_parse_interval_reads_a_record_as_tabix_does(
+        #[case] line: &[u8],
+        #[case] expected: Option<(&str, u64, u64)>,
+    ) {
+        assert_eq!(parse_interval(line), expected);
+    }
+
+    #[rstest]
+    #[case(
+        "c1\t20\t.\tA\tC\t.\t.\t.\nc1\t10\t.\tA\tC\t.\t.\t.\n",
+        "the records of c1 are not sorted: 20 comes before 10"
+    )]
+    #[case(
+        "c1\t10\t.\tA\tC\t.\t.\t.\nc2\t10\t.\tA\tC\t.\t.\t.\nc1\t20\t.\tA\tC\t.\t.\t.\n",
+        "the records of c1 are not together, as c2 comes between them"
+    )]
+    #[case("c1\t10\t.\t\tC\t.\t.\t.\n", "c1:10 ends at 1, before it starts")]
+    fn test_refuses_records_tabix_cannot_index(#[case] records: &str, #[case] message: &str) {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("out.vcf.gz");
+        let text = format!(
+            "##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n{records}"
+        );
+        let error = write(&path, &text, Index::Tbi, &|| false).unwrap_err();
+        assert_eq!(
+            error,
+            format!(
+                "Could not write the index {:?}: {message}!",
+                Index::Tbi.path(&path)
+            )
+        );
+    }
+
+    #[test]
+    fn test_a_csi_bin_offset_does_not_pass_a_longer_record_overlapping_the_bin() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("out.vcf.gz");
+        let mut text = vcf(300_000, &[]);
+        text.push_str("c\t10\t.\tA\t<DEL>\t.\t.\tEND=300000\nc\t20000\t.\tA\tC\t.\t.\t.\n");
+        assert!(write(&path, &text, Index::Csi, &|| false).unwrap());
+        let index = csi::fs::read(Index::Csi.path(&path)).unwrap();
+        let reference_sequence = &index.reference_sequences()[0];
+        let first_record = reference_sequence.metadata().unwrap().start_position();
+        let depth = u32::from(index.depth());
+        let bin = ((1usize << (3 * depth)) - 1) / 7 + (20000 - 1) / (1 << 14);
+        assert!(reference_sequence.bins().contains_key(&bin));
+        assert_eq!(reference_sequence.index().get(&bin), Some(&first_record));
     }
 }

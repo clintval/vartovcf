@@ -820,15 +820,35 @@ mod tests {
         start: u64,
         end: u64,
     ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-        use rust_htslib::tbx::{Read, Reader};
+        use noodles::core::{Position, Region};
+        use noodles::{csi, tabix, vcf};
 
-        let mut reader = Reader::from_path(path)?;
-        let tid = reader.tid(contig)?;
-        reader.fetch(tid, start - 1, end)?;
+        let file = std::fs::File::open(path)?;
+        let csi = format!("{}.csi", path.display());
+        let mut reader = if std::path::Path::new(&csi).exists() {
+            vcf::io::IndexedReader::new(file, csi::fs::read(csi)?)
+        } else {
+            vcf::io::IndexedReader::new(file, tabix::fs::read(format!("{}.tbi", path.display()))?)
+        };
+        let header = reader.read_header()?;
+        let region = Region::new(
+            contig,
+            Position::try_from(start as usize)?..=Position::try_from(end as usize)?,
+        );
         let mut records = Vec::new();
-        for record in reader.records() {
-            let record = String::from_utf8(record?)?;
-            records.push(record.split('\t').take(5).collect::<Vec<_>>().join(" "));
+        for record in reader.query(&header, &region)?.records() {
+            let record = record?;
+            let fields = [
+                record.reference_sequence_name().to_string(),
+                record.variant_start().transpose()?.unwrap().to_string(),
+                Some(record.ids().as_ref())
+                    .filter(|ids| !ids.is_empty())
+                    .unwrap_or(".")
+                    .to_string(),
+                record.reference_bases().to_string(),
+                record.alternate_bases().as_ref().to_string(),
+            ];
+            records.push(fields.join(" "));
         }
         Ok(records)
     }
@@ -1203,7 +1223,8 @@ mod tests {
             let copy = dir.path().join("copy.vcf.gz");
             std::fs::write(&copy, &bytes)?;
             let mut text = String::new();
-            rust_htslib::bgzf::Reader::from_path(&copy)?.read_to_string(&mut text)?;
+            noodles::bgzf::io::Reader::new(std::fs::File::open(&copy)?)
+                .read_to_string(&mut text)?;
             text
         } else {
             String::from_utf8(bytes)?
