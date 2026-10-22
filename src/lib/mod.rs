@@ -418,8 +418,10 @@ impl Sink<'_> {
     /// hash, so a partial row can come before or after its MNV.
     ///
     /// A substitution an earlier region added, or folded as a partial, is not added again, and is
-    /// not folded into an MNV here, so its reads are never counted twice. The set of them is kept
-    /// for this, and only for substitutions, so it grows with the run's substitutions, not its rows.
+    /// not folded into an MNV here, so its reads are never counted twice; a partial an MNV an earlier
+    /// region already wrote takes here is dropped, as that MNV is not written again. The set of
+    /// substitutions seen is kept for this, and only for substitutions, so it grows with the run's
+    /// substitution rows, not its rows.
     fn add_region(
         &mut self,
         region: &[StringRecord],

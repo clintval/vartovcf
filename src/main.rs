@@ -28,7 +28,7 @@ struct Opt {
     #[arg(short, long)]
     sample: Option<String>,
 
-    /// The matched normal sample name; read from tumor-normal input that names it as `tumor|normal` and required otherwise, and used in place of the input's, with a warning, when it differs
+    /// The matched normal sample name, for tumor-normal input that does not name it as `tumor|normal` when --sample does not give it that way either; refused for tumor-only input, and used in place of the input's, with a warning, when it differs
     #[arg(long)]
     normal_sample: Option<String>,
 
@@ -64,7 +64,7 @@ struct Opt {
     #[arg(long, value_name = "MIN_MEAN_MAPQ")]
     filter_low_mean_mapq: Option<f32>,
 
-    /// Label one-base indels HOMOPOLYMER_INDEL in homopolymers of at least this many copies; not applied when not given
+    /// Label calls one base longer or shorter than REF (insertions, deletions and Complex calls) HOMOPOLYMER_INDEL in homopolymers of at least this many copies; not applied when not given
     #[arg(long, value_name = "MIN_COPIES")]
     filter_homopolymer_indel: Option<f32>,
 
@@ -72,7 +72,7 @@ struct Opt {
     #[arg(long, value_name = "MAX_AF", requires = "filter_homopolymer_indel")]
     filter_homopolymer_indel_max_af: Option<f32>,
 
-    /// Label one-unit indels TANDEM_REPEAT_INDEL in 2-6 bp tandem repeats of at least this many copies; not applied when not given
+    /// Label calls one repeat unit longer or shorter than REF (insertions, deletions and Complex calls) TANDEM_REPEAT_INDEL in 2-6 bp tandem repeats of at least this many copies; not applied when not given
     #[arg(long, value_name = "MIN_COPIES")]
     filter_tandem_repeat_indel: Option<f32>,
 
