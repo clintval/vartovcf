@@ -516,6 +516,25 @@ mod tests {
     }
 
     #[rstest]
+    #[case::the_default_rate(&[], vec!["chr1 1100 GG CA .,108"])]
+    #[case::a_stricter_rate(
+        &["--leaky-mnv-rate", "0.03"],
+        vec!["chr1 1100 G C 196,8", "chr1 1100 GG CA .,100"]
+    )]
+    fn run_end_to_end_folds_only_what_the_leak_rate_explains(
+        #[case] rate: &[&str],
+        #[case] expected: Vec<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let rows = read_to_string("tests/calls.leaky-mnv.rate.var")?;
+        let args: Vec<&str> = ["--fix-leaky-mnv"]
+            .into_iter()
+            .chain(rate.iter().copied())
+            .collect();
+        assert_eq!(records(&rows, &args)?, expected);
+        Ok(())
+    }
+
+    #[rstest]
     #[case::partial_written_by_an_earlier_region(
         "tests/calls.leaky-mnv.partial-first.var",
         vec!["chr1 1100 G C 300,5", "chr1 1100 GG CA .,101"]
