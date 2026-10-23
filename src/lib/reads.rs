@@ -103,6 +103,13 @@ pub struct Summary {
     pub decisions: usize,
     /// Decisions where the reads feeding the row number exactly VarDict's ALT reads.
     pub reconciled: usize,
+    /// Decisions the reads could change: the row has fewer reads than the MNV in the sample and
+    /// some read found would move.
+    pub decisive: usize,
+    /// Decisive decisions whose reads did not number VarDict's, so the sample kept every read.
+    pub decisive_unreconciled: usize,
+    /// Decisions where no read in the pileup fed the row VarDict counted reads toward.
+    pub empty: usize,
 }
 
 /// One sample's indexed BAM.
@@ -162,27 +169,59 @@ impl ReadSources {
         self.samples.len()
     }
 
-    /// Warnings for BAMs whose read groups name a sample other than the one they stand for, given
-    /// the sample names in BAM order: a swapped or wrong BAM reconciles with nothing.
+    /// Warnings for BAMs that look swapped, given the sample names in BAM order: a BAM whose read
+    /// groups name none of its own sample's names but do name another sample's, while the BAM
+    /// standing for that other sample does not name it either. A read group sample that is simply
+    /// another name for the sample is logged, not warned about, as pipelines name the two freely,
+    /// and two BAMs naming one sample are not told apart.
     pub fn sample_warnings(&self, names: &[&str]) -> Vec<String> {
-        self.samples
+        let read_group_samples: Vec<Vec<String>> = self
+            .samples
             .iter()
-            .zip(names)
-            .filter_map(|(sample, name)| {
-                let samples: Vec<String> = sample
+            .map(|sample| {
+                sample
                     .header
                     .read_groups()
                     .values()
                     .filter_map(|group| group.other_fields().get(&SAMPLE))
                     .map(|sample| sample.to_string())
-                    .collect();
-                (!samples.is_empty() && !samples.iter().any(|sample| sample == name)).then(|| {
-                    format!(
-                        "The reads {} name the sample(s) {} in their read groups, not '{name}': give --reads the BAMs VarDict was run on, in sample order!",
+                    .collect()
+            })
+            .collect();
+        let names_sample = |index: usize, name: &str| {
+            read_group_samples[index]
+                .iter()
+                .any(|sample| sample == name)
+        };
+        self.samples
+            .iter()
+            .zip(names)
+            .enumerate()
+            .filter_map(|(index, (sample, name))| {
+                if read_group_samples[index].is_empty() || names_sample(index, name) {
+                    return None;
+                }
+                let swapped = names.iter().enumerate().find(|&(position, other)| {
+                    position != index
+                        && position < read_group_samples.len()
+                        && names_sample(index, other)
+                        && !names_sample(position, other)
+                });
+                match swapped {
+                    Some((position, other)) => Some(format!(
+                        "The reads {} name the sample '{other}' in their read groups, the sample of the BAM at position {}, not '{name}': give --reads the BAMs in sample order, the tumor (or only) sample's first!",
                         sample.path.display(),
-                        samples.join(", ")
-                    )
-                })
+                        position + 1
+                    )),
+                    None => {
+                        debug!(
+                            "The reads {} name the sample(s) {} in their read groups; they stand for '{name}'.",
+                            sample.path.display(),
+                            read_group_samples[index].join(", ")
+                        );
+                        None
+                    }
+                }
             })
             .collect()
     }
@@ -235,7 +274,13 @@ impl ReadSources {
                         continue;
                     }
                     self.summary.decisions += 1;
-                    self.summary.reconciled += usize::from(classified.decision.unmatched == 0);
+                    let reconciled = classified.decision.unmatched == 0;
+                    self.summary.reconciled += usize::from(reconciled);
+                    self.summary.empty += usize::from(classified.feeding.is_empty());
+                    if partial.alt_depth < rows[mnv][sample].alt_depth && outcome.would_move > 0 {
+                        self.summary.decisive += 1;
+                        self.summary.decisive_unreconciled += usize::from(!reconciled);
+                    }
                     debug!(
                         "{contig}:{} {}>{} under {contig}:{} {}>{} in sample {}: VarDict counted {} reads; {} are the MNV's molecules, {} another allele's, {} prove nothing, {} unmatched; the reads would move {} and keep {}; {:.3} of the templates prove nothing there.",
                         partial.start,
@@ -250,8 +295,8 @@ impl ReadSources {
                         classified.decision.separate,
                         classified.decision.ambiguous,
                         classified.decision.unmatched,
-                        outcome.0,
-                        outcome.1,
+                        outcome.moved,
+                        outcome.kept,
                         classified.decision.ambiguity,
                         contig = partial.contig,
                     );
@@ -813,8 +858,19 @@ fn classify<'s>(
     Classified { feeding, decision }
 }
 
+/// What one sample's reads of a partial would do, and did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Outcome {
+    /// Reads that moved to the MNV.
+    moved: i32,
+    /// Reads that stayed.
+    kept: i32,
+    /// Reads found that would move by their class, whether or not the row reconciled.
+    would_move: i32,
+}
+
 /// Decides a partial's reads in every sample at once, the tumor (or only) sample first, from each
-/// sample's classified reads: the fate of the row, and the reads each sample would move and keep.
+/// sample's classified reads: the fate of the row, and each sample's outcome.
 ///
 /// A read whose template is the MNV's molecule moves whatever the MNV's count in the sample. A read
 /// whose template is another allele's stays. A read whose template proves nothing follows the row's
@@ -837,7 +893,7 @@ fn resolve<'a>(
     mnv: &[TumorOnlyVariant<'a>],
     partials: &[&TumorOnlyVariant<'a>],
     options: ReadOptions,
-) -> (ReadFate<'a>, Vec<(i32, i32)>) {
+) -> (ReadFate<'a>, Vec<Outcome>) {
     let separate_anywhere = classified.iter().any(|sample| sample.decision.separate > 0);
     let mut fate = ReadFate {
         moved: Vec::new(),
@@ -848,29 +904,39 @@ fn resolve<'a>(
     for (sample, (classified, partial)) in classified.iter().zip(partials).enumerate() {
         let ambiguous_moves =
             mnv[sample].alt_depth > 0 && !separate_anywhere && (sample == 0 || !tumor_keeps);
-        let (moved, kept) = settle(classified, partial, ambiguous_moves, options);
+        let (moved, kept, would_move) = settle(classified, partial, ambiguous_moves, options);
         if sample == 0 {
             tumor_keeps = kept.alt_depth > 0;
         }
-        outcomes.push((moved.alt_depth, kept.alt_depth));
+        outcomes.push(Outcome {
+            moved: moved.alt_depth,
+            kept: kept.alt_depth,
+            would_move,
+        });
         fate.moved.push(moved);
         fate.kept.push(kept);
     }
     (fate, outcomes)
 }
 
-/// One sample's calls of a partial's reads that move and that stay, as [`resolve`] decides them.
+/// One sample's calls of a partial's reads that move and that stay, as [`resolve`] decides them,
+/// and the reads found that would move by their class.
 fn settle<'a>(
     classified: &Classified,
     partial: &TumorOnlyVariant<'a>,
     ambiguous_moves: bool,
     options: ReadOptions,
-) -> (TumorOnlyVariant<'a>, TumorOnlyVariant<'a>) {
+) -> (TumorOnlyVariant<'a>, TumorOnlyVariant<'a>, i32) {
     let goes = |molecule: Molecule| match molecule {
         Molecule::Mnv => true,
         Molecule::Ambiguous => ambiguous_moves,
         Molecule::Separate => false,
     };
+    let would_move = classified
+        .feeding
+        .iter()
+        .filter(|(_, _, molecule)| goes(*molecule))
+        .count() as i32;
     let found = classified.feeding.len() as i32;
     if partial.alt_depth > 0 && found == partial.alt_depth {
         let mut moved = Reads::default();
@@ -882,17 +948,12 @@ fn settle<'a>(
                 kept.add(read, allele, options);
             }
         }
-        return (moved.call(partial), kept.call(partial));
+        return (moved.call(partial), kept.call(partial), would_move);
     }
-    let every_read_moves = found > partial.alt_depth
-        && classified
-            .feeding
-            .iter()
-            .all(|(_, _, molecule)| goes(*molecule));
-    if partial.alt_depth > 0 && every_read_moves {
-        return (partial.clone(), without_reads(partial));
+    if partial.alt_depth > 0 && found > partial.alt_depth && would_move == found {
+        return (partial.clone(), without_reads(partial), would_move);
     }
-    (without_reads(partial), partial.clone())
+    (without_reads(partial), partial.clone(), would_move)
 }
 
 /// Parses VarDict's `-F` flag value: hexadecimal with a `0x` prefix, or decimal.
@@ -1723,7 +1784,11 @@ mod tests {
             .zip(&partial_refs)
             .map(|(survey, partial)| classify(survey, &window(), &mnvs[0], partial, options))
             .collect();
-        resolve(&classified, &mnvs, &partial_refs, options).1
+        resolve(&classified, &mnvs, &partial_refs, options)
+            .1
+            .into_iter()
+            .map(|outcome| (outcome.moved, outcome.kept))
+            .collect()
     }
 
     #[test]
@@ -1762,6 +1827,58 @@ mod tests {
             resolve_classes(&[((0, 1, 0), 10), ((1, 0, 0), 10)]),
             vec![(0, 2), (1, 0)]
         );
+    }
+
+    /// Writes one indexed BAM per read group sample name and opens them in that order.
+    fn open_bams(dir: &std::path::Path, read_group_samples: &[&str]) -> ReadSources {
+        use noodles::sam::header::record::value::map::read_group::tag::SAMPLE;
+        let mut builder = SamBuilder::new().read_length(REFERENCE.len());
+        builder.add_frag(Frag::at(101).bases(edited(&[])).quals(quals(&[])));
+        let paths: Vec<PathBuf> = read_group_samples
+            .iter()
+            .enumerate()
+            .map(|(index, name)| {
+                let mut header = builder.header().clone();
+                for group in header.read_groups_mut().values_mut() {
+                    group
+                        .other_fields_mut()
+                        .insert(SAMPLE, BString::from(*name));
+                }
+                let path = dir.join(format!("{index}.bam"));
+                let mut writer = bam::io::Writer::new(std::fs::File::create(&path).unwrap());
+                writer.write_header(&header).unwrap();
+                for record in builder.to_bam_records() {
+                    writer.write_record(&header, &record).unwrap();
+                }
+                writer.try_finish().unwrap();
+                let bai = bam::fs::index(&path).unwrap();
+                bam::bai::fs::write(dir.join(format!("{index}.bam.bai")), &bai).unwrap();
+                path
+            })
+            .collect();
+        ReadSources::open(&paths, ReadOptions::default()).unwrap()
+    }
+
+    #[rstest]
+    #[case::own_names(&["X", "Y"], &["X", "Y"], 0)]
+    #[case::other_names(&["X", "Y"], &["T", "N"], 0)]
+    #[case::swapped(&["X", "Y"], &["Y", "X"], 2)]
+    #[case::one_name_for_both(&["S", "S"], &["S", "N"], 0)]
+    fn test_only_bams_that_look_swapped_are_warned_about(
+        #[case] read_group_samples: &[&str],
+        #[case] names: &[&str],
+        #[case] warnings: usize,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let sources = open_bams(dir.path(), read_group_samples);
+        let found = sources.sample_warnings(names);
+        assert_eq!(found.len(), warnings, "{found:?}");
+        if warnings > 0 {
+            assert!(
+                found[0].contains("the sample of the BAM at position 2"),
+                "{found:?}"
+            );
+        }
     }
 
     #[rstest]

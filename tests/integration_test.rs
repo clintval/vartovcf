@@ -1492,10 +1492,35 @@ mod tests {
             .arg("--output").arg(output)
             .arg("--fix-leaky-mnv")
             .arg("--reads").arg(format!("{}|{}", tumor.display(), normal.display()))
-            .arg("--reads-base-quality").arg("30")
-            .unwrap().assert().success();
+            .arg("--reads-base-quality").arg("30");
+        let assert = cmd.assert().success();
+        let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+        assert!(!stderr.contains("WARN"), "{stderr}");
 
         assert!(diff(output, "tests/calls.tumor-normal.reads.vcf"));
+        Ok(())
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn run_end_to_end_warns_when_the_bams_look_swapped() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = TempDir::new()?;
+        let (tumor, normal) = tumor_normal_reads();
+        let tumor = write_bam(dir.path(), "tumor", &tumor);
+        let normal = write_bam(dir.path(), "normal", &normal);
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        cmd
+            .arg("--reference").arg("tests/reference.fa")
+            .arg("--normal-sample").arg("N")
+            .arg("--input").arg("tests/calls.tumor-normal.reads.var")
+            .arg("--output").arg(dir.path().join("out.vcf"))
+            .arg("--fix-leaky-mnv")
+            .arg("--reads").arg(format!("{}|{}", normal.display(), tumor.display()))
+            .arg("--reads-base-quality").arg("30");
+        let assert = cmd.assert().success();
+        let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+        // The built BAMs name one read group sample, so only the reads tell the swap.
+        assert!(stderr.contains("did not find the reads VarDict counted"), "{stderr}");
         Ok(())
     }
 
@@ -1516,6 +1541,28 @@ mod tests {
         let assert = cmd.assert().failure().code(1);
         let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
         assert!(stderr.contains("--reads names 1 BAM(s) for 2 sample(s)"), "{stderr}");
+        Ok(())
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn run_end_to_end_warns_when_no_read_feeds_the_rows() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = TempDir::new()?;
+        let mut builder = SamBuilder::new().read_length(40);
+        builder.add_frag(frag("r0", &[], &[]));
+        let bam = write_bam(dir.path(), "tumor", &builder);
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        cmd
+            .arg("--reference").arg("tests/reference.fa")
+            .arg("--sample").arg("dna00001")
+            .arg("--input").arg("tests/calls.reads.var")
+            .arg("--output").arg(dir.path().join("out.vcf"))
+            .arg("--fix-leaky-mnv")
+            .arg("--reads").arg(&bam)
+            .arg("--reads-base-quality").arg("30");
+        let assert = cmd.assert().success();
+        let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+        assert!(stderr.contains("No read in the reads fed 1 of the 1 partial row(s)"), "{stderr}");
         Ok(())
     }
 

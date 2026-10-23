@@ -354,13 +354,22 @@ fn convert<I: Read>(
     if let Some(Folder::Reads(sources)) = &sink.folder {
         let summary = sources.summary;
         info!(
-            "Reads decided {} partial row(s) and sample(s) under {} MNV pileup(s); {} reconciled with VarDict's ALT reads.",
-            summary.decisions, summary.pileups, summary.reconciled
+            "Reads decided {} partial row(s) and sample(s) under {} MNV pileup(s); {} reconciled with VarDict's ALT reads, and {} of the {} whose reads would have moved did not.",
+            summary.decisions,
+            summary.pileups,
+            summary.reconciled,
+            summary.decisive_unreconciled,
+            summary.decisive
         );
-        if summary.decisions > 0 && summary.reconciled * 2 < summary.decisions {
+        if summary.empty * 2 > summary.decisions {
             warn!(
-                "Only {} of {} partial rows and samples found the reads VarDict counted; rows that did not keep every read. Check that --reads names the BAMs VarDict was run on, in sample order, and that --reads-base-quality, --reads-min-mapq, --reads-exclude-flags, --reads-max-mismatches and --reads-mnv-gap match the run.",
-                summary.reconciled, summary.decisions
+                "No read in the reads fed {} of the {} partial row(s) and sample(s) VarDict counted reads toward. Check that --reads names the BAMs VarDict was run on, in sample order, and that --reads-base-quality, --reads-min-mapq, --reads-exclude-flags, --reads-max-mismatches and --reads-mnv-gap match the run.",
+                summary.empty, summary.decisions
+            );
+        } else if summary.decisive >= 2 && summary.decisive_unreconciled * 2 > summary.decisive {
+            warn!(
+                "{} of the {} partial row(s) and sample(s) whose reads would have moved did not find the reads VarDict counted, so they kept every read. Check that --reads names the BAMs VarDict was run on, in sample order, and that --reads-base-quality, --reads-min-mapq, --reads-exclude-flags, --reads-max-mismatches and --reads-mnv-gap match the run.",
+                summary.decisive_unreconciled, summary.decisive
             );
         }
     }
