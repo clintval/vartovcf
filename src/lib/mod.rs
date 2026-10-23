@@ -24,8 +24,7 @@ use crate::record::TumorOnlyVariant;
 use crate::record::{tumor_normal_fisher_p_value, tumor_normal_header, tumor_only_header};
 use crate::reference::Reference;
 use crate::sort::{Rank, RecordSorter, SortKey, resolve_tmp_dir};
-use crate::vcf::{GenotypeAllele, Record, header_bytes};
-use noodles::vcf::Header;
+use crate::vcf::{GenotypeAllele, Record, RecordWriter, header_bytes};
 
 pub mod fai;
 pub mod filter;
@@ -269,7 +268,7 @@ fn convert<I: Read>(
     let header_text = header_bytes(&header)?;
 
     let mut sink = Sink {
-        header,
+        records: RecordWriter::new(header),
         reference,
         sorter: RecordSorter::new(tmp_dir)?,
         line: Vec::new(),
@@ -353,7 +352,7 @@ fn parse_row(
 
 /// Normalizes records and adds them to the sort, which writes each call once.
 struct Sink<'r> {
-    header: Header,
+    records: RecordWriter,
     reference: Reference,
     sorter: RecordSorter,
     line: Vec<u8>,
@@ -390,7 +389,7 @@ impl Sink<'_> {
     ) -> Result<(), Box<dyn error::Error>> {
         let written: Vec<TumorOnlyVariant> =
             calls.iter().map(|call| normalized.apply(call)).collect();
-        let record = build_record(&self.header, &written, status, self.filters, merged)?;
+        let record = build_record(&mut self.records, &written, status, self.filters, merged)?;
         let key = sort_key(record.rid(), normalized);
         self.line.clear();
         record.write(&mut self.line)?;
@@ -505,16 +504,15 @@ fn compact(record: &StringRecord, columns: Columns) -> StringRecord {
 
 /// Builds one VCF record with a sample column per call, the tumor (or only) sample first; FILTER and
 /// the site's INFO come from the first call, and a tumor-normal record carries its VARDICT_STATUS.
-fn build_record<'h>(
-    header: &'h Header,
+fn build_record<'w>(
+    records: &'w mut RecordWriter,
     calls: &[TumorOnlyVariant],
     status: Option<&str>,
     filters: &FilterThresholds,
     merged: Option<&Merged>,
-) -> Result<Record<'h>, Box<dyn error::Error>> {
+) -> Result<Record<'w>, Box<dyn error::Error>> {
     let var = &calls[0];
-    let mut variant = Record::new(
-        header,
+    let mut variant = records.record(
         var.contig,
         var.start,
         var.ref_allele,

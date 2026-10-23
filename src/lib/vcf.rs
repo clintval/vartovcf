@@ -1,17 +1,18 @@
 //! VCF records built from vartovcf's values, whose missing ones are sentinels, as noodles-vcf
 //! records, each field checked against the header, and written with noodles-vcf.
 use std::error::Error;
+use std::mem::take;
 
 use noodles::core::Position;
 use noodles::vcf::variant::io::Write as _;
 use noodles::vcf::variant::record::samples::series::value::genotype::Phasing;
+use noodles::vcf::variant::record_buf::Samples;
 use noodles::vcf::variant::record_buf::info::field::Value as InfoValue;
 use noodles::vcf::variant::record_buf::info::field::value::Array as InfoArray;
 use noodles::vcf::variant::record_buf::samples::Keys;
 use noodles::vcf::variant::record_buf::samples::sample::Value as FormatValue;
 use noodles::vcf::variant::record_buf::samples::sample::value::genotype::Allele;
 use noodles::vcf::variant::record_buf::samples::sample::value::{Array as FormatArray, Genotype};
-use noodles::vcf::variant::record_buf::{AlternateBases, Samples};
 use noodles::vcf::{self, Header, variant::RecordBuf};
 
 /// The bits of the float that stands for a missing value, a NaN no arithmetic produces.
@@ -64,28 +65,49 @@ pub fn header_bytes(header: &Header) -> Result<Vec<u8>, String> {
     Ok(writer.into_inner())
 }
 
-/// One VCF record, built field by field and written with noodles-vcf; ID and QUAL are always
-/// missing, and a field the header does not declare is refused.
-pub struct Record<'h> {
-    header: &'h Header,
-    rid: u32,
+/// Writes VCF records with noodles-vcf, one at a time, into one record whose buffers are reused
+/// from record to record; ID and QUAL are always missing, and a field the header does not declare
+/// is refused.
+pub struct RecordWriter {
+    header: Header,
     record: RecordBuf,
+    info_fields: usize,
+    format_fields: usize,
     keys: Keys,
     samples: Vec<Vec<Option<FormatValue>>>,
 }
 
-impl<'h> Record<'h> {
+impl RecordWriter {
+    /// A writer of records for this header.
+    pub fn new(header: Header) -> Self {
+        let samples = vec![Vec::new(); header.sample_names().len()];
+        RecordWriter {
+            header,
+            record: RecordBuf::default(),
+            info_fields: 0,
+            format_fields: 0,
+            keys: Keys::default(),
+            samples,
+        }
+    }
+
+    /// The header the records are written for.
+    pub fn header(&self) -> &Header {
+        &self.header
+    }
+
     /// Starts a record of a contig the header declares, at a 1-based position, with its REF and an
     /// ALT that is `.` when there is none. A REF base other than A, C, G, T or N is refused, as VCF
     /// has no place for it and noodles-vcf would write an ambiguity code as one of its bases.
-    pub fn new(
-        header: &'h Header,
+    pub fn record(
+        &mut self,
         contig: &str,
         position: u64,
         ref_allele: &str,
         alt_allele: &str,
-    ) -> Result<Self, String> {
-        let rid = header
+    ) -> Result<Record<'_>, String> {
+        let rid = self
+            .header
             .contigs()
             .get_index_of(contig)
             .and_then(|rid| u32::try_from(rid).ok())
@@ -105,25 +127,35 @@ impl<'h> Record<'h> {
                 char::from(base)
             ));
         }
-        let alternate_bases = match alt_allele {
-            "." => Vec::new(),
-            alt_allele => vec![alt_allele.to_string()],
-        };
-        let record = RecordBuf::builder()
-            .set_reference_sequence_name(contig)
-            .set_variant_start(start)
-            .set_reference_bases(ref_allele)
-            .set_alternate_bases(AlternateBases::from(alternate_bases))
-            .build();
-        Ok(Record {
-            header,
-            rid,
-            record,
-            keys: Keys::default(),
-            samples: vec![Vec::new(); header.sample_names().len()],
-        })
+        let record = &mut self.record;
+        replace(record.reference_sequence_name_mut(), contig);
+        *record.variant_start_mut() = Some(start);
+        replace(record.reference_bases_mut(), ref_allele);
+        let alternate_bases = record.alternate_bases_mut().as_mut();
+        alternate_bases.truncate(usize::from(alt_allele != "."));
+        if alt_allele != "." {
+            match alternate_bases.first_mut() {
+                Some(bases) => replace(bases, alt_allele),
+                None => alternate_bases.push(alt_allele.to_string()),
+            }
+        }
+        record.filters_mut().as_mut().clear();
+        self.info_fields = 0;
+        self.format_fields = 0;
+        for sample in &mut self.samples {
+            sample.clear();
+        }
+        Ok(Record { writer: self, rid })
     }
+}
 
+/// One record a [`RecordWriter`] builds field by field.
+pub struct Record<'w> {
+    writer: &'w mut RecordWriter,
+    rid: u32,
+}
+
+impl Record<'_> {
     /// The index of the record's contig among the header's `##contig` lines.
     pub fn rid(&self) -> u32 {
         self.rid
@@ -132,8 +164,12 @@ impl<'h> Record<'h> {
     /// Adds a FILTER label. `PASS` replaces every label added before it and gives way to any label
     /// added after it, and a label added twice is written once.
     pub fn push_filter(&mut self, label: &str) -> Result<(), String> {
-        declared("FILTER", self.header.filters().contains_key(label), label)?;
-        let filters = self.record.filters_mut().as_mut();
+        declared(
+            "FILTER",
+            self.writer.header.filters().contains_key(label),
+            label,
+        )?;
+        let filters = self.writer.record.filters_mut().as_mut();
         if label == "PASS" || (filters.len() == 1 && filters.contains("PASS")) {
             filters.clear();
         }
@@ -143,12 +179,10 @@ impl<'h> Record<'h> {
 
     /// Adds a String INFO field; an empty value leaves the field out.
     pub fn push_info_string(&mut self, key: &str, value: &str) -> Result<(), String> {
-        self.check_info(key)?;
-        if !value.is_empty() {
-            let value = InfoValue::String(value.to_string());
-            self.record.info_mut().insert(key.to_string(), Some(value));
+        if value.is_empty() {
+            return declared("INFO", self.writer.header.infos().contains_key(key), key);
         }
-        Ok(())
+        self.set_info(key, Some(InfoValue::String(value.to_string())))
     }
 
     /// Adds an Integer INFO field; no values leave the field out.
@@ -169,13 +203,29 @@ impl<'h> Record<'h> {
         scalar: fn(V) -> InfoValue,
         array: fn(Vec<Option<V>>) -> InfoArray,
     ) -> Result<(), String> {
-        self.check_info(key)?;
         let value = match values {
-            [] => return Ok(()),
+            [] => return declared("INFO", self.writer.header.infos().contains_key(key), key),
             [value] => present(*value).map(scalar),
             values => Some(InfoValue::Array(array(options(values)))),
         };
-        self.record.info_mut().insert(key.to_string(), value);
+        self.set_info(key, value)
+    }
+
+    /// Sets the next INFO field, reusing the key the last record held in its place.
+    fn set_info(&mut self, key: &str, value: Option<InfoValue>) -> Result<(), String> {
+        let place = self.writer.info_fields;
+        let info = self.writer.record.info_mut().as_mut();
+        match info.get_index_mut(place) {
+            Some((held, field)) if held == key => *field = value,
+            _ => {
+                declared("INFO", self.writer.header.infos().contains_key(key), key)?;
+                info.truncate(place);
+                if info.insert(key.to_string(), value).is_some() {
+                    return Err(format!("The INFO field '{key}' was added twice!"));
+                }
+            }
+        }
+        self.writer.info_fields += 1;
         Ok(())
     }
 
@@ -219,50 +269,72 @@ impl<'h> Record<'h> {
         values: &[V],
         value: impl Fn(&[V]) -> Option<FormatValue>,
     ) -> Result<(), String> {
-        declared("FORMAT", self.header.formats().contains_key(key), key)?;
+        let writer = &mut *self.writer;
         if values.is_empty() {
-            return Ok(());
+            return declared("FORMAT", writer.header.formats().contains_key(key), key);
         }
-        let samples = self.samples.len();
+        let samples = writer.samples.len();
         if samples == 0 || !values.len().is_multiple_of(samples) {
             return Err(format!(
                 "Expected a multiple of {samples} values for the FORMAT field '{key}', found {}!",
                 values.len()
             ));
         }
-        self.keys.as_mut().insert(key.to_string());
+        let place = writer.format_fields;
+        let keys = writer.keys.as_mut();
+        if keys.get_index(place).map(String::as_str) != Some(key) {
+            declared("FORMAT", writer.header.formats().contains_key(key), key)?;
+            keys.truncate(place);
+            if !keys.insert(key.to_string()) {
+                return Err(format!("The FORMAT field '{key}' was added twice!"));
+            }
+        }
+        writer.format_fields += 1;
         let width = values.len() / samples;
-        for (sample, values) in self.samples.iter_mut().zip(values.chunks_exact(width)) {
+        for (sample, values) in writer.samples.iter_mut().zip(values.chunks_exact(width)) {
             sample.push(value(values));
         }
         Ok(())
     }
 
-    /// Refuses an INFO field the header does not declare.
-    fn check_info(&self, key: &str) -> Result<(), String> {
-        declared("INFO", self.header.infos().contains_key(key), key)
-    }
-
     /// Appends the record to `line` as one line of VCF text, ending with a newline; without a FORMAT
     /// field it has no FORMAT or sample columns.
-    pub fn write(mut self, line: &mut Vec<u8>) -> Result<(), String> {
-        if !self.keys.as_ref().is_empty() {
-            *self.record.samples_mut() = Samples::new(self.keys, self.samples);
+    pub fn write(self, line: &mut Vec<u8>) -> Result<(), String> {
+        let writer = self.writer;
+        writer
+            .record
+            .info_mut()
+            .as_mut()
+            .truncate(writer.info_fields);
+        writer.keys.as_mut().truncate(writer.format_fields);
+        let has_format = writer.format_fields > 0;
+        if has_format {
+            let samples = Samples::new(take(&mut writer.keys), take(&mut writer.samples));
+            *writer.record.samples_mut() = samples;
         }
-        vcf::io::Writer::new(line)
-            .write_variant_record(self.header, &self.record)
-            .map_err(|error| {
-                let mut cause: &dyn Error = &error;
-                while let Some(source) = cause.source() {
-                    cause = source;
-                }
-                format!(
-                    "Could not write the record at {}:{}: {cause}!",
-                    self.record.reference_sequence_name(),
-                    self.record.variant_start().map_or(0, usize::from)
-                )
-            })
+        let written =
+            vcf::io::Writer::new(line).write_variant_record(&writer.header, &writer.record);
+        if has_format {
+            (writer.keys, writer.samples) = take(writer.record.samples_mut()).into();
+        }
+        written.map_err(|error| {
+            let mut cause: &dyn Error = &error;
+            while let Some(source) = cause.source() {
+                cause = source;
+            }
+            format!(
+                "Could not write the record at {}:{}: {cause}!",
+                writer.record.reference_sequence_name(),
+                writer.record.variant_start().map_or(0, usize::from)
+            )
+        })
     }
+}
+
+/// Replaces a string's text, keeping its buffer.
+fn replace(string: &mut String, text: &str) {
+    string.clear();
+    string.push_str(text);
 }
 
 /// Refuses a field the header does not declare.
@@ -302,9 +374,9 @@ mod tests {
         assert!(!0.0f32.is_missing());
     }
 
-    /// A header of two samples declaring the fields the records below use.
-    fn header() -> Header {
-        [
+    /// A writer for a header of two samples declaring the fields the records below use.
+    fn writer() -> RecordWriter {
+        let header = [
             "##fileformat=VCFv4.2",
             r#"##INFO=<ID=S,Number=1,Type=String,Description="s">"#,
             r#"##INFO=<ID=I,Number=A,Type=Integer,Description="i">"#,
@@ -322,7 +394,15 @@ mod tests {
         ]
         .join("\n")
         .parse()
-        .unwrap()
+        .unwrap();
+        RecordWriter::new(header)
+    }
+
+    /// Writes a record to a line of text.
+    fn line(record: Record) -> String {
+        let mut line = Vec::new();
+        record.write(&mut line).unwrap();
+        String::from_utf8(line).unwrap()
     }
 
     type Fill = fn(&mut Record) -> Result<(), String>;
@@ -359,30 +439,29 @@ mod tests {
     )]
     #[case::nothing(|_: &mut Record| Ok(()), ".\t.")]
     fn test_record_writes_its_fields(#[case] fill: Fill, #[case] expected: &str) {
-        let header = header();
-        let mut record = Record::new(&header, "c2", 5, "A", "C").unwrap();
+        let mut writer = writer();
+        let mut record = writer.record("c2", 5, "A", "C").unwrap();
         fill(&mut record).unwrap();
         assert_eq!(record.rid(), 1);
-        let mut line = Vec::new();
-        record.write(&mut line).unwrap();
-        assert_eq!(
-            String::from_utf8(line).unwrap(),
-            format!("c2\t5\t.\tA\tC\t.\t{expected}\n")
-        );
+        assert_eq!(line(record), format!("c2\t5\t.\tA\tC\t.\t{expected}\n"));
     }
 
     #[test]
-    fn test_record_writes_no_alt_allele_as_a_dot() {
-        let header = header();
-        let mut line = Vec::new();
-        Record::new(&header, "c1", 3, "G", ".")
-            .unwrap()
-            .write(&mut line)
-            .unwrap();
-        assert_eq!(
-            String::from_utf8(line).unwrap(),
-            "c1\t3\t.\tG\t.\t.\t.\t.\n"
-        );
+    fn test_a_record_keeps_nothing_of_the_record_before_it() {
+        let mut writer = writer();
+        let mut record = writer.record("c2", 5, "AC", "A").unwrap();
+        record.push_filter("A").unwrap();
+        record.push_info_integer("I", &[1]).unwrap();
+        record.push_info_string("S", "x").unwrap();
+        record.push_format_integer("AD", &[1, 2, 3, 4]).unwrap();
+        record.push_format_integer("E", &[5, 6]).unwrap();
+        line(record);
+        let mut record = writer.record("c1", 3, "G", ".").unwrap();
+        record.push_info_string("S", "y").unwrap();
+        record.push_format_integer("E", &[7, 8]).unwrap();
+        assert_eq!(line(record), "c1\t3\t.\tG\t.\t.\t.\tS=y\tE\t7\t8\n");
+        let record = writer.record("c1", 4, "T", "A").unwrap();
+        assert_eq!(line(record), "c1\t4\t.\tT\tA\t.\t.\t.\n");
     }
 
     #[rstest]
@@ -394,10 +473,10 @@ mod tests {
         #[case] ref_allele: &str,
         #[case] base: char,
     ) {
-        let header = header();
-        assert!(Record::new(&header, "c1", 3, "ACGTNacgtn", "A").is_ok());
+        let mut writer = writer();
+        assert!(writer.record("c1", 3, "ACGTNacgtn", "A").is_ok());
         assert_eq!(
-            Record::new(&header, "c1", 3, ref_allele, "A").err(),
+            writer.record("c1", 3, ref_allele, "A").err(),
             Some(format!(
                 "Expected REF bases A, C, G, T or N at c1:3, found '{base}' in {ref_allele}!"
             ))
@@ -406,28 +485,25 @@ mod tests {
 
     #[test]
     fn test_record_names_why_noodles_refuses_to_write_it() {
-        let header: Header = "##fileformat=VCFv4.2\n##contig=<ID=c(1),length=10>\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO"
+        let header = "##fileformat=VCFv4.2\n##contig=<ID=c(1),length=10>\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO"
             .parse()
             .unwrap();
-        let mut line = Vec::new();
-        let error = Record::new(&header, "c(1)", 3, "A", "C")
-            .unwrap()
-            .write(&mut line)
-            .unwrap_err();
+        let mut writer = RecordWriter::new(header);
+        let record = writer.record("c(1)", 3, "A", "C").unwrap();
         assert_eq!(
-            error,
+            record.write(&mut Vec::new()).unwrap_err(),
             "Could not write the record at c(1):3: invalid reference sequence name: c(1)!"
         );
     }
 
     #[test]
     fn test_record_refuses_what_the_header_does_not_declare() {
-        let header = header();
+        let mut writer = writer();
         assert_eq!(
-            Record::new(&header, "c9", 5, "A", "C").err(),
+            writer.record("c9", 5, "A", "C").err(),
             Some("Contig 'c9' has no ##contig line in the VCF header!".to_string())
         );
-        let mut record = Record::new(&header, "c1", 5, "A", "C").unwrap();
+        let mut record = writer.record("c1", 5, "A", "C").unwrap();
         assert_eq!(
             record.push_info_integer("Z", &[1]),
             Err("The INFO field 'Z' is not declared in the VCF header!".to_string())
@@ -443,6 +519,16 @@ mod tests {
         assert_eq!(
             record.push_format_integer("E", &[1, 2, 3]),
             Err("Expected a multiple of 2 values for the FORMAT field 'E', found 3!".to_string())
+        );
+        record.push_info_integer("I", &[1]).unwrap();
+        assert_eq!(
+            record.push_info_integer("I", &[2]),
+            Err("The INFO field 'I' was added twice!".to_string())
+        );
+        record.push_format_integer("E", &[1, 2]).unwrap();
+        assert_eq!(
+            record.push_format_integer("E", &[3, 4]),
+            Err("The FORMAT field 'E' was added twice!".to_string())
         );
     }
 }
