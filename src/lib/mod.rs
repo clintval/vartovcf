@@ -389,7 +389,10 @@ impl Sink<'_> {
     ) -> Result<(), Box<dyn error::Error>> {
         let written: Vec<TumorOnlyVariant> =
             calls.iter().map(|call| normalized.apply(call)).collect();
-        let record = build_record(&mut self.records, &written, status, self.filters, merged)?;
+        let Some(record) = build_record(&mut self.records, &written, status, self.filters, merged)?
+        else {
+            return Ok(());
+        };
         let key = sort_key(record.rid(), normalized);
         self.line.clear();
         record.write(&mut self.line)?;
@@ -504,20 +507,24 @@ fn compact(record: &StringRecord, columns: Columns) -> StringRecord {
 
 /// Builds one VCF record with a sample column per call, the tumor (or only) sample first; FILTER and
 /// the site's INFO come from the first call, and a tumor-normal record carries its VARDICT_STATUS.
+/// Returns `None` for a record the writer skips.
 fn build_record<'w>(
     records: &'w mut RecordWriter,
     calls: &[TumorOnlyVariant],
     status: Option<&str>,
     filters: &FilterThresholds,
     merged: Option<&Merged>,
-) -> Result<Record<'w>, Box<dyn error::Error>> {
+) -> Result<Option<Record<'w>>, Box<dyn error::Error>> {
     let var = &calls[0];
-    let mut variant = records.record(
+    let Some(mut variant) = records.record(
         var.contig,
         var.start,
         var.ref_allele,
         &var.alt_allele_for_vcf(),
-    )?;
+    )?
+    else {
+        return Ok(None);
+    };
 
     if filters.any() && var.has_alt_reads() {
         let labels = filters.labels(var);
@@ -627,7 +634,7 @@ fn build_record<'w>(
         variant.push_format_integer("SV_DISCORDANT_READS", &each(&counts, |count| count.1))?;
     }
 
-    Ok(variant)
+    Ok(Some(variant))
 }
 
 /// Collects one value per sample.

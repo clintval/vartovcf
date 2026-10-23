@@ -3,6 +3,7 @@
 use std::error::Error;
 use std::mem::take;
 
+use log::warn;
 use noodles::core::Position;
 use noodles::vcf::variant::io::Write as _;
 use noodles::vcf::variant::record::samples::series::value::genotype::Phasing;
@@ -97,15 +98,17 @@ impl RecordWriter {
     }
 
     /// Starts a record of a contig the header declares, at a 1-based position, with its REF and an
-    /// ALT that is `.` when there is none. A REF base other than A, C, G, T or N is refused, as VCF
-    /// has no place for it and noodles-vcf would write an ambiguity code as one of its bases.
+    /// ALT that is `.` when there is none. An IUPAC ambiguity code in REF is written as the first
+    /// base it stands for, alphabetically; when that makes REF equal to ALT, the record is skipped
+    /// with a warning and `None` is returned. A REF byte that is neither a base nor an ambiguity code
+    /// is refused.
     pub fn record(
         &mut self,
         contig: &str,
         position: u64,
         ref_allele: &str,
         alt_allele: &str,
-    ) -> Result<Record<'_>, String> {
+    ) -> Result<Option<Record<'_>>, String> {
         let rid = self
             .header
             .contigs()
@@ -118,19 +121,31 @@ impl RecordWriter {
             .ok_or_else(|| {
                 format!("Expected a position of at least 1, found {contig}:{position}!")
             })?;
-        if let Some(base) = ref_allele
-            .bytes()
-            .find(|base| !matches!(base.to_ascii_uppercase(), b'A' | b'C' | b'G' | b'T' | b'N'))
-        {
-            return Err(format!(
-                "Expected REF bases A, C, G, T or N at {contig}:{position}, found '{}' in {ref_allele}!",
-                char::from(base)
-            ));
-        }
+        let reduced: String;
+        let reference_bases = if ref_allele.bytes().all(|base| concrete(base) == Some(base)) {
+            ref_allele
+        } else {
+            reduced = ref_allele
+                .bytes()
+                .map(|base| concrete(base).map(char::from))
+                .collect::<Option<String>>()
+                .ok_or_else(|| {
+                    format!(
+                        "Expected REF bases A, C, G, T, N or an IUPAC ambiguity code at {contig}:{position}, found {ref_allele}!"
+                    )
+                })?;
+            if reduced == alt_allele {
+                warn!(
+                    "Skipping {contig}:{position}: its REF {ref_allele} is written as {reduced}, the same as its ALT {alt_allele}."
+                );
+                return Ok(None);
+            }
+            &reduced
+        };
         let record = &mut self.record;
         replace(record.reference_sequence_name_mut(), contig);
         *record.variant_start_mut() = Some(start);
-        replace(record.reference_bases_mut(), ref_allele);
+        replace(record.reference_bases_mut(), reference_bases);
         let alternate_bases = record.alternate_bases_mut().as_mut();
         alternate_bases.truncate(usize::from(alt_allele != "."));
         if alt_allele != "." {
@@ -145,7 +160,7 @@ impl RecordWriter {
         for sample in &mut self.samples {
             sample.clear();
         }
-        Ok(Record { writer: self, rid })
+        Ok(Some(Record { writer: self, rid }))
     }
 }
 
@@ -331,6 +346,24 @@ impl Record<'_> {
     }
 }
 
+/// A REF base as VCF allows it: A, C, G, T or N as it is, and an IUPAC ambiguity code as the first
+/// base it stands for, alphabetically, in the same case; `None` for any other byte.
+fn concrete(base: u8) -> Option<u8> {
+    // VCF 4.3, section 1.6.1.4: an ambiguity code in REF becomes its alphabetically first base.
+    let concrete = match base.to_ascii_uppercase() {
+        b'A' | b'C' | b'G' | b'T' | b'N' => return Some(base),
+        b'M' | b'R' | b'W' | b'V' | b'H' | b'D' => b'A',
+        b'S' | b'Y' | b'B' => b'C',
+        b'K' => b'G',
+        _ => return None,
+    };
+    Some(if base.is_ascii_lowercase() {
+        concrete.to_ascii_lowercase()
+    } else {
+        concrete
+    })
+}
+
 /// Replaces a string's text, keeping its buffer.
 fn replace(string: &mut String, text: &str) {
     string.clear();
@@ -440,7 +473,7 @@ mod tests {
     #[case::nothing(|_: &mut Record| Ok(()), ".\t.")]
     fn test_record_writes_its_fields(#[case] fill: Fill, #[case] expected: &str) {
         let mut writer = writer();
-        let mut record = writer.record("c2", 5, "A", "C").unwrap();
+        let mut record = writer.record("c2", 5, "A", "C").unwrap().unwrap();
         fill(&mut record).unwrap();
         assert_eq!(record.rid(), 1);
         assert_eq!(line(record), format!("c2\t5\t.\tA\tC\t.\t{expected}\n"));
@@ -449,36 +482,55 @@ mod tests {
     #[test]
     fn test_a_record_keeps_nothing_of_the_record_before_it() {
         let mut writer = writer();
-        let mut record = writer.record("c2", 5, "AC", "A").unwrap();
+        let mut record = writer.record("c2", 5, "AC", "A").unwrap().unwrap();
         record.push_filter("A").unwrap();
         record.push_info_integer("I", &[1]).unwrap();
         record.push_info_string("S", "x").unwrap();
         record.push_format_integer("AD", &[1, 2, 3, 4]).unwrap();
         record.push_format_integer("E", &[5, 6]).unwrap();
         line(record);
-        let mut record = writer.record("c1", 3, "G", ".").unwrap();
+        let mut record = writer.record("c1", 3, "G", ".").unwrap().unwrap();
         record.push_info_string("S", "y").unwrap();
         record.push_format_integer("E", &[7, 8]).unwrap();
         assert_eq!(line(record), "c1\t3\t.\tG\t.\t.\t.\tS=y\tE\t7\t8\n");
-        let record = writer.record("c1", 4, "T", "A").unwrap();
+        let record = writer.record("c1", 4, "T", "A").unwrap().unwrap();
         assert_eq!(line(record), "c1\t4\t.\tT\tA\t.\t.\t.\n");
     }
 
     #[rstest]
-    #[case("R", 'R')]
-    #[case("AMA", 'M')]
-    #[case("y", 'y')]
-    #[case("X", 'X')]
-    fn test_record_refuses_a_ref_base_vcf_has_no_place_for(
+    #[case("ACGTN", "ACGTN")]
+    #[case("acgtn", "acgtn")]
+    #[case("R", "A")]
+    #[case("MRWVHDSYBK", "AAAAAACCCG")]
+    #[case("aRy", "aAc")]
+    fn test_record_writes_an_ambiguity_code_in_ref_as_its_first_base(
         #[case] ref_allele: &str,
-        #[case] base: char,
+        #[case] written: &str,
     ) {
         let mut writer = writer();
-        assert!(writer.record("c1", 3, "ACGTNacgtn", "A").is_ok());
+        let record = writer.record("c1", 3, ref_allele, "T").unwrap().unwrap();
+        assert_eq!(line(record), format!("c1\t3\t.\t{written}\tT\t.\t.\t.\n"));
+    }
+
+    #[rstest]
+    #[case("R", "A")]
+    #[case("Sy", "Cc")]
+    fn test_record_skips_a_ref_that_becomes_its_alt(#[case] ref_allele: &str, #[case] alt: &str) {
+        let mut writer = writer();
+        assert!(writer.record("c1", 3, ref_allele, alt).unwrap().is_none());
+        let record = writer.record("c1", 4, "A", "C").unwrap().unwrap();
+        assert_eq!(line(record), "c1\t4\t.\tA\tC\t.\t.\t.\n");
+    }
+
+    #[rstest]
+    #[case("X")]
+    #[case("A-C")]
+    fn test_record_refuses_a_ref_base_that_is_no_iupac_code(#[case] ref_allele: &str) {
+        let mut writer = writer();
         assert_eq!(
             writer.record("c1", 3, ref_allele, "A").err(),
             Some(format!(
-                "Expected REF bases A, C, G, T or N at c1:3, found '{base}' in {ref_allele}!"
+                "Expected REF bases A, C, G, T, N or an IUPAC ambiguity code at c1:3, found {ref_allele}!"
             ))
         );
     }
@@ -489,7 +541,7 @@ mod tests {
             .parse()
             .unwrap();
         let mut writer = RecordWriter::new(header);
-        let record = writer.record("c(1)", 3, "A", "C").unwrap();
+        let record = writer.record("c(1)", 3, "A", "C").unwrap().unwrap();
         assert_eq!(
             record.write(&mut Vec::new()).unwrap_err(),
             "Could not write the record at c(1):3: invalid reference sequence name: c(1)!"
@@ -503,7 +555,7 @@ mod tests {
             writer.record("c9", 5, "A", "C").err(),
             Some("Contig 'c9' has no ##contig line in the VCF header!".to_string())
         );
-        let mut record = writer.record("c1", 5, "A", "C").unwrap();
+        let mut record = writer.record("c1", 5, "A", "C").unwrap().unwrap();
         assert_eq!(
             record.push_info_integer("Z", &[1]),
             Err("The INFO field 'Z' is not declared in the VCF header!".to_string())
