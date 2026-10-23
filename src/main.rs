@@ -136,6 +136,10 @@ struct Opt {
     /// Label calls LOW_DP when their read depth is below this; not applied when not given
     #[arg(long, value_name = "MIN_DP")]
     filter_low_dp: Option<i32>,
+
+    /// Label calls LOW_HICNT when they have fewer high-quality ALT reads than this; not applied when not given
+    #[arg(long, value_name = "MIN_HICNT")]
+    filter_low_hicnt: Option<i32>,
 }
 
 /// Main binary entrypoint.
@@ -215,6 +219,7 @@ fn main() -> Result<(), Error> {
             low_af: opt.filter_low_af,
             low_qmean: opt.filter_low_qmean,
             low_dp: opt.filter_low_dp,
+            low_hicnt: opt.filter_low_hicnt,
         },
     };
 

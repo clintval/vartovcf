@@ -55,7 +55,7 @@ Replace the call to `var2vcf_valid.pl` with `vartovcf` in a typical VarDictJava 
       --output variants.vcf.gz
 ```
 
-In pileup mode (`-p`) VarDict keeps every candidate and switches off its own call rules. Add `LOW_AF` and `LOW_QMEAN` to mark the candidates its `-f` and `-q` rules would have dropped, and `LOW_DP` for the ones below the depth `var2vcf_valid.pl`'s `-d` would drop, here with their defaults (`-f` as given, `-q 22.5`, `-d 3`):
+In pileup mode (`-p`) VarDict keeps every candidate and switches off its own call rules. Add `LOW_AF`, `LOW_QMEAN` and `LOW_HICNT` to mark the candidates its `-f`, `-q` and `-r` rules would have dropped, and `LOW_DP` for the ones below the depth `var2vcf_valid.pl`'s `-d` would drop, here with their defaults (`-f` as given, `-q 22.5`, `-r 2`, `-d 3`):
 
 ```bash
 ❯ vardict-java -p ... calling-intervals.bed \
@@ -69,6 +69,7 @@ In pileup mode (`-p`) VarDict keeps every candidate and switches off its own cal
       --filter-strand-bias 0.01 --filter-strand-bias-min-odds-ratio 5 --filter-strand-bias-max-af 0.25 \
       --filter-low-af 0.05 \
       --filter-low-qmean 22.5 \
+      --filter-low-hicnt 2 \
       --filter-low-dp 3 \
       --output candidates.vcf.gz
 ```
@@ -123,6 +124,7 @@ No FILTER label is applied unless its option is given; with none given, the FILT
 | `LOW_AF` | `--filter-low-af <MIN_AF>` | `AF` is below the threshold, useful when VarDict runs with `-p`, which ignores its own `-f` |
 | `LOW_QMEAN` | `--filter-low-qmean <MIN_QMEAN>` | `QMEAN` is below the threshold, useful when VarDict runs with `-p`, which keeps calls failing its own `-q` |
 | `LOW_DP` | `--filter-low-dp <MIN_DP>` | `DP` is below the threshold |
+| `LOW_HICNT` | `--filter-low-hicnt <MIN_HICNT>` | `HICNT` is below the threshold, the count VarDict's own `-r` tests, useful when VarDict runs with `-p`, which keeps calls failing its `-r`, and with `--reads`, which can leave a partial row fewer reads than VarDict's `-r` |
 
 ### Leaky MNVs
 
@@ -176,7 +178,7 @@ For each MNV row with a partial in its region, the reads over the MNV's span are
 
 The reads that prove nothing follow the row's other reads. They move only where the MNV has reads in that sample, since nothing can leak from an MNV with none; only when no template of the row in any sample is another allele's, since a row with no read shown to be its own is leakage far more often than an allele that lost the base in every read, while an allele shown real in one sample is real in the individual; and, in the normal, only when the tumor keeps no read of the row, so a normal never gives up the reads that say it carries an allele the tumor keeps. The fraction of all templates at those positions that prove nothing there is reported in the log, not applied: it bounds how often an allele's `k` reads all prove nothing, as that fraction to the power `k`.
 
-A sample's reads are split between the MNV and the row only when the reads found are exactly the reads VarDict counted, so every count and mean written comes from a read seen. When the pileup feeds the row more reads than VarDict counted, the row moves whole, with VarDict's own values, only if every read found would move; otherwise, and whenever it feeds fewer, the sample keeps VarDict's row whole, since which of its reads VarDict counted is not known. A partial whose every read moves in every sample is folded as the count rule folds it; one with reads left is written with only them, with FORMAT `MNV_MOVED_READS` saying how many left per sample. The run's log says how many rows reconciled with VarDict's counts, and warns when no read fed most of the rows VarDict counted, when most of the rows whose reads would have moved (two or more) did not reconcile, or when the BAMs look swapped: one names another sample's name in its read groups while the BAM for that sample does not.
+A sample's reads are split between the MNV and the row only when the reads found are exactly the reads VarDict counted, so every count and mean written comes from a read seen. When the pileup feeds the row more reads than VarDict counted, the row moves whole, with VarDict's own values, only if every read found would move; otherwise, and whenever it feeds fewer, the sample keeps VarDict's row whole, since which of its reads VarDict counted is not known. A partial whose every read moves in every sample is folded as the count rule folds it; one with reads left is written with only them, with FORMAT `MNV_MOVED_READS` saying how many left per sample, and can keep fewer high-quality reads than VarDict's `-r`, which `--filter-low-hicnt` labels. The run's log says how many rows reconciled with VarDict's counts, and warns when no read fed most of the rows VarDict counted, when most of the rows whose reads would have moved (two or more) did not reconcile, or when the BAMs look swapped: one names another sample's name in its read groups while the BAM for that sample does not.
 
 In the example above, the fourth read's template is read at the MNV's last base: `A` on its mate means the MNV's molecule, `T` at `-q` or more means another allele, and `N` means leakage unless a read of the row is shown to be another allele's. Reads are taken as VarDict takes them; set the options to the run's: `--reads-base-quality` (`-q`, default 22.5), `--reads-min-mapq` (`-Q`, no floor by default), `--reads-exclude-flags` (`-F`, default `0x504`), `--reads-max-mismatches` (`-m`, default 8, the NM tag minus inserted and deleted bases) and `--reads-mnv-gap` (`-X`, default 2). An overlap-clipped BAM and an unclipped one both work, but give the one VarDict read, so the reads found are as close as possible to the reads it counted. Supplementary records are left out whenever a flag filter is set, as VarDict leaves them out. Reads VarDict added to a row by realignment or by its own MNV adjustment are not reproduced, nor is the soft-clip boundary VarDict moves over adjacent bases, and an allele with an insertion or deletion within `-X` bases of either end feeds no row, as VarDict folds it into a complex allele; such rows do not reconcile and keep every read. A template whose only read of the other changed base is a no-call or ends before it is as ambiguous here as it was to VarDict; the reported rate bounds how often such a template is another allele's.
 

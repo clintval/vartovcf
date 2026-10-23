@@ -1,6 +1,7 @@
 //! FILTER labels for VarDict calls.
 
 use crate::record::TumorOnlyVariant;
+use crate::vcf::Numeric;
 
 /// The FILTER label for calls whose ALT reads carry the variant near their read ends.
 pub const NEAR_READ_END: &str = "NEAR_READ_END";
@@ -31,6 +32,9 @@ pub const LOW_QMEAN: &str = "LOW_QMEAN";
 
 /// The FILTER label for calls with a low read depth.
 pub const LOW_DP: &str = "LOW_DP";
+
+/// The FILTER label for calls with few high-quality ALT reads.
+pub const LOW_HICNT: &str = "LOW_HICNT";
 
 /// The thresholds of the FILTER labels to apply; a label without a threshold is not applied.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -63,6 +67,8 @@ pub struct FilterThresholds {
     pub low_qmean: Option<f32>,
     /// The minimum read depth.
     pub low_dp: Option<i32>,
+    /// The minimum number of high-quality ALT reads.
+    pub low_hicnt: Option<i32>,
 }
 
 impl FilterThresholds {
@@ -78,6 +84,7 @@ impl FilterThresholds {
             || self.low_af.is_some()
             || self.low_qmean.is_some()
             || self.low_dp.is_some()
+            || self.low_hicnt.is_some()
     }
 
     /// Return the ID and description of the FILTER header line of each applied label.
@@ -153,6 +160,12 @@ impl FilterThresholds {
             filters.push((
                 LOW_DP,
                 format!(r#"Read depth (FORMAT DP) is below {min_dp}."#),
+            ));
+        }
+        if let Some(min_hicnt) = self.low_hicnt {
+            filters.push((
+                LOW_HICNT,
+                format!(r#"High-quality ALT reads (FORMAT HICNT) are fewer than {min_hicnt}."#),
             ));
         }
         filters
@@ -251,6 +264,12 @@ impl FilterThresholds {
         }
         if self.low_dp.is_some_and(|min_dp| variant.depth < min_dp) {
             labels.push(LOW_DP);
+        }
+        if self.low_hicnt.is_some_and(|min_hicnt| {
+            let hicnt = variant.hicnt_value();
+            !hicnt.is_missing() && hicnt < min_hicnt
+        }) {
+            labels.push(LOW_HICNT);
         }
         labels
     }
@@ -792,6 +811,44 @@ mod tests {
         assert_eq!(
             filters.header_lines(),
             vec![r#"##FILTER=<ID=LOW_DP,Description="Read depth (FORMAT DP) is below 3.">"#]
+        );
+    }
+
+    #[rstest]
+    #[case("G", "A", 1, vec![LOW_HICNT])]
+    #[case("G", "A", 2, vec![])]
+    #[case("G", "A", i32::missing(), vec![])]
+    #[case("G", "G", 0, vec![])]
+    fn test_low_hicnt(
+        #[case] ref_allele: &'static str,
+        #[case] alt_allele: &'static str,
+        #[case] hicnt: i32,
+        #[case] expected: Vec<&str>,
+    ) {
+        let filters = FilterThresholds {
+            low_hicnt: Some(2),
+            ..Default::default()
+        };
+        assert!(filters.any());
+        let variant = TumorOnlyVariant {
+            alt_depth: 3,
+            high_quality_variant_reads: hicnt,
+            ..variant(ref_allele, alt_allele, 30.0)
+        };
+        assert_eq!(filters.labels(&variant), expected);
+    }
+
+    #[test]
+    fn test_low_hicnt_header_line_states_the_threshold() {
+        let filters = FilterThresholds {
+            low_hicnt: Some(2),
+            ..Default::default()
+        };
+        assert_eq!(
+            filters.header_lines(),
+            vec![
+                r#"##FILTER=<ID=LOW_HICNT,Description="High-quality ALT reads (FORMAT HICNT) are fewer than 2.">"#
+            ]
         );
     }
 
