@@ -799,4 +799,62 @@ mod tests {
         assert!(reference_sequence.bins().contains_key(&bin));
         assert_eq!(reference_sequence.index().get(&bin), Some(&first_record));
     }
+
+    #[test]
+    fn test_a_csi_bin_above_the_leaves_takes_the_offset_of_its_first_window() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("out.vcf.gz");
+        let mut text = vcf(300_000, &[10, 20_000, 135_000]);
+        text.push_str("c\t140000\t.\tA\t<DEL>\t.\t.\tEND=150000\nc\t160000\t.\tA\tC\t.\t.\t.\n");
+        assert!(write(&path, &text, Index::Csi, &|| false).unwrap());
+        let index = csi::fs::read(Index::Csi.path(&path)).unwrap();
+        let level = u32::from(index.depth()) - 1;
+        let bin = ((1usize << (3 * level)) - 1) / 7 + (140_000 - 1) / (1 << (14 + 3));
+        // The text fits one BGZF block, so a record's virtual position is its offset in the text.
+        let first_record_in_window = text.find("c\t135000\t").unwrap() as u64;
+        let reference_sequence = &index.reference_sequences()[0];
+        assert!(reference_sequence.bins().contains_key(&bin));
+        assert_eq!(
+            reference_sequence.index().get(&bin),
+            Some(&bgzf::VirtualPosition::from(first_record_in_window))
+        );
+    }
+
+    #[rstest]
+    #[case(Index::Tbi)]
+    #[case(Index::Csi)]
+    fn test_an_index_finds_a_record_through_its_info_end(#[case] kind: Index) {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("out.vcf.gz");
+        let text = [
+            "##fileformat=VCFv4.2",
+            r#"##INFO=<ID=END,Number=1,Type=Integer,Description="End">"#,
+            "##contig=<ID=c,length=100000>",
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO",
+            "c\t10\t.\tA\t<DEL>\t.\t.\tEND=40000",
+            "c\t30000\t.\tA\tC\t.\t.\t.",
+            "c\t50000\t.\tA\tC\t.\t.\t.\n",
+        ]
+        .join("\n");
+        assert!(write(&path, &text, kind, &|| false).unwrap());
+        let file = File::open(&path).unwrap();
+        let mut reader = match kind {
+            Index::Tbi => noodles::vcf::io::IndexedReader::new(
+                file,
+                tabix::fs::read(kind.path(&path)).unwrap(),
+            ),
+            Index::Csi => {
+                noodles::vcf::io::IndexedReader::new(file, csi::fs::read(kind.path(&path)).unwrap())
+            }
+        };
+        let header = reader.read_header().unwrap();
+        let region = "c:35000-35000".parse().unwrap();
+        let positions: Vec<usize> = reader
+            .query(&header, &region)
+            .unwrap()
+            .records()
+            .map(|record| usize::from(record.unwrap().variant_start().unwrap().unwrap()))
+            .collect();
+        assert_eq!(positions, [10]);
+    }
 }

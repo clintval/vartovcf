@@ -392,4 +392,28 @@ pub(crate) mod tests {
         let mut reference = Reference::from_path(&path).unwrap();
         assert_eq!(reference.bases("c1", 2, 10).unwrap(), b"GTACGTAC");
     }
+
+    #[test]
+    fn test_reads_a_window_that_starts_past_the_first_line() {
+        let sequence: String = (0..40_000u64)
+            .map(|i| char::from(b"ACGT"[((i * i + 7 * i) / 3 % 4) as usize]))
+            .collect();
+        let (_dir, path) = fasta(&[("c1", &sequence)]);
+        let mut reference = Reference::from_path(&path).unwrap();
+        assert_eq!(
+            reference.bases("c1", 39_000, 39_020).unwrap(),
+            &sequence.as_bytes()[39_000..39_020]
+        );
+    }
+
+    #[test]
+    fn test_reads_a_contig_the_index_lists_twice_by_its_first_entry() {
+        let (_dir, path) = fasta(&[("c1", "ACGT"), ("c2", "TTGGCCAA")]);
+        let fai = std::fs::read_to_string(fai_file(&path)).unwrap();
+        let second = fai.lines().nth(1).unwrap().replacen("c2", "c1", 1);
+        std::fs::write(fai_file(&path), format!("{fai}{second}\n")).unwrap();
+        let mut reference = Reference::from_path(&path).unwrap();
+        assert_eq!(reference.length("c1").unwrap(), 4);
+        assert_eq!(reference.bases("c1", 0, 4).unwrap(), b"ACGT");
+    }
 }
