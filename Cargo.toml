@@ -29,15 +29,17 @@ path = "src/main.rs"
 ahash = "0.8.12"
 anyhow = "1.0.104"
 bio-types = "1.0.4"
+bstr = "1.12"
 clap = { version = "4.6.7", features = ["derive"] }
 csv = "1.4.0"
 env_logger = "0.11.11"
 log = "0.4.34"
-noodles = { version = "0.116.0", features = ["bgzf", "core", "csi", "tabix", "vcf"] }
+noodles = { version = "0.116.0", features = ["bam", "bgzf", "core", "csi", "sam", "tabix", "vcf"] }
 proglog = "0.4.0"
 serde = { version = "1.0.229", features = ["derive"] }
 signal-hook = "0.4.5"
 spillsort = "0.2.0"
+streampile = { version = "0.2.0", default-features = false }
 tempfile = "3.27.0"
 
 [dev-dependencies]
@@ -46,6 +48,7 @@ file_diff = "1.0.0"
 noodles = { version = "0.116.0", features = ["fasta"] }
 pretty_assertions = "1.4.1"
 rstest = "0.27.0"
+streampile = { version = "0.2.0", default-features = false, features = ["testing"] }
 
 [lints.rust]
 unsafe_code = "forbid"

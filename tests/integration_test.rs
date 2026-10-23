@@ -9,6 +9,10 @@ mod tests {
     use rstest::rstest;
     use tempfile::{NamedTempFile, TempDir};
 
+    use noodles::sam::alignment::record::data::field::Tag;
+    use std::path::{Path, PathBuf};
+    use streampile::testing::{Frag, Pair, SamBuilder, Strand};
+
     #[cfg(unix)]
     use std::os::unix::fs::FileTypeExt;
 
@@ -1327,6 +1331,274 @@ mod tests {
             assert.stdout(read_to_string("tests/calls.vcf")?);
         }
         assert!(std::path::Path::new(output).exists());
+        Ok(())
+    }
+
+    /// The reference of `tests/reference.fa` over chr1:1081-1120, which holds the fixtures' MNV
+    /// GG>CA at 1100-1101.
+    const REFERENCE_1081_1120: &str = "TCAAACCTGCCAGGCGGTCGGGTCGCGGACCTCGGTCGAA";
+
+    /// A 40-base read over chr1:1081-1120 with these substitutions at 1-based positions.
+    fn read(edits: &[(usize, u8)]) -> String {
+        let mut bases = REFERENCE_1081_1120.as_bytes().to_vec();
+        for &(position, base) in edits {
+            bases[position - 1081] = base;
+        }
+        String::from_utf8(bases).unwrap()
+    }
+
+    /// Base qualities of 40, except at these 1-based positions.
+    fn quals(edits: &[(usize, u8)]) -> Vec<u8> {
+        let mut quals = vec![40u8; 40];
+        for &(position, quality) in edits {
+            quals[position - 1081] = quality;
+        }
+        quals
+    }
+
+    /// A fragment over chr1:1081-1120 with these substitutions and qualities, and NM set to the
+    /// number of substitutions.
+    fn frag(name: &str, edits: &[(usize, u8)], low: &[(usize, u8)]) -> Frag {
+        Frag::at(1081)
+            .name(name)
+            .bases(read(edits))
+            .quals(quals(low))
+            .attr(Tag::EDIT_DISTANCE, edits.len() as i32)
+    }
+
+    /// Writes reads to an indexed BAM in `dir` and returns its path.
+    fn write_bam(dir: &Path, name: &str, builder: &SamBuilder) -> PathBuf {
+        let path = dir.join(format!("{name}.bam"));
+        builder.write_bam(&path).unwrap();
+        let index = noodles::bam::fs::index(&path).unwrap();
+        noodles::bam::bai::fs::write(dir.join(format!("{name}.bam.bai")), &index).unwrap();
+        path
+    }
+
+    /// The tumor-only reads of `tests/calls.reads.var`, which is VarDictJava 1.8.4's output for
+    /// them with `-q 30 -Q 20 -F 0x504 -z 1 -P 0 -K`: 10 reads of the MNV GG>CA at 1100-1101; G>C
+    /// at 1100 on a read whose mate proves the MNV molecule, one with a no-call at 1101 and one with
+    /// the reference there; G>A at 1101 on two reads with a no-call at 1100, which VarDict folds
+    /// into the MNV itself; G>T at 1100 on two reads; and five reference reads.
+    fn tumor_only_reads() -> SamBuilder {
+        let mut builder = SamBuilder::new().read_length(40);
+        for index in 0..10 {
+            builder.add_frag(frag(
+                &format!("m{index}"),
+                &[(1100, b'C'), (1101, b'A')],
+                &[],
+            ));
+        }
+        builder.add_pair(
+            Pair::at(1081, 1081)
+                .name("p1")
+                .bases1(read(&[(1100, b'C'), (1101, b'A')]))
+                .quals1(quals(&[(1101, 20)]))
+                .bases2(read(&[(1100, b'C'), (1101, b'A')]))
+                .quals2(quals(&[]))
+                .strand2(Strand::Minus)
+                .attr(Tag::EDIT_DISTANCE, 2),
+        );
+        builder.add_frag(frag("p2", &[(1100, b'C'), (1101, b'N')], &[]));
+        builder.add_frag(frag("p3", &[(1100, b'C')], &[]));
+        for index in 0..2 {
+            builder.add_frag(frag(
+                &format!("a{index}"),
+                &[(1100, b'N'), (1101, b'A')],
+                &[],
+            ));
+            builder.add_frag(frag(&format!("t{index}"), &[(1100, b'T')], &[]));
+        }
+        for index in 0..5 {
+            builder.add_frag(frag(&format!("r{index}"), &[], &[]));
+        }
+        builder
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn run_end_to_end_folds_leaky_mnv_partials_by_their_reads() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = TempDir::new()?;
+        let bam = write_bam(dir.path(), "tumor", &tumor_only_reads());
+        let output = NamedTempFile::new().expect("Cannot create temporary file!");
+        let output = output.path().to_str().unwrap();
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        cmd
+            .arg("--reference").arg("tests/reference.fa")
+            .arg("--sample").arg("dna00001")
+            .arg("--input").arg("tests/calls.reads.var")
+            .arg("--output").arg(output)
+            .arg("--fix-leaky-mnv")
+            .arg("--reads").arg(&bam)
+            .arg("--reads-base-quality").arg("30")
+            .arg("--filter-low-af").arg("0.1")
+            .unwrap().assert().success();
+
+        assert!(diff(output, "tests/calls.reads.vcf"));
+        Ok(())
+    }
+
+    /// The tumor and normal reads of `tests/calls.tumor-normal.reads.var`, which is VarDictJava
+    /// 1.8.4's output for them with `-q 30 -Q 20 -F 0x504 -z 1 -P 0 -K`, over the three-base MNV
+    /// GGG>CAC at 1100-1102: both samples carry it on 10 reads. The tumor has G>C at 1100 on a read
+    /// with the reference at 1101 and 1102 and one with a no-call at 1101, and GG>CA at 1100-1101 on
+    /// two reads whose mates prove the MNV molecule; the normal has G>C on a read with a no-call at
+    /// 1101 and GG>CA on a read with a no-call at 1102.
+    fn tumor_normal_reads() -> (SamBuilder, SamBuilder) {
+        let mut tumor = SamBuilder::new().read_length(40);
+        let mut normal = SamBuilder::new().read_length(40);
+        let mnv = [(1100, b'C'), (1101, b'A'), (1102, b'C')];
+        for builder in [&mut tumor, &mut normal] {
+            for index in 0..10 {
+                builder.add_frag(frag(&format!("m{index}"), &mnv, &[]));
+            }
+            for index in 0..5 {
+                builder.add_frag(frag(&format!("r{index}"), &[], &[]));
+            }
+        }
+        tumor.add_frag(frag("s1", &[(1100, b'C')], &[]));
+        tumor.add_frag(frag("s2", &[(1100, b'C'), (1101, b'N'), (1102, b'C')], &[]));
+        for index in 0..2 {
+            tumor.add_pair(
+                Pair::at(1081, 1081)
+                    .name(format!("p{index}"))
+                    .bases1(read(&mnv))
+                    .quals1(quals(&[(1102, 20)]))
+                    .bases2(read(&mnv))
+                    .quals2(quals(&[]))
+                    .strand2(Strand::Minus)
+                    .attr(Tag::EDIT_DISTANCE, 3),
+            );
+        }
+        normal.add_frag(frag("n1", &[(1100, b'C'), (1101, b'N'), (1102, b'C')], &[]));
+        normal.add_frag(frag("n2", &[(1100, b'C'), (1101, b'A'), (1102, b'N')], &[]));
+        (tumor, normal)
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn run_end_to_end_folds_tumor_normal_leaky_mnv_partials_by_their_reads() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = TempDir::new()?;
+        let (tumor, normal) = tumor_normal_reads();
+        let tumor = write_bam(dir.path(), "tumor", &tumor);
+        let normal = write_bam(dir.path(), "normal", &normal);
+        let output = NamedTempFile::new().expect("Cannot create temporary file!");
+        let output = output.path().to_str().unwrap();
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        cmd
+            .arg("--reference").arg("tests/reference.fa")
+            .arg("--normal-sample").arg("N")
+            .arg("--input").arg("tests/calls.tumor-normal.reads.var")
+            .arg("--output").arg(output)
+            .arg("--fix-leaky-mnv")
+            .arg("--reads").arg(format!("{}|{}", tumor.display(), normal.display()))
+            .arg("--reads-base-quality").arg("30");
+        let assert = cmd.assert().success();
+        let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+        assert!(!stderr.contains("WARN"), "{stderr}");
+
+        assert!(diff(output, "tests/calls.tumor-normal.reads.vcf"));
+        Ok(())
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn run_end_to_end_warns_when_the_bams_look_swapped() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = TempDir::new()?;
+        let (tumor, normal) = tumor_normal_reads();
+        let tumor = write_bam(dir.path(), "tumor", &tumor);
+        let normal = write_bam(dir.path(), "normal", &normal);
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        cmd
+            .arg("--reference").arg("tests/reference.fa")
+            .arg("--normal-sample").arg("N")
+            .arg("--input").arg("tests/calls.tumor-normal.reads.var")
+            .arg("--output").arg(dir.path().join("out.vcf"))
+            .arg("--fix-leaky-mnv")
+            .arg("--reads").arg(format!("{}|{}", normal.display(), tumor.display()))
+            .arg("--reads-base-quality").arg("30");
+        let assert = cmd.assert().success();
+        let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+        // The built BAMs name one read group sample, so only the reads tell the swap.
+        assert!(stderr.contains("did not find the reads VarDict counted"), "{stderr}");
+        Ok(())
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn run_end_to_end_refuses_one_bam_for_two_samples() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = TempDir::new()?;
+        let (tumor, _) = tumor_normal_reads();
+        let tumor = write_bam(dir.path(), "tumor", &tumor);
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        cmd
+            .arg("--reference").arg("tests/reference.fa")
+            .arg("--normal-sample").arg("N")
+            .arg("--input").arg("tests/calls.tumor-normal.reads.var")
+            .arg("--output").arg(dir.path().join("out.vcf"))
+            .arg("--fix-leaky-mnv")
+            .arg("--reads").arg(&tumor);
+        let assert = cmd.assert().failure().code(1);
+        let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+        assert!(stderr.contains("--reads names 1 BAM(s) for 2 sample(s)"), "{stderr}");
+        Ok(())
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn run_end_to_end_warns_when_no_read_feeds_the_rows() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = TempDir::new()?;
+        let mut builder = SamBuilder::new().read_length(40);
+        builder.add_frag(frag("r0", &[], &[]));
+        let bam = write_bam(dir.path(), "tumor", &builder);
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        cmd
+            .arg("--reference").arg("tests/reference.fa")
+            .arg("--sample").arg("dna00001")
+            .arg("--input").arg("tests/calls.reads.var")
+            .arg("--output").arg(dir.path().join("out.vcf"))
+            .arg("--fix-leaky-mnv")
+            .arg("--reads").arg(&bam)
+            .arg("--reads-base-quality").arg("30");
+        let assert = cmd.assert().success();
+        let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+        assert!(stderr.contains("No read in the reads fed 1 of the 1 partial row(s)"), "{stderr}");
+        Ok(())
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn run_end_to_end_refuses_reads_of_another_reference() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = TempDir::new()?;
+        let mut builder = SamBuilder::new().read_length(40);
+        builder.add_frag(frag("r0", &[], &[]).contig(1));
+        let bam = write_bam(dir.path(), "tumor", &builder);
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        cmd
+            .arg("--reference").arg("tests/tumor-normal.fa")
+            .arg("--normal-sample").arg("N")
+            .arg("--input").arg("tests/calls.tumor-normal.leaky-mnv.var")
+            .arg("--output").arg(dir.path().join("out.vcf"))
+            .arg("--fix-leaky-mnv")
+            .arg("--reads").arg(format!("{0}|{0}", bam.display()));
+        let assert = cmd.assert().failure().code(1);
+        let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+        assert!(stderr.contains("Contig 'cG' is not in the reads"), "{stderr}");
+        Ok(())
+    }
+
+    #[rstest]
+    #[case::without_the_fix(&["--reads", "x.bam"])]
+    #[case::with_a_rate(&["--fix-leaky-mnv", "--reads", "x.bam", "--leaky-mnv-rate", "0.1"])]
+    #[case::read_options_without_reads(&["--fix-leaky-mnv", "--reads-base-quality", "30"])]
+    #[rustfmt::skip]
+    fn run_end_to_end_refuses_read_options_out_of_place(#[case] args: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        cmd
+            .arg("--reference").arg("tests/reference.fa")
+            .arg("--input").arg("tests/calls.reads.var")
+            .args(args);
+        cmd.assert().failure().code(1);
         Ok(())
     }
 }

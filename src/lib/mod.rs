@@ -4,7 +4,7 @@
 use ahash::{AHashMap, AHashSet};
 use anyhow::Result;
 use csv::{Reader, ReaderBuilder, StringRecord};
-use log::warn;
+use log::{info, warn};
 use proglog::ProgLogBuilder;
 use std::error;
 use std::fmt::Debug;
@@ -15,9 +15,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::fai::{fasta_contigs_to_vcf_header, fasta_path_to_vcf_header};
 use crate::filter::FilterThresholds;
-use crate::mnv::{Fold, LeakRate, Merged, fold_partials};
+use crate::mnv::{Fold, LeakRate, LeakyMnvFix, Merged, Rule, fold_partials};
 use crate::normalize::{Normalized, normalize};
 use crate::output::{Index, Output};
+use crate::reads::ReadSources;
 use crate::record::MIN_HOM_ALT_AF;
 use crate::record::TumorNormalVariant;
 use crate::record::TumorOnlyVariant;
@@ -34,6 +35,7 @@ pub mod io;
 pub mod mnv;
 pub mod normalize;
 pub mod output;
+pub mod reads;
 pub mod record;
 pub mod reference;
 pub mod sort;
@@ -165,9 +167,9 @@ pub struct Options<'a> {
     pub normal_sample: Option<&'a str>,
     /// Skip non-variant sites (where ref_allele == alt_allele).
     pub skip_non_variants: bool,
-    /// The leak rate to fold the partial rows of each MNV back into it at, or `None` to not fold;
-    /// see [`mnv`].
-    pub fix_leaky_mnv: Option<LeakRate>,
+    /// How to fold the partial rows of each MNV back into it, by their counts at a leak rate or
+    /// by their reads, or `None` to not fold; see [`mnv`].
+    pub fix_leaky_mnv: Option<LeakyMnvFix>,
     /// The FILTER labels to apply.
     pub filters: FilterThresholds,
     /// The directory to spill records to while sorting, resolved by [`sort::resolve_tmp_dir`].
@@ -256,10 +258,13 @@ fn convert<I: Read>(
 
     let filters = &options.filters;
     let mut header = match &normal_sample {
-        Some(normal_sample) => {
-            tumor_normal_header(&sample, normal_sample, filters, options.fix_leaky_mnv)
-        }
-        None => tumor_only_header(&sample, filters, options.fix_leaky_mnv),
+        Some(normal_sample) => tumor_normal_header(
+            &sample,
+            normal_sample,
+            filters,
+            options.fix_leaky_mnv.as_ref(),
+        ),
+        None => tumor_only_header(&sample, filters, options.fix_leaky_mnv.as_ref()),
     };
 
     fasta_contigs_to_vcf_header(&options.reference, &mut header);
@@ -267,6 +272,28 @@ fn convert<I: Read>(
         .expect("Adding FASTA path to header failed!");
     let header_text = header_bytes(&header)?;
 
+    let folder = match &options.fix_leaky_mnv {
+        None => None,
+        Some(LeakyMnvFix::Counts(leak_rate)) => Some(Folder::Counts(*leak_rate)),
+        Some(LeakyMnvFix::Reads { bams, options }) => {
+            let sources = ReadSources::open(bams, *options)?;
+            if peeked && sources.samples() != layout.samples() {
+                return Err(format!(
+                    "--reads names {} BAM(s) for {} sample(s): give one per sample, the tumor (or only) sample's first!",
+                    sources.samples(),
+                    layout.samples()
+                )
+                .into());
+            }
+            let names: Vec<&str> = std::iter::once(sample.as_str())
+                .chain(normal_sample.as_deref())
+                .collect();
+            for warning in sources.sample_warnings(&names) {
+                warn!("{warning}");
+            }
+            Some(Folder::Reads(sources))
+        }
+    };
     let mut sink = Sink {
         records: RecordWriter::new(header),
         reference,
@@ -274,7 +301,8 @@ fn convert<I: Read>(
         line: Vec::new(),
         seen: SeenRows::default(),
         filters,
-        fix_leaky_mnv: options.fix_leaky_mnv,
+        folder,
+        folds: FoldCounts::default(),
         progress: ProgLogBuilder::new()
             .name("main")
             .verb("Processed")
@@ -323,6 +351,35 @@ fn convert<I: Read>(
         }
     }
     sink.add_region(&region, columns, ordinal)?;
+    if let Some(Folder::Reads(sources)) = &sink.folder {
+        let summary = sources.summary;
+        info!(
+            "Reads decided {} partial row(s) and sample(s) under {} MNV pileup(s); {} reconciled with VarDict's ALT reads, and {} of the {} whose reads would have moved did not.",
+            summary.decisions,
+            summary.pileups,
+            summary.reconciled,
+            summary.decisive_unreconciled,
+            summary.decisive
+        );
+        if summary.empty * 2 > summary.decisions {
+            warn!(
+                "No read in the reads fed {} of the {} partial row(s) and sample(s) VarDict counted reads toward. Check that --reads names the BAMs VarDict was run on, in sample order, and that --reads-base-quality, --reads-min-mapq, --reads-exclude-flags, --reads-max-mismatches and --reads-mnv-gap match the run.",
+                summary.empty, summary.decisions
+            );
+        } else if summary.decisive >= 2 && summary.decisive_unreconciled * 2 > summary.decisive {
+            warn!(
+                "{} of the {} partial row(s) and sample(s) whose reads would have moved did not find the reads VarDict counted, so they kept every read. Check that --reads names the BAMs VarDict was run on, in sample order, and that --reads-base-quality, --reads-min-mapq, --reads-exclude-flags, --reads-max-mismatches and --reads-mnv-gap match the run.",
+                summary.decisive_unreconciled, summary.decisive
+            );
+        }
+    }
+    if sink.folder.is_some() {
+        let folds = sink.folds;
+        info!(
+            "Folded {} partial row(s) whole and {} in part into {} MNV(s), moving {} ALT read(s).",
+            folds.whole, folds.split, folds.mnvs, folds.reads
+        );
+    }
 
     output
         .write_all(&header_text)
@@ -358,8 +415,24 @@ struct Sink<'r> {
     line: Vec<u8>,
     seen: SeenRows,
     filters: &'r FilterThresholds,
-    fix_leaky_mnv: Option<LeakRate>,
+    folder: Option<Folder>,
+    folds: FoldCounts,
     progress: proglog::ProgLog,
+}
+
+/// How many rows the folds touched.
+#[derive(Clone, Copy, Debug, Default)]
+struct FoldCounts {
+    mnvs: usize,
+    whole: usize,
+    split: usize,
+    reads: i64,
+}
+
+/// How a sink folds leaky MNV partials.
+enum Folder {
+    Counts(LeakRate),
+    Reads(ReadSources),
 }
 
 impl Sink<'_> {
@@ -389,7 +462,14 @@ impl Sink<'_> {
     ) -> Result<(), Box<dyn error::Error>> {
         let written: Vec<TumorOnlyVariant> =
             calls.iter().map(|call| normalized.apply(call)).collect();
-        let Some(record) = build_record(&mut self.records, &written, status, self.filters, merged)?
+        let Some(record) = build_record(
+            &mut self.records,
+            &written,
+            status,
+            self.filters,
+            merged,
+            None,
+        )?
         else {
             return Ok(());
         };
@@ -397,6 +477,37 @@ impl Sink<'_> {
         self.line.clear();
         record.write(&mut self.line)?;
         let rank = Rank::new(region, calls, row);
+        self.sorter.push(key, rank, &self.line)?;
+        self.progress.record();
+        Ok(())
+    }
+
+    /// Adds a partial row that kept some reads while `moved` reads per sample went to its MNV.
+    fn add_split(
+        &mut self,
+        kept: &[TumorOnlyVariant],
+        moved: &[i32],
+        normalized: &Normalized,
+        status: Option<&str>,
+        region: u64,
+    ) -> Result<(), Box<dyn error::Error>> {
+        let written: Vec<TumorOnlyVariant> =
+            kept.iter().map(|call| normalized.apply(call)).collect();
+        let Some(record) = build_record(
+            &mut self.records,
+            &written,
+            status,
+            self.filters,
+            None,
+            Some(moved),
+        )?
+        else {
+            return Ok(());
+        };
+        let key = sort_key(record.rid(), normalized);
+        self.line.clear();
+        record.write(&mut self.line)?;
+        let rank = Rank::new(region, kept, &kept[0]);
         self.sorter.push(key, rank, &self.line)?;
         self.progress.record();
         Ok(())
@@ -435,11 +546,30 @@ impl Sink<'_> {
             .zip(&normalized)
             .map(|(row, call)| self.seen.contains(row[0].contig, call))
             .collect();
-        let folds = match self.fix_leaky_mnv {
-            Some(leak_rate) => fold_partials(&calls, &written, leak_rate),
+        let folds = match &mut self.folder {
             None => vec![Fold::Keep; calls.len()],
+            Some(Folder::Counts(leak_rate)) => {
+                fold_partials(&calls, &written, Rule::Counts(*leak_rate))
+            }
+            Some(Folder::Reads(sources)) => {
+                let fates = sources.fates(&calls, &written, &mut self.reference)?;
+                fold_partials(&calls, &written, Rule::Reads(&fates))
+            }
         };
         for (row, fold) in folds.into_iter().enumerate() {
+            match &fold {
+                Fold::Keep => {}
+                Fold::Into(_) => self.folds.whole += 1,
+                Fold::Split { .. } => self.folds.split += 1,
+                Fold::Merged(merged) => {
+                    self.folds.mnvs += 1;
+                    self.folds.reads += merged
+                        .partial_reads
+                        .iter()
+                        .map(|&r| i64::from(r))
+                        .sum::<i64>();
+                }
+            }
             match fold {
                 _ if written[row] => {}
                 Fold::Keep => self.add_normalized(
@@ -458,6 +588,9 @@ impl Sink<'_> {
                     ordinal,
                     &calls[row][0],
                 )?,
+                Fold::Split {
+                    calls: kept, moved, ..
+                } => self.add_split(&kept, &moved, &normalized[row], statuses[row], ordinal)?,
                 Fold::Into(_) => {}
             }
         }
@@ -507,13 +640,15 @@ fn compact(record: &StringRecord, columns: Columns) -> StringRecord {
 
 /// Builds one VCF record with a sample column per call, the tumor (or only) sample first; FILTER and
 /// the site's INFO come from the first call, and a tumor-normal record carries its VARDICT_STATUS.
-/// Returns `None` for a record the writer skips.
+/// An MNV that absorbed partials carries its merge, and a partial that lost reads to its MNV the
+/// reads `moved` per sample. Returns `None` for a record the writer skips.
 fn build_record<'w>(
     records: &'w mut RecordWriter,
     calls: &[TumorOnlyVariant],
     status: Option<&str>,
     filters: &FilterThresholds,
     merged: Option<&Merged>,
+    moved: Option<&[i32]>,
 ) -> Result<Option<Record<'w>>, Box<dyn error::Error>> {
     let var = &calls[0];
     let Some(mut variant) = records.record(
@@ -623,6 +758,9 @@ fn build_record<'w>(
 
     if let Some(merged) = merged {
         variant.push_format_integer("MNV_PARTIAL_READS", &merged.partial_reads)?;
+    }
+    if let Some(moved) = moved {
+        variant.push_format_integer("MNV_MOVED_READS", moved)?;
     }
 
     if let Some(counts) = calls
@@ -1108,7 +1246,7 @@ mod tests {
         let options = Options {
             reference: PathBuf::from(reference),
             normal_sample: path.contains("tumor-normal").then_some("N"),
-            fix_leaky_mnv: fix_leaky_mnv.then_some(LeakRate::default()),
+            fix_leaky_mnv: fix_leaky_mnv.then_some(LeakyMnvFix::Counts(LeakRate::default())),
             filters: FilterThresholds {
                 near_read_end: Some(8.0),
                 low_mean_mapq: Some(10.0),
@@ -1511,7 +1649,7 @@ mod tests {
                 output: Some(output.path().into()),
                 reference: PathBuf::from("tests/reference.fa"),
                 sample: Some("dna00001"),
-                fix_leaky_mnv: fix_leaky_mnv.then_some(LeakRate::default()),
+                fix_leaky_mnv: fix_leaky_mnv.then_some(LeakyMnvFix::Counts(LeakRate::default())),
                 ..Default::default()
             },
         )?;

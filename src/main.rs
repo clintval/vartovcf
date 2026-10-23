@@ -14,7 +14,8 @@ use signal_hook::consts::{SIGINT, SIGTERM};
 use signal_hook::flag;
 
 use vartovcflib::filter::FilterThresholds;
-use vartovcflib::mnv::LeakRate;
+use vartovcflib::mnv::{LeakRate, LeakyMnvFix};
+use vartovcflib::reads::{ReadOptions, parse_flags, split_bams};
 use vartovcflib::{Options, vartovcf};
 
 #[derive(Clone, Debug, Parser)]
@@ -52,9 +53,33 @@ struct Opt {
     #[arg(long)]
     fix_leaky_mnv: bool,
 
-    /// Probability that a read of an MNV molecule counts toward any one partial row, at least 0.001 and below 0.5; with --fix-leaky-mnv, a partial folds when it has fewer reads (c) than its MNV (n) and P(Binomial(n + c, rate) >= c) >= 0.05. The rate varies with the library and the MNV's sequence context; see the README to estimate it
-    #[arg(long, value_name = "RATE", default_value_t = LeakRate::default().value(), requires = "fix_leaky_mnv")]
+    /// Probability that a read of an MNV molecule counts toward any one partial row, at least 0.001 and below 0.5; with --fix-leaky-mnv, a partial folds when it has fewer reads (c) than its MNV (n) and P(Binomial(n + c, rate) >= c) >= 0.05. The rate varies with the library and the MNV's sequence context; see the README to estimate it. Not used with --reads
+    #[arg(long, value_name = "RATE", default_value_t = LeakRate::default().value(), requires = "fix_leaky_mnv", conflicts_with = "reads")]
     leaky_mnv_rate: f64,
+
+    /// The indexed BAM VarDict read for the tumor (or only) sample, or `tumor.bam|normal.bam` for both, as VarDict's -b takes them. With --fix-leaky-mnv, each partial row's reads are then followed to the MNV's other changed bases, and only those that are the MNV's own molecules, or consistent with leakage, are folded; a row whose reads are another allele's keeps them. See the README
+    #[arg(long, value_name = "BAMS", requires = "fix_leaky_mnv")]
+    reads: Option<String>,
+
+    /// The base quality VarDict ran with (-q): a base is a good call at this, an MNV grows through a changed base only at this plus 5, and a base at the MNV's other changed position is evidence only at this
+    #[arg(long, value_name = "QUAL", default_value_t = ReadOptions::default().base_quality, requires = "reads")]
+    reads_base_quality: f64,
+
+    /// The mapping quality VarDict ran with (-Q); reads below it are not followed
+    #[arg(long, value_name = "MAPQ", default_value_t = ReadOptions::default().min_mapping_quality, requires = "reads")]
+    reads_min_mapq: u8,
+
+    /// The flag filter VarDict ran with (-F), as hexadecimal with 0x or decimal; reads with any of these flags are not followed
+    #[arg(long, value_name = "FLAGS", default_value = "0x504", value_parser = parse_flags, requires = "reads")]
+    reads_exclude_flags: u16,
+
+    /// The mismatch limit VarDict ran with (-m); reads whose NM minus inserted and deleted bases exceeds it are not followed
+    #[arg(long, value_name = "N", default_value_t = ReadOptions::default().max_mismatches, requires = "reads")]
+    reads_max_mismatches: i64,
+
+    /// The extension VarDict ran with (-X): the most reference-matching bases it bridges between an MNV's mismatches
+    #[arg(long, value_name = "N", default_value_t = ReadOptions::default().mnv_gap, requires = "reads")]
+    reads_mnv_gap: usize,
 
     /// Label calls NEAR_READ_END when their mean distance to the nearer read end is below this; not applied when not given
     #[arg(long, value_name = "MIN_MEAN_DIST")]
@@ -155,11 +180,23 @@ fn main() -> Result<(), Error> {
         sample: opt.sample.as_deref(),
         normal_sample: opt.normal_sample.as_deref(),
         skip_non_variants: opt.skip_non_variants,
-        fix_leaky_mnv: opt.fix_leaky_mnv.then(|| {
-            LeakRate::new(opt.leaky_mnv_rate).unwrap_or_else(|message| {
-                error!("{message}");
-                process::exit(1)
-            })
+        fix_leaky_mnv: opt.fix_leaky_mnv.then(|| match &opt.reads {
+            Some(bams) => LeakyMnvFix::Reads {
+                bams: split_bams(bams),
+                options: ReadOptions {
+                    base_quality: opt.reads_base_quality,
+                    min_mapping_quality: opt.reads_min_mapq,
+                    exclude_flags: opt.reads_exclude_flags,
+                    max_mismatches: opt.reads_max_mismatches,
+                    mnv_gap: opt.reads_mnv_gap,
+                },
+            },
+            None => {
+                LeakyMnvFix::Counts(LeakRate::new(opt.leaky_mnv_rate).unwrap_or_else(|message| {
+                    error!("{message}");
+                    process::exit(1)
+                }))
+            }
         }),
         tmp_dir: opt.tmp_dir,
         signal: Some(&signal),
