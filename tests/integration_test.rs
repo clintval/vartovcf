@@ -738,6 +738,28 @@ mod tests {
     }
 
     #[test]
+    fn run_end_to_end_warns_of_an_sv_that_ends_before_its_pos()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let rows = read_to_string("tests/calls.var")?;
+        let mut fields: Vec<&str> = rows.lines().next().unwrap().split('\t').collect();
+        fields[4] = "5";
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        let assert = cmd
+            .args(["--reference", "tests/reference.fa", "--sample", "dna00001"])
+            .write_stdin(format!("{}\n", fields.join("\t")))
+            .assert()
+            .success();
+        let stdout = String::from_utf8(assert.get_output().stdout.clone())?;
+        let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+        assert!(stdout.contains("\tTYPE=INV;END=5;"), "{stdout}");
+        assert!(
+            stderr.contains("The INV at chr12:447 ends at 5, before its POS;"),
+            "{stderr}"
+        );
+        Ok(())
+    }
+
+    #[test]
     #[rustfmt::skip]
     fn run_end_to_end_with_skip_non_variants() -> Result<(), Box<dyn std::error::Error>> {
         let output = NamedTempFile::new().expect("Cannot create temporary file!");

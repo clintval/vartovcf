@@ -547,6 +547,12 @@ fn build_record<'h>(
     }
 
     if VALID_SV_TYPES.contains(&var.variant_type) {
+        if var.end < var.start {
+            warn!(
+                "The {} at {}:{} ends at {}, before its POS; its INFO END is written as VarDict gives it.",
+                var.variant_type, var.contig, var.start, var.end
+            );
+        }
         variant.push_info_integer("END", &[var.end as i32])?;
         let sv_call = calls
             .iter()
