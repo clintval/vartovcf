@@ -80,39 +80,45 @@ impl FilterThresholds {
             || self.low_dp.is_some()
     }
 
-    /// Return the FILTER header lines of the applied labels.
-    pub fn header_lines(&self) -> Vec<String> {
-        let mut lines = Vec::new();
+    /// Return the ID and description of the FILTER header line of each applied label.
+    pub fn header_filters(&self) -> Vec<(&'static str, String)> {
+        let mut filters = Vec::new();
         if let Some(min_mean_dist) = self.near_read_end {
-            lines.push(format!(
-                r#"##FILTER=<ID={NEAR_READ_END},Description="Mean distance from the variant to the nearer end of the ALT reads' aligned parts (FORMAT MEAN_DIST_TO_READ_END) is below {min_mean_dist}.">"#
+            filters.push((
+                NEAR_READ_END,
+                format!(r#"Mean distance from the variant to the nearer end of the ALT reads' aligned parts (FORMAT MEAN_DIST_TO_READ_END) is below {min_mean_dist}."#),
             ));
         }
         if let Some(min_mean_mapq) = self.low_mean_mapq {
-            lines.push(format!(
-                r#"##FILTER=<ID={LOW_MEAN_MAPQ},Description="Mean mapping quality of the ALT reads (FORMAT MEAN_MAPQ) is below {min_mean_mapq}.">"#
+            filters.push((
+                LOW_MEAN_MAPQ,
+                format!(r#"Mean mapping quality of the ALT reads (FORMAT MEAN_MAPQ) is below {min_mean_mapq}."#),
             ));
         }
         if let Some(min_copies) = self.homopolymer_indel {
             let af_limit = af_limit_clause(self.homopolymer_indel_max_af);
-            lines.push(format!(
-                r#"##FILTER=<ID={HOMOPOLYMER_INDEL},Description="Call exactly one base longer or shorter than REF (an insertion, a deletion or a Complex call) in a homopolymer of at least {min_copies} copies (INFO REPEAT_UNIT_COPIES with REPEAT_UNIT_LEN 1){af_limit}, the signature of polymerase slippage.">"#
+            filters.push((
+                HOMOPOLYMER_INDEL,
+                format!(r#"Call exactly one base longer or shorter than REF (an insertion, a deletion or a Complex call) in a homopolymer of at least {min_copies} copies (INFO REPEAT_UNIT_COPIES with REPEAT_UNIT_LEN 1){af_limit}, the signature of polymerase slippage."#),
             ));
         }
         if let Some(min_copies) = self.tandem_repeat_indel {
             let af_limit = af_limit_clause(self.tandem_repeat_indel_max_af);
-            lines.push(format!(
-                r#"##FILTER=<ID={TANDEM_REPEAT_INDEL},Description="Call exactly one repeat unit longer or shorter than REF (an insertion, a deletion or a Complex call) in a 2-6 bp tandem repeat of at least {min_copies} copies (INFO REPEAT_UNIT_COPIES and REPEAT_UNIT_LEN){af_limit}, the signature of polymerase slippage.">"#
+            filters.push((
+                TANDEM_REPEAT_INDEL,
+                format!(r#"Call exactly one repeat unit longer or shorter than REF (an insertion, a deletion or a Complex call) in a 2-6 bp tandem repeat of at least {min_copies} copies (INFO REPEAT_UNIT_COPIES and REPEAT_UNIT_LEN){af_limit}, the signature of polymerase slippage."#),
             ));
         }
         if let Some(max_mean_mismatches) = self.high_mean_mismatches {
-            lines.push(format!(
-                r#"##FILTER=<ID={HIGH_MEAN_MISMATCHES},Description="Mean substitution mismatches per ALT read (FORMAT MEAN_MISMATCHES) is above {max_mean_mismatches}, suggesting misaligned or paralogous reads.">"#
+            filters.push((
+                HIGH_MEAN_MISMATCHES,
+                format!(r#"Mean substitution mismatches per ALT read (FORMAT MEAN_MISMATCHES) is above {max_mean_mismatches}, suggesting misaligned or paralogous reads."#),
             ));
         }
         if let Some(max_af) = self.same_read_position {
-            lines.push(format!(
-                r#"##FILTER=<ID={SAME_READ_POSITION},Description="Every one of at least 2 ALT reads places the variant at the same distance from its read end (FORMAT ALT_READ_POS_VARIES 0) at an AF (FORMAT AF) below {max_af}, a sign of one fragment counted repeatedly or an error at a fixed sequencing cycle.">"#
+            filters.push((
+                SAME_READ_POSITION,
+                format!(r#"Every one of at least 2 ALT reads places the variant at the same distance from its read end (FORMAT ALT_READ_POS_VARIES 0) at an AF (FORMAT AF) below {max_af}, a sign of one fragment counted repeatedly or an error at a fixed sequencing cycle."#),
             ));
         }
         if let Some(max_p) = self.strand_bias {
@@ -124,26 +130,40 @@ impl FilterThresholds {
                 .strand_bias_max_af
                 .map(|max_af| format!(", and AF (FORMAT AF) is below {max_af}"))
                 .unwrap_or_default();
-            lines.push(format!(
-                r#"##FILTER=<ID={STRAND_BIAS},Description="The ALT reads split across strands differently from the REF reads: the two-sided Fisher p-value of REF and ALT reads by strand (FORMAT STRAND_BIAS_FISHER_P) is below {max_p}{odds_ratio}{af_limit}.">"#
+            filters.push((
+                STRAND_BIAS,
+                format!(r#"The ALT reads split across strands differently from the REF reads: the two-sided Fisher p-value of REF and ALT reads by strand (FORMAT STRAND_BIAS_FISHER_P) is below {max_p}{odds_ratio}{af_limit}."#),
             ));
         }
         if let Some(min_af) = self.low_af {
-            lines.push(format!(
-                r#"##FILTER=<ID={LOW_AF},Description="Fraction of reads carrying the ALT allele (FORMAT AF) is below {min_af}.">"#
+            filters.push((
+                LOW_AF,
+                format!(
+                    r#"Fraction of reads carrying the ALT allele (FORMAT AF) is below {min_af}."#
+                ),
             ));
         }
         if let Some(min_qmean) = self.low_qmean {
-            lines.push(format!(
-                r#"##FILTER=<ID={LOW_QMEAN},Description="Mean per-read variant base quality of the ALT reads (FORMAT QMEAN) is below {min_qmean}.">"#
+            filters.push((
+                LOW_QMEAN,
+                format!(r#"Mean per-read variant base quality of the ALT reads (FORMAT QMEAN) is below {min_qmean}."#),
             ));
         }
         if let Some(min_dp) = self.low_dp {
-            lines.push(format!(
-                r#"##FILTER=<ID={LOW_DP},Description="Read depth (FORMAT DP) is below {min_dp}.">"#
+            filters.push((
+                LOW_DP,
+                format!(r#"Read depth (FORMAT DP) is below {min_dp}."#),
             ));
         }
-        lines
+        filters
+    }
+
+    /// Return the FILTER header lines of the applied labels.
+    pub fn header_lines(&self) -> Vec<String> {
+        self.header_filters()
+            .into_iter()
+            .map(|(id, description)| format!(r#"##FILTER=<ID={id},Description="{description}">"#))
+            .collect()
     }
 
     /// Return the FILTER labels a call fails by its FORMAT values: none without reads of an ALT

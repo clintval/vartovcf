@@ -41,7 +41,7 @@ struct Opt {
     #[arg(short, long)]
     output: Option<PathBuf>,
 
-    /// Directory for temporary files: the header while it is formatted and the records sorting spills. They are removed when vartovcf exits, fails or is stopped by a SIGINT or SIGTERM, which takes effect at the next input row or the next record written; a second signal, or SIGKILL, exits at once and leaves a spillsort-* directory and an incomplete output file behind [default: $TMPDIR when set and not empty, else the system's temporary directory]
+    /// Directory for temporary files: the records sorting spills. They are removed when vartovcf exits, fails or is stopped by a SIGINT or SIGTERM, which takes effect at the next input row or the next record written; a second signal, or SIGKILL, exits at once and leaves a spillsort-* directory and an incomplete output file behind [default: $TMPDIR when set and not empty, else the system's temporary directory]
     #[arg(long, value_name = "DIR")]
     tmp_dir: Option<PathBuf>,
 

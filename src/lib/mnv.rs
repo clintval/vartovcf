@@ -22,10 +22,9 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use rust_htslib::bcf::record::Numeric;
-
 use crate::reads::ReadOptions;
 use crate::record::TumorOnlyVariant;
+use crate::vcf::Numeric;
 
 /// The least `P(X >= c)` a partial's `c` reads may have under the leak binomial and still be folded.
 pub const LEAK_TAIL: f64 = 0.05;

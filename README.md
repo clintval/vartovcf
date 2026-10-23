@@ -16,7 +16,7 @@ Install with the Conda or Mamba package manager after setting your [Bioconda cha
 ❯ mamba install vartovcf
 ```
 
-Or build from source with Rust 1.89 or newer, a C toolchain, and libclang (used by `bindgen` to generate the htslib bindings):
+Or build from source with Rust 1.89 or newer:
 
 ```bash
 ❯ cargo install --locked --git https://github.com/clintval/vartovcf
