@@ -132,12 +132,10 @@ mod tests {
         Ok(())
     }
 
-    #[rstest]
-    #[case("--filter-low-hicnt")]
-    #[case("--filter-low-hicnt-fraction")]
-    fn run_end_to_end_refuses_the_removed_hicnt_filters(
-        #[case] option: &str,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    #[test]
+    fn run_end_to_end_refuses_the_removed_hicnt_fraction_filter()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let option = "--filter-low-hicnt-fraction";
         let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
         let assert = cmd
             .args([
@@ -1435,6 +1433,43 @@ mod tests {
             .unwrap().assert().success();
 
         assert!(diff(output, "tests/calls.reads.vcf"));
+        Ok(())
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn run_end_to_end_labels_a_split_partial_by_the_reads_that_stayed() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = TempDir::new()?;
+        let bam = write_bam(dir.path(), "tumor", &tumor_only_reads());
+        let output = NamedTempFile::new().expect("Cannot create temporary file!");
+        let output = output.path().to_str().unwrap();
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        cmd
+            .arg("--reference").arg("tests/reference.fa")
+            .arg("--sample").arg("dna00001")
+            .arg("--input").arg("tests/calls.reads.var")
+            .arg("--output").arg(output)
+            .arg("--fix-leaky-mnv")
+            .arg("--reads").arg(&bam)
+            .arg("--reads-base-quality").arg("30")
+            .arg("--filter-low-hicnt").arg("3")
+            .unwrap().assert().success();
+
+        // VarDict counted 3 high-quality reads of G>C; the split keeps 2 of them.
+        let vcf = read_to_string(output)?;
+        let filters: Vec<String> = vcf
+            .lines()
+            .filter(|line| !line.starts_with('#'))
+            .map(|line| line.split('\t').take(7).collect::<Vec<_>>().join(" "))
+            .collect();
+        assert_eq!(
+            filters,
+            vec![
+                "chr1 1100 . G C . LOW_HICNT",
+                "chr1 1100 . G T . LOW_HICNT",
+                "chr1 1100 . GG CA . PASS",
+            ]
+        );
         Ok(())
     }
 
