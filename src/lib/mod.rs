@@ -24,7 +24,8 @@ use crate::record::TumorOnlyVariant;
 use crate::record::{tumor_normal_fisher_p_value, tumor_normal_header, tumor_only_header};
 use crate::reference::Reference;
 use crate::sort::{Rank, RecordSorter, SortKey, resolve_tmp_dir};
-use crate::vcf::{GenotypeAllele, Header, Record};
+use crate::vcf::{GenotypeAllele, Record, header_bytes};
+use noodles::vcf::Header;
 
 pub mod fai;
 pub mod filter;
@@ -265,12 +266,13 @@ fn convert<I: Read>(
     fasta_contigs_to_vcf_header(&options.reference, &mut header);
     fasta_path_to_vcf_header(&options.reference, &mut header)
         .expect("Adding FASTA path to header failed!");
-    let header_text = header.to_bytes();
+    let header_text = header_bytes(&header)?;
 
     let mut sink = Sink {
         header,
         reference,
         sorter: RecordSorter::new(tmp_dir)?,
+        line: Vec::new(),
         seen: SeenRows::default(),
         filters,
         fix_leaky_mnv: options.fix_leaky_mnv,
@@ -354,6 +356,7 @@ struct Sink<'r> {
     header: Header,
     reference: Reference,
     sorter: RecordSorter,
+    line: Vec<u8>,
     seen: SeenRows,
     filters: &'r FilterThresholds,
     fix_leaky_mnv: Option<LeakRate>,
@@ -388,10 +391,11 @@ impl Sink<'_> {
         let written: Vec<TumorOnlyVariant> =
             calls.iter().map(|call| normalized.apply(call)).collect();
         let record = build_record(&self.header, &written, status, self.filters, merged)?;
-        let line = record.to_vcf_string();
+        let key = sort_key(record.rid(), normalized);
+        self.line.clear();
+        record.write(&mut self.line)?;
         let rank = Rank::new(region, calls, row);
-        self.sorter
-            .push(sort_key(&record, normalized), rank, line.as_bytes())?;
+        self.sorter.push(key, rank, &self.line)?;
         self.progress.record();
         Ok(())
     }
@@ -464,15 +468,16 @@ impl Sink<'_> {
     }
 }
 
-/// The sort key of a record, which is also what makes two records the same call.
-fn sort_key<'n>(record: &Record, call: &'n Normalized) -> SortKey<'n> {
+/// The sort key of a record on the contig with this index, which is also what makes two records
+/// the same call.
+fn sort_key(rid: u32, call: &Normalized) -> SortKey<'_> {
     let alt_allele = if call.ref_allele == call.alt_allele {
         &[][..]
     } else {
         call.alt_allele.as_bytes()
     };
     SortKey {
-        rid: record.rid(),
+        rid,
         pos: call.start - 1,
         ref_allele: call.ref_allele.as_bytes(),
         alt_allele,

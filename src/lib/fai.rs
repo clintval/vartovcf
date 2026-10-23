@@ -7,9 +7,11 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use csv::ReaderBuilder;
+use noodles::vcf::Header;
+use noodles::vcf::header::record::Value;
+use noodles::vcf::header::record::value::Map;
+use noodles::vcf::header::record::value::map::Contig;
 use serde::{Deserialize, Serialize};
-
-use crate::vcf::Header;
 
 /// A FASTA FAI index record.
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -40,15 +42,38 @@ pub fn fai_file<I: AsRef<Path> + Debug>(fasta: I) -> PathBuf {
     PathBuf::from(fasta)
 }
 
-/// Add a collection of VCF contig header records to the supplied VCF header.
-pub fn contigs_to_vcf_header(contigs: &[String], header: &mut Header) {
-    for contig in contigs.iter() {
-        header.push_record(contig);
+/// Declare each contig, with its length, in the VCF header; a contig named twice keeps the length
+/// given first, as htslib keeps it.
+pub fn contigs_to_vcf_header(contigs: &[(String, u64)], header: &mut Header) {
+    for (name, length) in contigs {
+        header.contigs_mut().entry(name.clone()).or_insert_with(|| {
+            let mut contig = Map::<Contig>::new();
+            *contig.length_mut() = usize::try_from(*length).ok();
+            contig
+        });
     }
 }
 
 /// Read a FASTA FAI file and create a list of VCF contig header records.
 pub fn vcf_contig_header_records<I>(fai: I) -> Result<Vec<String>, Box<dyn error::Error>>
+where
+    I: AsRef<Path> + Debug,
+{
+    Ok(read_fai(fai, |record| record.to_vcf_contig_record()))
+}
+
+/// Read the name and length of each contig in a FASTA FAI file.
+pub fn fai_contigs<I>(fai: I) -> Result<Vec<(String, u64)>, Box<dyn error::Error>>
+where
+    I: AsRef<Path> + Debug,
+{
+    Ok(read_fai(fai, |record| {
+        (record.name.to_string(), record.length)
+    }))
+}
+
+/// Read each record of a FASTA FAI file into a value.
+fn read_fai<I, T>(fai: I, value: impl Fn(&FaiRecord) -> T) -> Vec<T>
 where
     I: AsRef<Path> + Debug,
 {
@@ -59,7 +84,7 @@ where
         .unwrap_or_else(|_| panic!("Could not open an FAI reader for file path: {:?}", fai));
 
     let mut carry = csv::StringRecord::new();
-    let mut records: Vec<String> = Vec::new();
+    let mut values = Vec::new();
 
     while reader
         .read_record(&mut carry)
@@ -68,10 +93,10 @@ where
         let rec: FaiRecord = carry
             .deserialize(None)
             .expect("Failed to deserialize the FAI record!");
-        records.push(rec.to_vcf_contig_record());
+        values.push(value(&rec));
     }
 
-    Ok(records)
+    values
 }
 
 /// Add the reference contigs from an indexed FASTA file to the VCF header.
@@ -80,7 +105,7 @@ where
     I: AsRef<Path> + Debug,
 {
     let fai = fai_file(&fasta);
-    let contigs = vcf_contig_header_records(fai).expect("Could not read the FAI index records!");
+    let contigs = fai_contigs(fai).expect("Could not read the FAI index records!");
     contigs_to_vcf_header(&contigs, header);
 }
 
@@ -93,7 +118,7 @@ where
     I: AsRef<Path> + Debug,
 {
     match fasta.as_ref().to_str() {
-        Some(path) => header.push_record(&format!("##reference={path}")),
+        Some(path) => header.insert("reference".parse()?, Value::from(path))?,
         None => return Err("Could not create a string out of the FASTA path".into()),
     };
     Ok(())
@@ -115,7 +140,7 @@ mod tests {
 
     /// Writes a header to a file and reads it back.
     fn read_back(header: &Header, file: &NamedTempFile) -> vcf::Header {
-        std::fs::write(file.path(), header.to_bytes()).unwrap();
+        std::fs::write(file.path(), crate::vcf::header_bytes(header).unwrap()).unwrap();
         vcf::io::reader::Builder::default()
             .build_from_path(file.path())
             .expect("Error opening tempfile!")
@@ -190,8 +215,8 @@ mod tests {
         fai: NamedTempFile,
         contig_header_lines: Vec<String>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let actual = vcf_contig_header_records(fai.path())
-            .expect("Could not parse contig header records from file!");
+        let actual =
+            fai_contigs(fai.path()).expect("Could not parse contig header records from file!");
 
         let mut header = Header::default();
         contigs_to_vcf_header(&actual, &mut header);

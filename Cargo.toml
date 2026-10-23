@@ -33,7 +33,7 @@ clap = { version = "4.6.7", features = ["derive"] }
 csv = "1.4.0"
 env_logger = "0.11.11"
 log = "0.4.34"
-noodles = { version = "0.116.0", features = ["bgzf", "core", "csi", "tabix"] }
+noodles = { version = "0.116.0", features = ["bgzf", "core", "csi", "tabix", "vcf"] }
 proglog = "0.4.0"
 serde = { version = "1.0.229", features = ["derive"] }
 signal-hook = "0.4.5"
@@ -43,7 +43,7 @@ tempfile = "3.27.0"
 [dev-dependencies]
 assert_cmd = "2.2.2"
 file_diff = "1.0.0"
-noodles = { version = "0.116.0", features = ["fasta", "vcf"] }
+noodles = { version = "0.116.0", features = ["fasta"] }
 pretty_assertions = "1.4.1"
 rstest = "0.27.0"
 
