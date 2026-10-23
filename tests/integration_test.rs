@@ -738,6 +738,76 @@ mod tests {
     }
 
     #[test]
+    fn run_end_to_end_writes_an_ambiguity_code_in_ref_as_its_first_base()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = TempDir::new()?;
+        let fasta = dir.path().join("reference.fa");
+        let mut bases = std::fs::read("tests/reference.fa")?;
+        let offset = 6 + 882 / 60 * 61 + 882 % 60;
+        assert_eq!(bases[offset].to_ascii_uppercase(), b'G');
+        bases[offset] = b'R';
+        std::fs::write(&fasta, bases)?;
+        std::fs::copy(
+            "tests/reference.fa.fai",
+            dir.path().join("reference.fa.fai"),
+        )?;
+        let rows: String = read_to_string("tests/calls.var")?
+            .lines()
+            .filter(|row| row.contains("\tchr1\t883\t"))
+            .map(|row| {
+                let mut fields: Vec<&str> = row.split('\t').collect();
+                let gt = format!("R/{}", fields[6]);
+                fields[5] = "R";
+                fields[13] = &gt;
+                format!("{}\n", fields.join("\t"))
+            })
+            .collect();
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        let assert = cmd
+            .arg("--reference")
+            .arg(&fasta)
+            .args(["--sample", "dna00001"])
+            .write_stdin(rows)
+            .assert()
+            .success();
+        let stdout = String::from_utf8(assert.get_output().stdout.clone())?;
+        let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+        let records: Vec<String> = stdout
+            .lines()
+            .filter(|line| !line.starts_with('#'))
+            .map(|line| line.split('\t').take(5).collect::<Vec<_>>().join(" "))
+            .collect();
+        assert_eq!(records, vec!["chr1 883 . A T"]);
+        assert!(
+            stderr.contains("Skipping chr1:883: its REF R is written as A, the same as its ALT A."),
+            "{stderr}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn run_end_to_end_warns_of_an_sv_that_ends_before_its_pos()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let rows = read_to_string("tests/calls.var")?;
+        let mut fields: Vec<&str> = rows.lines().next().unwrap().split('\t').collect();
+        fields[4] = "5";
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        let assert = cmd
+            .args(["--reference", "tests/reference.fa", "--sample", "dna00001"])
+            .write_stdin(format!("{}\n", fields.join("\t")))
+            .assert()
+            .success();
+        let stdout = String::from_utf8(assert.get_output().stdout.clone())?;
+        let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+        assert!(stdout.contains("\tTYPE=INV;END=5;"), "{stdout}");
+        assert!(
+            stderr.contains("The INV at chr12:447 ends at 5, before its POS;"),
+            "{stderr}"
+        );
+        Ok(())
+    }
+
+    #[test]
     #[rustfmt::skip]
     fn run_end_to_end_with_skip_non_variants() -> Result<(), Box<dyn std::error::Error>> {
         let output = NamedTempFile::new().expect("Cannot create temporary file!");
@@ -820,15 +890,35 @@ mod tests {
         start: u64,
         end: u64,
     ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-        use rust_htslib::tbx::{Read, Reader};
+        use noodles::core::{Position, Region};
+        use noodles::{csi, tabix, vcf};
 
-        let mut reader = Reader::from_path(path)?;
-        let tid = reader.tid(contig)?;
-        reader.fetch(tid, start - 1, end)?;
+        let file = std::fs::File::open(path)?;
+        let csi = format!("{}.csi", path.display());
+        let mut reader = if std::path::Path::new(&csi).exists() {
+            vcf::io::IndexedReader::new(file, csi::fs::read(csi)?)
+        } else {
+            vcf::io::IndexedReader::new(file, tabix::fs::read(format!("{}.tbi", path.display()))?)
+        };
+        let header = reader.read_header()?;
+        let region = Region::new(
+            contig,
+            Position::try_from(start as usize)?..=Position::try_from(end as usize)?,
+        );
         let mut records = Vec::new();
-        for record in reader.records() {
-            let record = String::from_utf8(record?)?;
-            records.push(record.split('\t').take(5).collect::<Vec<_>>().join(" "));
+        for record in reader.query(&header, &region)?.records() {
+            let record = record?;
+            let fields = [
+                record.reference_sequence_name().to_string(),
+                record.variant_start().transpose()?.unwrap().to_string(),
+                Some(record.ids().as_ref())
+                    .filter(|ids| !ids.is_empty())
+                    .unwrap_or(".")
+                    .to_string(),
+                record.reference_bases().to_string(),
+                record.alternate_bases().as_ref().to_string(),
+            ];
+            records.push(fields.join(" "));
         }
         Ok(records)
     }
@@ -1203,7 +1293,8 @@ mod tests {
             let copy = dir.path().join("copy.vcf.gz");
             std::fs::write(&copy, &bytes)?;
             let mut text = String::new();
-            rust_htslib::bgzf::Reader::from_path(&copy)?.read_to_string(&mut text)?;
+            noodles::bgzf::io::Reader::new(std::fs::File::open(&copy)?)
+                .read_to_string(&mut text)?;
             text
         } else {
             String::from_utf8(bytes)?

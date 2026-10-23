@@ -6,15 +6,11 @@ use anyhow::Result;
 use csv::{Reader, ReaderBuilder, StringRecord};
 use log::warn;
 use proglog::ProgLogBuilder;
-use rust_htslib::bcf::header::HeaderView;
-use rust_htslib::bcf::record::{GenotypeAllele, Numeric};
-use rust_htslib::bcf::{Format, Header, Record, Writer as VcfWriter};
 use std::error;
 use std::fmt::Debug;
 use std::io::{Read, Write};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::fai::{fasta_contigs_to_vcf_header, fasta_path_to_vcf_header};
@@ -28,6 +24,7 @@ use crate::record::TumorOnlyVariant;
 use crate::record::{tumor_normal_fisher_p_value, tumor_normal_header, tumor_only_header};
 use crate::reference::Reference;
 use crate::sort::{Rank, RecordSorter, SortKey, resolve_tmp_dir};
+use crate::vcf::{GenotypeAllele, Record, RecordWriter, header_bytes};
 
 pub mod fai;
 pub mod filter;
@@ -40,6 +37,7 @@ pub mod output;
 pub mod record;
 pub mod reference;
 pub mod sort;
+pub mod vcf;
 
 /// The structural variant types VarDict writes, which are the values of the `SVTYPE` INFO field.
 pub const VALID_SV_TYPES: &[&str] = &["DEL", "DUP", "INV"];
@@ -267,12 +265,13 @@ fn convert<I: Read>(
     fasta_contigs_to_vcf_header(&options.reference, &mut header);
     fasta_path_to_vcf_header(&options.reference, &mut header)
         .expect("Adding FASTA path to header failed!");
-    let (header, header_text) = render_header(&header, tmp_dir)?;
+    let header_text = header_bytes(&header)?;
 
     let mut sink = Sink {
-        header,
+        records: RecordWriter::new(header),
         reference,
         sorter: RecordSorter::new(tmp_dir)?,
+        line: Vec::new(),
         seen: SeenRows::default(),
         filters,
         fix_leaky_mnv: options.fix_leaky_mnv,
@@ -332,21 +331,6 @@ fn convert<I: Read>(
     Ok(written.map(|_| index))
 }
 
-/// Returns a view of a header to build records with, and the header as VCF text, which it renders
-/// through a temporary file in `tmp_dir`.
-fn render_header(
-    header: &Header,
-    tmp_dir: &Path,
-) -> Result<(Arc<HeaderView>, Vec<u8>), Box<dyn error::Error>> {
-    let file = tempfile::NamedTempFile::new_in(tmp_dir)
-        .map_err(|error| format!("Could not use the temporary directory {tmp_dir:?}: {error}!"))?;
-    let view = {
-        let writer = VcfWriter::from_path(file.path(), header, true, Format::Vcf)?;
-        Arc::new(writer.header().clone())
-    };
-    Ok((view, std::fs::read(file.path())?))
-}
-
 /// Parses a row into its calls, one per sample with the tumor (or only) sample first and a default
 /// call filling the second slot of a tumor-only row, and its tumor-normal VARDICT_STATUS.
 fn parse_row(
@@ -368,9 +352,10 @@ fn parse_row(
 
 /// Normalizes records and adds them to the sort, which writes each call once.
 struct Sink<'r> {
-    header: Arc<HeaderView>,
+    records: RecordWriter,
     reference: Reference,
     sorter: RecordSorter,
+    line: Vec<u8>,
     seen: SeenRows,
     filters: &'r FilterThresholds,
     fix_leaky_mnv: Option<LeakRate>,
@@ -404,11 +389,15 @@ impl Sink<'_> {
     ) -> Result<(), Box<dyn error::Error>> {
         let written: Vec<TumorOnlyVariant> =
             calls.iter().map(|call| normalized.apply(call)).collect();
-        let record = build_record(&self.header, &written, status, self.filters, merged)?;
-        let line = record.to_vcf_string()?;
+        let Some(record) = build_record(&mut self.records, &written, status, self.filters, merged)?
+        else {
+            return Ok(());
+        };
+        let key = sort_key(record.rid(), normalized);
+        self.line.clear();
+        record.write(&mut self.line)?;
         let rank = Rank::new(region, calls, row);
-        self.sorter
-            .push(sort_key(&record, normalized), rank, line.as_bytes())?;
+        self.sorter.push(key, rank, &self.line)?;
         self.progress.record();
         Ok(())
     }
@@ -481,15 +470,16 @@ impl Sink<'_> {
     }
 }
 
-/// The sort key of a record, which is also what makes two records the same call.
-fn sort_key<'n>(record: &Record, call: &'n Normalized) -> SortKey<'n> {
+/// The sort key of a record on the contig with this index, which is also what makes two records
+/// the same call.
+fn sort_key(rid: u32, call: &Normalized) -> SortKey<'_> {
     let alt_allele = if call.ref_allele == call.alt_allele {
         &[][..]
     } else {
         call.alt_allele.as_bytes()
     };
     SortKey {
-        rid: record.rid().unwrap_or_default(),
+        rid,
         pos: call.start - 1,
         ref_allele: call.ref_allele.as_bytes(),
         alt_allele,
@@ -517,53 +507,58 @@ fn compact(record: &StringRecord, columns: Columns) -> StringRecord {
 
 /// Builds one VCF record with a sample column per call, the tumor (or only) sample first; FILTER and
 /// the site's INFO come from the first call, and a tumor-normal record carries its VARDICT_STATUS.
-fn build_record(
-    header: &Arc<HeaderView>,
+/// Returns `None` for a record the writer skips.
+fn build_record<'w>(
+    records: &'w mut RecordWriter,
     calls: &[TumorOnlyVariant],
     status: Option<&str>,
     filters: &FilterThresholds,
     merged: Option<&Merged>,
-) -> Result<Record, Box<dyn error::Error>> {
+) -> Result<Option<Record<'w>>, Box<dyn error::Error>> {
     let var = &calls[0];
-    let rid = header.name2rid(var.contig.as_bytes())?;
-
-    let mut variant = header.empty_record();
-    variant.set_rid(Some(rid));
-    variant.set_pos(var.start as i64 - 1);
-    variant.set_alleles(&[
-        var.ref_allele.as_bytes(),
-        var.alt_allele_for_vcf().as_bytes(),
-    ])?;
-
-    variant.set_qual(f32::missing());
+    let Some(mut variant) = records.record(
+        var.contig,
+        var.start,
+        var.ref_allele,
+        &var.alt_allele_for_vcf(),
+    )?
+    else {
+        return Ok(None);
+    };
 
     if filters.any() && var.has_alt_reads() {
         let labels = filters.labels(var);
         if labels.is_empty() {
-            variant.push_filter("PASS".as_bytes())?;
+            variant.push_filter("PASS")?;
         }
         for label in labels {
-            variant.push_filter(label.as_bytes())?;
+            variant.push_filter(label)?;
         }
     }
 
     if let Some(class) = var.variant_class() {
-        variant.push_info_string(b"TYPE", &[class.as_bytes()])?;
+        variant.push_info_string("TYPE", class)?;
     }
 
     if let Some(shift) = var.indel_3p_shift_value() {
-        variant.push_info_integer(b"INDEL_3P_SHIFT", &[shift])?;
+        variant.push_info_integer("INDEL_3P_SHIFT", &[shift])?;
     }
 
     if let (Some(copies), Some(unit_length)) =
         (var.repeat_unit_copies_value(), var.repeat_unit_len_value())
     {
-        variant.push_info_float(b"REPEAT_UNIT_COPIES", &[copies])?;
-        variant.push_info_integer(b"REPEAT_UNIT_LEN", &[unit_length])?;
+        variant.push_info_float("REPEAT_UNIT_COPIES", &[copies])?;
+        variant.push_info_integer("REPEAT_UNIT_LEN", &[unit_length])?;
     }
 
     if VALID_SV_TYPES.contains(&var.variant_type) {
-        variant.push_info_integer(b"END", &[var.end as i32])?;
+        if var.end < var.start {
+            warn!(
+                "The {} at {}:{} ends at {}, before its POS; its INFO END is written as VarDict gives it.",
+                var.variant_type, var.contig, var.start, var.end
+            );
+        }
+        variant.push_info_integer("END", &[var.end as i32])?;
         let sv_call = calls
             .iter()
             .find(|call| call.has_alt_reads())
@@ -574,20 +569,20 @@ fn build_record(
                 var.contig, var.start, var.variant_type, sv_call.gt
             )
         })?;
-        variant.push_info_integer(b"SVLEN", &[sv_length])?;
-        variant.push_info_string(b"SVTYPE", &[var.variant_type.as_bytes()])?;
+        variant.push_info_integer("SVLEN", &[sv_length])?;
+        variant.push_info_string("SVTYPE", var.variant_type)?;
     }
 
     if let (Some(status), [tumor, normal]) = (status, calls) {
-        variant.push_info_string(b"VARDICT_STATUS", &[status.as_bytes()])?;
+        variant.push_info_string("VARDICT_STATUS", status)?;
         variant.push_info_float(
-            b"TUMOR_NORMAL_FISHER_P",
+            "TUMOR_NORMAL_FISHER_P",
             &[tumor_normal_fisher_p_value(tumor, normal)],
         )?;
     }
 
     if let Some(merged) = merged {
-        variant.push_info_integer(b"MNV_PARTIALS", &[merged.partials as i32])?;
+        variant.push_info_integer("MNV_PARTIALS", &[merged.partials as i32])?;
     }
 
     let genotypes = Values::<_, 4>::collect(
@@ -597,40 +592,37 @@ fn build_record(
             .flat_map(|call| call.gt_value(MIN_HOM_ALT_AF).iter().copied()),
     );
     variant.push_genotypes(&genotypes)?;
-    variant.push_format_integer(b"AD", &each_allele(calls, TumorOnlyVariant::ad_value))?;
-    variant.push_format_integer(b"ADF", &each_allele(calls, TumorOnlyVariant::adf_value))?;
-    variant.push_format_integer(b"ADR", &each_allele(calls, TumorOnlyVariant::adr_value))?;
+    variant.push_format_integer("AD", &each_allele(calls, TumorOnlyVariant::ad_value))?;
+    variant.push_format_integer("ADF", &each_allele(calls, TumorOnlyVariant::adf_value))?;
+    variant.push_format_integer("ADR", &each_allele(calls, TumorOnlyVariant::adr_value))?;
     variant.push_format_float(
-        b"STRAND_BIAS_FISHER_P",
+        "STRAND_BIAS_FISHER_P",
         &each(calls, TumorOnlyVariant::strand_bias_fisher_p_value),
     )?;
-    variant.push_format_integer(b"DP", &each(calls, |call| call.depth))?;
-    variant.push_format_float(b"AF", &each(calls, TumorOnlyVariant::af_value))?;
-    variant.push_format_integer(b"HICNT", &each(calls, TumorOnlyVariant::hicnt_value))?;
+    variant.push_format_integer("DP", &each(calls, |call| call.depth))?;
+    variant.push_format_float("AF", &each(calls, TumorOnlyVariant::af_value))?;
+    variant.push_format_integer("HICNT", &each(calls, TumorOnlyVariant::hicnt_value))?;
     variant.push_format_float(
-        b"REALIGNED_FRAC_OF_DP",
+        "REALIGNED_FRAC_OF_DP",
         &each(calls, TumorOnlyVariant::realigned_frac_of_dp_value),
     )?;
     variant.push_format_float(
-        b"MEAN_DIST_TO_READ_END",
+        "MEAN_DIST_TO_READ_END",
         &each(calls, TumorOnlyVariant::mean_dist_to_read_end_value),
     )?;
     variant.push_format_integer(
-        b"ALT_READ_POS_VARIES",
+        "ALT_READ_POS_VARIES",
         &each(calls, TumorOnlyVariant::alt_read_pos_varies_value),
     )?;
-    variant.push_format_float(b"QMEAN", &each(calls, TumorOnlyVariant::qmean_value))?;
+    variant.push_format_float("QMEAN", &each(calls, TumorOnlyVariant::qmean_value))?;
+    variant.push_format_float("MEAN_MAPQ", &each(calls, TumorOnlyVariant::mean_mapq_value))?;
     variant.push_format_float(
-        b"MEAN_MAPQ",
-        &each(calls, TumorOnlyVariant::mean_mapq_value),
-    )?;
-    variant.push_format_float(
-        b"MEAN_MISMATCHES",
+        "MEAN_MISMATCHES",
         &each(calls, TumorOnlyVariant::mean_mismatches_value),
     )?;
 
     if let Some(merged) = merged {
-        variant.push_format_integer(b"MNV_PARTIAL_READS", &merged.partial_reads)?;
+        variant.push_format_integer("MNV_PARTIAL_READS", &merged.partial_reads)?;
     }
 
     if let Some(counts) = calls
@@ -638,11 +630,11 @@ fn build_record(
         .map(TumorOnlyVariant::sv_read_counts)
         .collect::<Option<Vec<_>>>()
     {
-        variant.push_format_integer(b"SV_SOFTCLIP_READS", &each(&counts, |count| count.0))?;
-        variant.push_format_integer(b"SV_DISCORDANT_READS", &each(&counts, |count| count.1))?;
+        variant.push_format_integer("SV_SOFTCLIP_READS", &each(&counts, |count| count.0))?;
+        variant.push_format_integer("SV_DISCORDANT_READS", &each(&counts, |count| count.1))?;
     }
 
-    Ok(variant)
+    Ok(Some(variant))
 }
 
 /// Collects one value per sample.
@@ -1491,13 +1483,14 @@ mod tests {
             },
         )?;
         assert_eq!(exit, 0);
-        use rust_htslib::bcf::{Read, Reader as VcfReader};
-        let reader = VcfReader::from_path(output.path()).expect("Error opening output file!");
+        let mut reader = noodles::vcf::io::reader::Builder::default()
+            .build_from_path(output.path())
+            .expect("Error opening output file!");
         let samples: Vec<String> = reader
-            .header()
-            .samples()
+            .read_header()?
+            .sample_names()
             .iter()
-            .map(|sample| String::from_utf8_lossy(sample).to_string())
+            .map(|sample| sample.to_string())
             .collect();
         assert_eq!(samples, expected);
         Ok(())
@@ -1522,14 +1515,13 @@ mod tests {
                 ..Default::default()
             },
         )?;
-        use rust_htslib::bcf::{Read, Reader as VcfReader};
-        let mut reader = VcfReader::from_path(output.path()).expect("Error opening output file!");
+        let mut reader = noodles::vcf::io::reader::Builder::default()
+            .build_from_path(output.path())
+            .expect("Error opening output file!");
+        let header = reader.read_header()?;
+        assert_eq!(header.infos().contains_key("MNV_PARTIALS"), fix_leaky_mnv);
         assert_eq!(
-            reader.header().info_type(b"MNV_PARTIALS").is_ok(),
-            fix_leaky_mnv
-        );
-        assert_eq!(
-            reader.header().format_type(b"MNV_PARTIAL_READS").is_ok(),
+            header.formats().contains_key("MNV_PARTIAL_READS"),
             fix_leaky_mnv
         );
         assert_eq!(reader.records().count(), expected);
@@ -1646,13 +1638,20 @@ mod tests {
         assert_eq!(exit, 0);
 
         // Read the output and verify no non-variant sites exist
-        use rust_htslib::bcf::{Read, Reader as VcfReader};
-        let mut reader = VcfReader::from_path(output.path()).expect("Error opening output file!");
+        use noodles::vcf::variant::record::AlternateBases;
+        let mut reader = noodles::vcf::io::reader::Builder::default()
+            .build_from_path(output.path())
+            .expect("Error opening output file!");
+        reader.read_header()?;
 
         let mut record_count = 0;
         for record_result in reader.records() {
             let record = record_result?;
-            let alleles = record.alleles();
+            let alternate_bases = record.alternate_bases();
+            let alleles: Vec<&[u8]> = std::iter::once(Ok(record.reference_bases()))
+                .chain(alternate_bases.iter())
+                .map(|allele| allele.map(str::as_bytes))
+                .collect::<std::io::Result<_>>()?;
 
             // Verify that REF != ALT (i.e., no non-variant sites)
             // ALT should not be "." which represents non-variants
