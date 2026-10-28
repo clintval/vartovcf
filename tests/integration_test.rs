@@ -733,6 +733,140 @@ mod tests {
         Ok(())
     }
 
+    /// Converts tumor-only rows with these options, returning each record's contig, POS, REF, ALT,
+    /// GVCF_FILL, AD, DP and SITE_DP, and the error stream.
+    fn site_depths(
+        rows: &str,
+        args: &[&str],
+    ) -> Result<(Vec<String>, String), Box<dyn std::error::Error>> {
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        let assert = cmd
+            .args(["--reference", "tests/reference.fa"])
+            .args(args)
+            .write_stdin(rows)
+            .assert()
+            .success();
+        let output = assert.get_output();
+        let records = String::from_utf8(output.stdout.clone())?
+            .lines()
+            .filter(|line| !line.starts_with('#'))
+            .map(|line| {
+                let fields: Vec<&str> = line.split('\t').collect();
+                let keys: Vec<&str> = fields[8].split(':').collect();
+                let values: Vec<&str> = fields[9].split(':').collect();
+                let value = |key: &str| values[keys.iter().position(|k| *k == key).unwrap()];
+                let fill = fields[7]
+                    .split(';')
+                    .find_map(|info| info.strip_prefix("GVCF_FILL="))
+                    .unwrap_or(".");
+                format!(
+                    "{} {} {} {} {fill} {} {} {}",
+                    fields[0],
+                    fields[1],
+                    fields[3],
+                    fields[4],
+                    value("AD"),
+                    value("DP"),
+                    value("SITE_DP")
+                )
+            })
+            .collect();
+        Ok((records, String::from_utf8(output.stderr.clone())?))
+    }
+
+    #[test]
+    fn run_end_to_end_leaves_site_dp_missing_where_vardict_counted_nothing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let rows = read_to_string("tests/calls.normalize.var")?;
+        let (records, _) = site_depths(&rows, &[])?;
+        let at = |position: &str| {
+            records
+                .iter()
+                .find(|record| record.starts_with(&format!("chr12 {position} ")))
+                .cloned()
+        };
+        assert_eq!(
+            at("2011").as_deref(),
+            Some("chr12 2011 CA C . 480,20 500 .")
+        );
+        assert_eq!(
+            at("2120").as_deref(),
+            Some("chr12 2120 T TG . 497,3 500 500")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn run_end_to_end_writes_no_fill_beside_a_record_vardict_counted_nothing_at()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let rows = read_to_string("tests/calls.fill-gvcf.outside.var")?;
+        let args = [
+            "--fill-gvcf",
+            "--fill-gvcf-bed",
+            "tests/calls.fill-gvcf.outside.bed",
+        ];
+        let (records, _) = site_depths(&rows, &args)?;
+        assert_eq!(
+            records,
+            vec![
+                "chr1 1097 G . NO_READS 0 0 0",
+                "chr1 1098 T . NO_READS 0 0 0",
+                "chr1 1099 C CG . 260,40 300 .",
+                "chr1 1100 G . . 300 300 300",
+                "chr1 1101 G . . 300 300 300",
+                "chr1 1102 G . ROWS 300 300 300",
+                "chr1 1103 T . . 300 300 300",
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn run_end_to_end_takes_a_positions_depth_from_the_first_region_that_counted_it()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let rows = read_to_string("tests/calls.site-dp.overlap.var")?;
+        let (first, second): (Vec<&str>, Vec<&str>) =
+            rows.lines().partition(|row| row.contains("chr1:1110-1111"));
+        for (rows, expected) in [
+            (
+                format!("{}\n{}\n", first.join("\n"), second.join("\n")),
+                "260 260 260",
+            ),
+            (
+                format!("{}\n{}\n", second.join("\n"), first.join("\n")),
+                "250 250 250",
+            ),
+        ] {
+            let (records, _) = site_depths(&rows, &[])?;
+            let at_1110 = records
+                .iter()
+                .find(|record| record.starts_with("chr1 1110 "));
+            assert_eq!(
+                at_1110.cloned(),
+                Some(format!("chr1 1110 C . . {expected}"))
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn run_end_to_end_warns_when_a_fill_reads_no_reference_only_row()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let rows = read_to_string("tests/calls.var")?;
+        let (_, stderr) = site_depths(&rows, &["--fill-gvcf"])?;
+        assert!(
+            stderr.contains("No reference-only row was read"),
+            "{stderr}"
+        );
+        let rows = read_to_string("tests/calls.g.var")?;
+        let (_, stderr) = site_depths(&rows, &["--fill-gvcf"])?;
+        assert!(
+            !stderr.contains("No reference-only row was read"),
+            "{stderr}"
+        );
+        Ok(())
+    }
+
     #[test]
     fn run_end_to_end_keeps_a_reference_only_row_in_mixed_case()
     -> Result<(), Box<dyn std::error::Error>> {

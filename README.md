@@ -197,17 +197,17 @@ With `--context-3mer`, every record carries INFO `CONTEXT_3mer`, the reference b
 
 ### Filling a gVCF
 
-In pileup mode (`-p`), VarDict writes a reference-only row only at positions without an allele, and no row at all for some positions of its regions. With `--fill-gvcf`, each position of a VarDict region (its `chr:start-end` column) without a reference-only record gets one, so every position has exactly one, with INFO `GVCF_FILL`:
+In pileup mode (`-p`), VarDict writes a reference-only row at a position without an allele, or whose only allele is a deletion it writes at the base before, and no row at all for some positions of its regions. With `--fill-gvcf`, each position of a VarDict region (its `chr:start-end` column) without a reference-only record gets one, so every position has exactly one, with INFO `GVCF_FILL`:
 
 | `GVCF_FILL` | The position | AD and DP |
 | --- | --- | --- |
 | `ROWS` | VarDict counted reads there but wrote only ALT rows, or wrote them elsewhere: deletions it writes at the base before, indels normalization moved, partials `--fix-leaky-mnv` folded | From those rows, an insertion's reads added to REF |
-| `SPANNED` | Inside a deletion or MNV, with no row VarDict counted there | REF 0, the spanning call's DP |
-| `NO_READS` | No row VarDict counted there, and no deletion or MNV spans it | 0 |
+| `SPANNED` | Inside a deletion, MNV or Complex call, not a symbolic allele, with no row VarDict counted there | REF 0, DP the spanning calls' reads, the only reads covering it |
+| `NO_READS` | No row VarDict counted there, and nothing spans it | 0 |
 
-Fills are decided in VarDict's coordinates, before normalization, assuming VarDict ran without `-3`, which writes indels 3′ of where it counted them. A reference-only record with no REF reads has GT `./.`. `--fill-gvcf` refuses tumor-normal input, as VarDict writes no reference-only rows for a pair.
+Fills are decided in VarDict's coordinates, before normalization, assuming VarDict ran without `-3`, which writes indels 3′ of where it counted them. A reference-only record with no REF reads has GT `./.`. `--fill-gvcf` refuses tumor-normal input, as VarDict writes no reference-only rows for a pair, and warns when it reads none, as without `-p` it would fill every position without an allele as having no reads.
 
-`--fill-gvcf-bed` takes the BED file VarDict was given, read from its first three columns, and fills each line's region outside every VarDict region as `NO_READS`, for regions no read covers. Its contig names must match `--reference` exactly, and its contigs and ends are checked before any row is read. Each line's region is built as VarDict builds it:
+`--fill-gvcf-bed` takes the BED file VarDict was given, read from its first three columns, and fills each line's region outside every VarDict region, for regions no read covers: as `NO_READS`, or `SPANNED` where a deletion a VarDict region counted runs into it. Its contig names must match `--reference` exactly, and its contigs and ends are checked before any row is read. Each line's region is built as VarDict builds it:
 
 - Widened on each side by `--fill-gvcf-bed-extend`, VarDict's `-x`.
 - Read with 0-based starts, or 1-based ones with `--fill-gvcf-bed-one-based`. VarDict reads 1-based starts unless it runs with `-z 1` or reads a 4-column BED without `-c`.
@@ -218,16 +218,18 @@ A VarDict region that no line's region matches fails the run, naming the options
 > A `NO_READS` position can have reads when:
 > - VarDict trims a Complex call's leading bases after picking the position's rows, leaving the base it started at with none.
 > - A deletion or MNV starts before the region, and no region counted it.
+>
+> A position with a record but nothing VarDict counted there, such as an indel normalization moved out of its region, gets no fill.
 
 ### Site depth
 
 Every record carries FORMAT `SITE_DP`, the depth at its POS, the same on every record there:
 
 - The reads VarDict counted at the position as REF or any allele, an insertion's once.
-- Plus the reads of each deletion or MNV counted at an earlier base whose REF covers the position, so an MNV's inner bases keep their depth.
+- Plus the reads of each deletion, MNV or Complex call counted at an earlier base whose REF covers the position, so an MNV's inner bases keep their depth. A symbolic allele adds nothing: its reads are VarDict's evidence for it, not reads covering its bases.
 - No more than the most DP of VarDict's rows counted there.
 
-It is counted in VarDict's coordinates, before normalization, so a moved indel takes the depth where it lands. Where VarDict regions overlap, the first region that counted a row at a position gives its depth, and a record whose POS lies outside every VarDict region has none. With `--fill-gvcf`, summing `SITE_DP` over the reference-only records gives each region's depth with no grouping by position, and AD[1] / `SITE_DP` is an allele's share of its position's reads.
+It is counted in VarDict's coordinates, before normalization, so a moved indel takes the depth where it lands. Where VarDict regions overlap, the first region that counted a row at a position gives its depth. A record has none where VarDict counted no row at its POS and nothing spans it, or outside every VarDict region. It is complete only for pileup (`-p`) output: otherwise VarDict leaves out the alleles failing its `-f`, `-q` and `-r`, and writes no row at a deletion's base before, so a deletion's record has none. With `--fill-gvcf`, summing `SITE_DP` over the reference-only records gives each region's depth with no grouping by position, and AD[1] / `SITE_DP` is an allele's share of its position's reads.
 
 What VarDict counted in each row goes into the sort beside the records, under the position VarDict counted it at, and the writer walks both in position order, holding only one position's counts and the deletions and MNVs spanning it, so neither `SITE_DP` nor `--fill-gvcf` holds a region.
 

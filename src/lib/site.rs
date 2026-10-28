@@ -73,7 +73,8 @@ pub struct Counts {
     /// Whether VarDict labels the row Complex, as it overcounts such a row's REF reads.
     pub complex: bool,
     /// The last base past the position that a deletion's or MNV's REF covers, or 0 for any other
-    /// row.
+    /// row; a symbolic allele spans nothing, as its reads are VarDict's evidence for it, not reads
+    /// covering its bases.
     pub span_to: u64,
     /// The forward REF reads.
     pub ref_forward: PerSample,
@@ -102,10 +103,10 @@ impl Counts {
             }
             values
         };
-        let span_to = match call.alt_allele {
-            "<DEL>" => call.end,
-            alt if !alt.starts_with('<') => call.start + call.ref_allele.len() as u64 - 1,
-            _ => 0,
+        let span_to = if call.alt_allele.starts_with('<') {
+            0
+        } else {
+            call.start + call.ref_allele.len() as u64 - 1
         };
         let inserted = inserts(call);
         let zero = [0; SAMPLES];
@@ -245,8 +246,8 @@ pub struct Site {
     pub ref_forward: PerSample,
     /// The reverse REF reads, counted as the forward ones are.
     pub ref_reverse: PerSample,
-    /// The depth of that row, or of the deletion or MNV spanning the position with the most in the
-    /// tumor (or only) sample, or 0 without either.
+    /// The depth of that row, or without one the reads of the deletions and MNVs spanning the
+    /// position, as only they cover it, or 0 without either.
     pub depth: PerSample,
     /// The reads VarDict counted at the position as REF or as any allele, an insertion's once, with
     /// the reads of each deletion or MNV spanning it, no more than the most depth of a row counted
@@ -271,9 +272,8 @@ impl Site {
 pub struct Walk {
     position: u64,
     counted: Option<Counted>,
-    pending: Vec<(u64, PerSample, PerSample)>,
+    pending: Vec<(u64, PerSample)>,
     by_end: BinaryHeap<Reverse<(u64, PerSample)>>,
-    by_depth: BinaryHeap<(i32, Reverse<u64>, PerSample)>,
     reads: PerSample,
 }
 
@@ -284,10 +284,9 @@ impl Walk {
         if position <= self.position {
             return;
         }
-        for (to, depth, reads) in self.pending.drain(..) {
+        for (to, reads) in self.pending.drain(..) {
             if to >= position {
                 self.by_end.push(Reverse((to, reads)));
-                self.by_depth.push((depth[0], Reverse(to), depth));
                 for (total, reads) in self.reads.iter_mut().zip(reads) {
                     *total += reads;
                 }
@@ -304,13 +303,6 @@ impl Walk {
                 *total -= reads;
             }
         }
-        while self
-            .by_depth
-            .peek()
-            .is_some_and(|&(_, Reverse(to), _)| to < position)
-        {
-            self.by_depth.pop();
-        }
     }
 
     /// Adds a row VarDict counted at the position the walk is at.
@@ -320,14 +312,13 @@ impl Walk {
             None => self.counted = Some(Counted::new(counts)),
         }
         if counts.span_to > self.position {
-            self.pending
-                .push((counts.span_to, counts.depth, counts.alt_reads));
+            self.pending.push((counts.span_to, counts.alt_reads));
         }
     }
 
     /// What is known at the position the walk is at.
     pub fn site(&self) -> Site {
-        match (&self.counted, self.by_depth.peek()) {
+        match (&self.counted, self.by_end.is_empty()) {
             (Some(row), _) => {
                 let mut site = Site {
                     fill: Fill::Rows,
@@ -347,14 +338,14 @@ impl Walk {
                 }
                 site
             }
-            (None, Some(&(_, _, depth))) => Site {
+            (None, false) => Site {
                 fill: Fill::Spanned,
                 ref_forward: [0; SAMPLES],
                 ref_reverse: [0; SAMPLES],
-                depth,
+                depth: self.reads,
                 site_dp: self.reads,
             },
-            (None, None) => Site::NO_READS,
+            (None, true) => Site::NO_READS,
         }
     }
 }
@@ -519,15 +510,37 @@ mod tests {
     }
 
     #[test]
-    fn test_site_dp_spans_a_symbolic_deletion_to_its_end() {
+    fn test_a_symbolic_allele_spans_nothing() {
         let rows = [TumorOnlyVariant {
             end: 15,
             ..call(10, "C", "<DEL>", "C/-5", 200, 0, 200)
         }];
+        assert_eq!(site_dps(&rows, 10..=13), vec![0, 200, 0, 0]);
+        assert_eq!(sites_at(&rows, 12..=12), vec![(Fill::NoReads, 0, 0, 0)]);
+    }
+
+    #[test]
+    fn test_a_walk_that_jumps_drops_the_spans_it_passed() {
+        let (_, short) = Counts::of(&[call(5, "GCA", "G", "G/-2", 100, 0, 100)]);
+        let (_, long) = Counts::of(&[call(5, "GCATTTA", "G", "G/-6", 100, 0, 5)]);
+        let mut walk = Walk::default();
+        walk.at(6);
+        walk.add(&short);
+        walk.add(&long);
+        walk.at(7);
+        assert_eq!(walk.site().site_dp[0], 105);
+        walk.at(10);
         assert_eq!(
-            site_dps(&rows, 10..=16),
-            vec![0, 200, 200, 200, 200, 200, 0]
+            (walk.site().fill, walk.site().site_dp[0]),
+            (Fill::Spanned, 5)
         );
+        walk.at(12);
+        assert_eq!(walk.site(), Site::NO_READS);
+        let mut walk = Walk::default();
+        walk.at(6);
+        walk.add(&short);
+        walk.at(8);
+        assert_eq!(walk.site(), Site::NO_READS);
     }
 
     #[test]
@@ -566,7 +579,7 @@ mod tests {
         let complex = [call(5, "CG", "AT", "CG/AT", 90, 80, 10)];
         assert_eq!(
             sites_at(&complex, 5..=6),
-            vec![(Fill::Rows, 80, 90, 90), (Fill::Spanned, 0, 90, 10)]
+            vec![(Fill::Rows, 80, 90, 90), (Fill::Spanned, 0, 10, 10)]
         );
     }
 
@@ -586,24 +599,25 @@ mod tests {
             sites_at(&rows, 5..=7),
             vec![
                 (Fill::Rows, 50, 50, 50),
-                (Fill::Spanned, 0, 50, 10),
+                (Fill::Spanned, 0, 10, 10),
                 (Fill::NoReads, 0, 0, 0),
             ]
         );
     }
 
     #[test]
-    fn test_a_spanned_site_takes_the_depth_of_the_span_with_the_most() {
+    fn test_a_spanned_sites_depth_is_the_reads_spanning_it() {
         let rows = [
-            call(10, "CGGAT", "C", "C/-4", 50, 0, 50),
-            call(11, "GG", "G", "G/-1", 80, 0, 80),
-            call(13, "AT", "A", "A/-1", 60, 0, 60),
+            call(10, "CGGAT", "C", "C/-4", 100, 70, 30),
+            call(11, "GGAT", "G", "G/-3", 100, 80, 20),
         ];
         assert_eq!(
-            sites_at(&rows, 13..=15),
+            sites_at(&rows, 11..=15),
             vec![
+                (Fill::Rows, 70, 100, 100),
+                (Fill::Rows, 80, 100, 100),
                 (Fill::Spanned, 0, 50, 50),
-                (Fill::Rows, 0, 60, 60),
+                (Fill::Spanned, 0, 50, 50),
                 (Fill::NoReads, 0, 0, 0),
             ]
         );
@@ -624,8 +638,8 @@ mod tests {
             vec![
                 (Fill::NoReads, 0, 0),
                 (Fill::Rows, 280, 301),
-                (Fill::Spanned, 0, 300),
-                (Fill::Spanned, 0, 300),
+                (Fill::Spanned, 0, 100),
+                (Fill::Spanned, 0, 100),
                 (Fill::NoReads, 0, 0),
             ]
         );

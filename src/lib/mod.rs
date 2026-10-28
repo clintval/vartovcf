@@ -754,6 +754,8 @@ impl Sink<'_> {
             position: 0,
             counts_region: None,
             wrote_record: false,
+            read_record: false,
+            read_reference: false,
         };
         while let Some(entry) = entries.next_entry()? {
             if stop() || !writer.entry(entry)? {
@@ -762,6 +764,11 @@ impl Sink<'_> {
         }
         if !writer.leave_contig()? {
             return Ok(None);
+        }
+        if fill_gvcf && writer.read_record && !writer.read_reference {
+            warn!(
+                "No reference-only row was read: --fill-gvcf expects VarDict's pileup (-p) output, which writes one at each position without an allele, and filled every other position as if VarDict had counted no reads there."
+            );
         }
         Ok(Some(writer.fills))
     }
@@ -790,6 +797,8 @@ struct Writer<'w> {
     position: u64,
     counts_region: Option<u64>,
     wrote_record: bool,
+    read_record: bool,
+    read_reference: bool,
 }
 
 impl Writer<'_> {
@@ -831,15 +840,19 @@ impl Writer<'_> {
                 line,
                 ..
             } => {
-                if !self.wrote_record && !reference_only {
+                let site = self.walk.site();
+                if !self.wrote_record && !reference_only && site.fill != Fill::NoReads {
                     self.fill()?;
                 }
                 self.wrote_record = true;
-                let site_dp: PerSample = if position <= self.vardict_end {
-                    self.walk.site().site_dp
-                } else {
-                    [i32::missing(); SAMPLES]
-                };
+                self.read_reference |= reference_only;
+                self.read_record = true;
+                let site_dp: PerSample =
+                    if position <= self.vardict_end && site.fill != Fill::NoReads {
+                        site.site_dp
+                    } else {
+                        [i32::missing(); SAMPLES]
+                    };
                 stamp(line, &site_dp, &mut self.line);
                 self.write_line()?;
             }
@@ -1496,6 +1509,29 @@ mod tests {
             crate::convert(rows.as_bytes(), &options, dir.path(), &mut output, &signal).unwrap();
         assert!(index.is_none());
         assert_eq!(calls.get(), rows.lines().count() + 1);
+    }
+
+    #[test]
+    fn test_filling_stops_inside_a_gap_once_a_signal_arrives() {
+        let rows = std::fs::read_to_string("tests/calls.contig-ends.var").unwrap();
+        let stop_at = rows.lines().count() + 20;
+        let calls = std::cell::Cell::new(0);
+        let signal = || {
+            calls.set(calls.get() + 1);
+            if calls.get() > stop_at { 2 } else { 0 }
+        };
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut output = Output::create(Some(&dir.path().join("out.vcf"))).unwrap();
+        let options = Options {
+            reference: PathBuf::from("tests/reference.fa"),
+            sample: Some("dna00001"),
+            fill_gvcf: true,
+            ..Default::default()
+        };
+        let index =
+            crate::convert(rows.as_bytes(), &options, dir.path(), &mut output, &signal).unwrap();
+        assert!(index.is_none());
+        assert_eq!(calls.get(), stop_at + 1);
     }
 
     #[test]
