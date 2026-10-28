@@ -196,17 +196,22 @@ With `--context-3mer`, every record carries INFO `CONTEXT_3mer`, the reference b
 
 ### Filling a gVCF
 
-In pileup mode (`-p`), VarDict writes no row for some positions of its regions. With `--fill-gvcf`, each position of a VarDict region (its `chr:start-end` column) that has no record gets a reference-only record. Its INFO `GVCF_FILL` says where the depth came from:
+In pileup mode (`-p`), VarDict writes no row for some positions of its regions. With `--fill-gvcf`, each position of a VarDict region (its `chr:start-end` column) without a record gets a reference-only record, with INFO `GVCF_FILL`:
 
 | `GVCF_FILL` | The position | AD and DP |
 | --- | --- | --- |
-| `ROWS` | VarDict counted reads there in rows written elsewhere: deletions, which VarDict writes at the base before, or MNV partials that `--fix-leaky-mnv` folded | From those rows |
-| `SPANNED` | Inside a deletion or MNV, with no read having a base VarDict counts there | No REF reads, and the spanning call's DP |
-| `NO_READS` | No read covers it | 0 |
+| `ROWS` | VarDict counted reads there in rows written elsewhere: deletions it writes at the base before, indels normalization moved, partials `--fix-leaky-mnv` folded | From those rows, an insertion's reads added to REF |
+| `SPANNED` | Inside a deletion or MNV, with no row VarDict counted there | REF 0, the spanning call's DP |
+| `NO_READS` | No row VarDict counted there, and no deletion or MNV spans it | 0 |
 
-The fill is decided in VarDict's coordinates, before normalization, because a deletion can move left past the position VarDict counted it at. A reference-only record with no REF reads has GT `./.`. A deletion or MNV that starts before a region is not written in it, so positions it covers at the region's start read `NO_READS`.
+Fills are decided in VarDict's coordinates, before normalization. A reference-only record with no REF reads has GT `./.`. `--fill-gvcf` holds each VarDict region's rows until it ends, and refuses tumor-normal input, as VarDict writes no reference-only rows for a pair.
 
-VarDict writes nothing for a region no read covers. Give `--fill-gvcf-bed` the BED file VarDict was given, read as 0-based from its first three columns, and the parts of its regions outside every VarDict region are filled as positions without reads. `--fill-gvcf` holds each VarDict region's rows until the region ends, and needs tumor-only input, as VarDict writes no reference-only rows for a tumor-normal pair.
+`--fill-gvcf-bed` takes the BED file VarDict was given (0-based, first three columns) and fills its intervals outside every VarDict region as `NO_READS`, for regions no read covers. Its contigs and ends are checked against `--reference` before any row is read.
+
+> [!NOTE]
+> A `NO_READS` position can have reads when:
+> - VarDict trims a Complex call's leading bases after picking the position's rows, leaving the base it started at with none.
+> - A deletion or MNV starts before the region, so the region does not write it.
 
 ### Sorting
 

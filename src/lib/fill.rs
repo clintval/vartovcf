@@ -12,7 +12,7 @@ use std::path::Path;
 
 use ahash::{AHashMap, AHashSet};
 
-use crate::record::TumorOnlyVariant;
+use crate::record::{TumorOnlyVariant, variant_class};
 
 /// How a filled position's depth was found, the value of INFO `GVCF_FILL`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,43 +59,70 @@ pub fn segment_bounds(segment: &str) -> Option<(u64, u64)> {
 }
 
 /// The position VarDict counted a row's reads at: the first deleted base of a deletion it writes
-/// with the base before as ALT, and the row's start otherwise.
+/// with the base before, and the row's start otherwise. VarDict writes the base before only for a
+/// plain deletion, whose allele its genotype column spells as `-` and a length; a row whose column
+/// is not in that notation is read by its alleles' shape.
 pub fn vardict_position(call: &TumorOnlyVariant) -> u64 {
-    let (ref_allele, alt_allele) = (call.ref_allele.as_bytes(), call.alt_allele.as_bytes());
-    if ref_allele.len() > alt_allele.len()
-        && alt_allele.len() == 1
-        && ref_allele[0].eq_ignore_ascii_case(&alt_allele[0])
-    {
-        call.start + 1
-    } else {
-        call.start
-    }
+    let anchored = match call.gt.split_once('/') {
+        Some((_, allele)) if allele.starts_with('-') => {
+            allele.len() > 1 && allele[1..].bytes().all(|byte| byte.is_ascii_digit())
+        }
+        _ => {
+            let (ref_allele, alt_allele) = (call.ref_allele.as_bytes(), call.alt_allele.as_bytes());
+            ref_allele.len() > alt_allele.len()
+                && alt_allele.len() == 1
+                && ref_allele[0].eq_ignore_ascii_case(&alt_allele[0])
+        }
+    };
+    if anchored { call.start + 1 } else { call.start }
+}
+
+/// The REF reads and depth of the row chosen at a position VarDict counted reads at.
+#[derive(Clone, Copy)]
+struct Counted {
+    complex: bool,
+    ref_forward: i32,
+    ref_reverse: i32,
+    depth: i32,
 }
 
 /// The fills of the positions `start..=end` of a region missing from `written`, from the region's
-/// rows: a position with rows VarDict counted there takes its REF reads and DP from the one that
-/// is not Complex, whose REF reads VarDict overcounts, with the most depth; a position inside a
-/// deletion or MNV takes no REF reads and the depth of the one spanning it with the most; any other
-/// position has no reads.
-pub fn region_fills(
+/// rows, made one at a time. A position with rows VarDict counted there takes its REF reads and DP
+/// from the one that is not Complex, whose REF reads VarDict overcounts, with the most depth, and
+/// the reads of each insertion there join its REF reads, as VarDict takes them from the anchor
+/// base's; a position inside a deletion or MNV takes no REF reads and the depth of the one spanning
+/// it with the most; any other position has no reads.
+pub fn region_fills<'w>(
     calls: &[&TumorOnlyVariant],
-    written: &AHashSet<u64>,
+    written: &'w AHashSet<u64>,
     start: u64,
     end: u64,
-) -> Vec<Filled> {
-    let mut counted: AHashMap<u64, &TumorOnlyVariant> = AHashMap::new();
+) -> impl Iterator<Item = Filled> + 'w {
+    let mut counted: AHashMap<u64, Counted> = AHashMap::new();
+    let mut inserted: AHashMap<u64, (i32, i32)> = AHashMap::new();
     let mut spanned: AHashMap<u64, i32> = AHashMap::new();
-    let better = |call: &TumorOnlyVariant| (call.variant_type != "Complex", call.depth);
     for &call in calls {
         let position = vardict_position(call);
+        let row = Counted {
+            complex: call.variant_type == "Complex",
+            ref_forward: call.ref_forward,
+            ref_reverse: call.ref_reverse,
+            depth: call.depth,
+        };
+        let better = |row: &Counted| (!row.complex, row.depth);
         counted
             .entry(position)
             .and_modify(|best| {
-                if better(call) > better(best) {
-                    *best = call;
+                if better(&row) > better(best) {
+                    *best = row;
                 }
             })
-            .or_insert(call);
+            .or_insert(row);
+        if variant_class(call.ref_allele, call.alt_allele) == Some("Insertion") {
+            let reads = inserted.entry(position).or_default();
+            reads.0 += call.alt_forward;
+            reads.1 += call.alt_reverse;
+        }
         if call.ref_allele.len() > 1 && !call.alt_allele.starts_with('<') {
             let last = call.start + call.ref_allele.len() as u64 - 1;
             for inside in position + 1..=last {
@@ -107,14 +134,17 @@ pub fn region_fills(
     (start..=end)
         .filter(|position| !written.contains(position))
         .map(
-            |position| match (counted.get(&position), spanned.get(&position)) {
-                (Some(row), _) => Filled {
-                    position,
-                    fill: Fill::Rows,
-                    ref_forward: row.ref_forward,
-                    ref_reverse: row.ref_reverse,
-                    depth: row.depth,
-                },
+            move |position| match (counted.get(&position), spanned.get(&position)) {
+                (Some(row), _) => {
+                    let (forward, reverse) = inserted.get(&position).copied().unwrap_or_default();
+                    Filled {
+                        position,
+                        fill: Fill::Rows,
+                        ref_forward: row.ref_forward + forward,
+                        ref_reverse: row.ref_reverse + reverse,
+                        depth: row.depth,
+                    }
+                }
                 (None, Some(&depth)) => Filled {
                     position,
                     fill: Fill::Spanned,
@@ -131,7 +161,6 @@ pub fn region_fills(
                 },
             },
         )
-        .collect()
 }
 
 /// Sorts 1-based, inclusive ranges and joins those that overlap or touch.
@@ -171,15 +200,20 @@ pub fn uncovered(start: u64, end: u64, covered: &[(u64, u64)]) -> Vec<(u64, u64)
 }
 
 /// Reads a BED file's intervals as contig, 1-based start and inclusive end, from the first three
-/// columns of each line split on whitespace; blank, `#`, `track` and `browser` lines are skipped,
-/// and so are empty intervals.
-pub fn read_bed(path: &Path) -> Result<Vec<(String, u64, u64)>, String> {
+/// columns of each line split on whitespace, refusing a contig `contig_length` does not know and an
+/// interval past its end; blank, `#`, `track` and `browser` lines are skipped, and so are empty
+/// intervals.
+pub fn read_bed(
+    path: &Path,
+    contig_length: impl Fn(&str) -> Option<u64>,
+) -> Result<Vec<(String, u64, u64)>, String> {
     let describe =
         |error: std::io::Error| format!("Could not read the BED file {path:?}: {error}!");
     let reader = BufReader::new(File::open(path).map_err(describe)?);
     let mut intervals = Vec::new();
     for (index, line) in reader.lines().enumerate() {
         let line = line.map_err(describe)?;
+        let number = index + 1;
         let mut fields = line.split_whitespace();
         let Some(contig) = fields.next() else {
             continue;
@@ -191,17 +225,21 @@ pub fn read_bed(path: &Path) -> Result<Vec<(String, u64, u64)>, String> {
             .next()
             .zip(fields.next())
             .and_then(|(start, end)| Some((start.parse::<u64>().ok()?, end.parse::<u64>().ok()?)));
-        match bounds {
-            Some((start, end)) if start < end => {
-                intervals.push((contig.to_string(), start + 1, end))
-            }
-            Some((start, end)) if start == end => {}
-            _ => {
-                return Err(format!(
-                    "Expected a contig, a 0-based start and an end no lower than it on line {} of the BED file {path:?}, found '{line}'!",
-                    index + 1
-                ));
-            }
+        let Some((start, end)) = bounds.filter(|(start, end)| start <= end) else {
+            return Err(format!(
+                "Expected a contig, a 0-based start and an end no lower than it on line {number} of the BED file {path:?}, found '{line}'!"
+            ));
+        };
+        let length = contig_length(contig).ok_or_else(|| {
+            format!("Contig '{contig}' on line {number} of the BED file {path:?} is not in the reference!")
+        })?;
+        if end > length {
+            return Err(format!(
+                "The interval on line {number} of the BED file {path:?} ends at {end}, past the {length} bases of {contig} in the reference!"
+            ));
+        }
+        if start < end {
+            intervals.push((contig.to_string(), start + 1, end));
         }
     }
     Ok(intervals)
@@ -211,6 +249,7 @@ pub fn read_bed(path: &Path) -> Result<Vec<(String, u64, u64)>, String> {
 mod tests {
     use ahash::AHashSet;
     use pretty_assertions::assert_eq;
+    use rstest::rstest;
     use std::io::Write;
 
     use super::*;
@@ -282,6 +321,26 @@ mod tests {
         );
     }
 
+    #[rstest]
+    #[case("CA", "C", "A/-1", 11)]
+    #[case("C", "<DEL>", "C/-1000", 11)]
+    #[case("TCG", "T", "T/-2&T", 10)]
+    #[case("TCG", "T", "T/-2mT", 10)]
+    #[case("TCG", "T", "-2&T/-2&T", 10)]
+    #[case("C", "CA", "C/+1", 10)]
+    fn test_vardict_position_reads_a_deletion_from_vardicts_allele_notation(
+        #[case] ref_allele: &'static str,
+        #[case] alt_allele: &'static str,
+        #[case] gt: &'static str,
+        #[case] expected: u64,
+    ) {
+        let row = TumorOnlyVariant {
+            gt,
+            ..call(10, ref_allele, alt_allele, 9, (0, 0), "Deletion")
+        };
+        assert_eq!(vardict_position(&row), expected);
+    }
+
     #[test]
     fn test_region_fills_each_position_without_a_record_by_what_explains_it() {
         let rows = [
@@ -296,7 +355,7 @@ mod tests {
         let calls: Vec<&TumorOnlyVariant> = rows.iter().collect();
         let written: AHashSet<u64> = [2, 4, 6, 11].into_iter().collect();
         assert_eq!(
-            region_fills(&calls, &written, 1, 12),
+            region_fills(&calls, &written, 1, 12).collect::<Vec<_>>(),
             vec![
                 filled(1, Fill::NoReads, (0, 0), 0),
                 filled(3, Fill::Rows, (30, 28), 60),
@@ -319,17 +378,39 @@ mod tests {
         ];
         let calls: Vec<&TumorOnlyVariant> = rows.iter().collect();
         assert_eq!(
-            region_fills(&calls, &AHashSet::new(), 5, 5),
+            region_fills(&calls, &AHashSet::new(), 5, 5).collect::<Vec<_>>(),
             vec![filled(5, Fill::Rows, (31, 28), 61)]
         );
         let complex = [call(5, "CG", "AT", 90, (70, 10), "Complex")];
         let calls: Vec<&TumorOnlyVariant> = complex.iter().collect();
         assert_eq!(
-            region_fills(&calls, &AHashSet::new(), 5, 6),
+            region_fills(&calls, &AHashSet::new(), 5, 6).collect::<Vec<_>>(),
             vec![
                 filled(5, Fill::Rows, (70, 10), 90),
                 filled(6, Fill::Spanned, (0, 0), 90),
             ]
+        );
+    }
+
+    #[test]
+    fn test_region_fills_count_the_reads_of_an_insertion_as_ref_at_its_anchor() {
+        let rows = [
+            TumorOnlyVariant {
+                alt_forward: 12,
+                alt_reverse: 8,
+                ..call(5, "G", "GG", 100, (40, 40), "Insertion")
+            },
+            TumorOnlyVariant {
+                alt_forward: 3,
+                alt_reverse: 2,
+                ..call(5, "G", "GGG", 100, (40, 40), "Insertion")
+            },
+            call(5, "GA", "G", 100, (40, 40), "Deletion"),
+        ];
+        let calls: Vec<&TumorOnlyVariant> = rows.iter().collect();
+        assert_eq!(
+            region_fills(&calls, &AHashSet::new(), 5, 5).collect::<Vec<_>>(),
+            vec![filled(5, Fill::Rows, (55, 50), 100)]
         );
     }
 
@@ -350,28 +431,37 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_read_bed_reads_1_based_inclusive_intervals_and_skips_headers() {
+    fn contig_length(contig: &str) -> Option<u64> {
+        match contig {
+            "chr1" => Some(100),
+            "chr12" => Some(20),
+            _ => None,
+        }
+    }
+
+    fn bed(text: &str) -> Result<Vec<(String, u64, u64)>, String> {
         let mut file = tempfile::NamedTempFile::new().unwrap();
-        write!(
-            file,
-            "track name=x\nbrowser position chr1\n# comment\n\nchr1\t0\t3\tA\nchr12 9 12\nchr1\t5\t5\n"
-        )
-        .unwrap();
-        assert_eq!(
-            read_bed(file.path()).unwrap(),
-            vec![("chr1".to_string(), 1, 3), ("chr12".to_string(), 10, 12)]
-        );
+        write!(file, "{text}").unwrap();
+        read_bed(file.path(), contig_length)
     }
 
     #[test]
-    fn test_read_bed_refuses_a_line_without_a_start_and_end() {
-        let mut file = tempfile::NamedTempFile::new().unwrap();
-        write!(file, "chr1\t0\t3\nchr1\tten\t20\n").unwrap();
-        let error = read_bed(file.path()).unwrap_err();
-        assert!(error.contains("line 2"), "{error}");
-        let mut file = tempfile::NamedTempFile::new().unwrap();
-        writeln!(file, "chr1\t9\t3").unwrap();
-        assert!(read_bed(file.path()).is_err());
+    fn test_read_bed_reads_1_based_inclusive_intervals_and_skips_headers() {
+        assert_eq!(
+            bed("track name=x\nbrowser position chr1\n# comment\n\nchr1\t0\t3\tA\nchr12 9 20\nchr1\t5\t5\n")
+                .unwrap(),
+            vec![("chr1".to_string(), 1, 3), ("chr12".to_string(), 10, 20)]
+        );
+    }
+
+    #[rstest]
+    #[case("chr1\t0\t3\nchr1\tten\t20\n", "line 2")]
+    #[case("chr1\t9\t3\n", "line 1")]
+    #[case("chr1\t9\n", "line 1")]
+    #[case("chr1\t0\t3\nchrX\t0\t3\n", "Contig 'chrX' on line 2")]
+    #[case("chr12\t10\t21\n", "ends at 21, past the 20 bases of chr12")]
+    fn test_read_bed_refuses_a_line_it_cannot_fill(#[case] text: &str, #[case] expected: &str) {
+        let error = bed(text).unwrap_err();
+        assert!(error.contains(expected), "{error}");
     }
 }

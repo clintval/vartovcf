@@ -234,8 +234,15 @@ fn convert<I: Read>(
     output: &mut Output,
     signal: &dyn Fn() -> usize,
 ) -> Result<Option<Index>, Box<dyn error::Error>> {
+    if options.fill_gvcf_bed.is_some() && !options.fill_gvcf {
+        return Err("--fill-gvcf-bed requires --fill-gvcf!".into());
+    }
     let reference = Reference::from_path(&options.reference)?;
     let index = Index::for_longest_contig(reference.longest_contig_length());
+    let bed = match &options.fill_gvcf_bed {
+        Some(path) => read_bed(path, |contig| reference.length(contig).ok())?,
+        None => Vec::new(),
+    };
 
     let mut reader = ReaderBuilder::new()
         .delimiter(b'\t')
@@ -322,7 +329,10 @@ fn convert<I: Read>(
         context_3mer: options.context_3mer,
         folder,
         folds: FoldCounts::default(),
-        filler: options.fill_gvcf.then(Filler::default),
+        filler: options.fill_gvcf.then(|| Filler {
+            bed,
+            ..Filler::default()
+        }),
         fills: FillCounts::default(),
         progress: ProgLogBuilder::new()
             .name("main")
@@ -372,9 +382,7 @@ fn convert<I: Read>(
         }
     }
     sink.add_region(&region, columns, ordinal)?;
-    if let Some(bed) = &options.fill_gvcf_bed {
-        sink.fill_bed(bed, ordinal + 1)?;
-    }
+    sink.fill_bed(ordinal + 1)?;
     if let Some(Folder::Reads(sources)) = &sink.folder {
         let summary = sources.summary;
         info!(
@@ -407,7 +415,7 @@ fn convert<I: Read>(
     if sink.filler.is_some() {
         let fills = sink.fills;
         info!(
-            "Filled {} position(s) without a record: {} from VarDict's rows, {} inside a deletion or MNV and {} with no reads.",
+            "Made {} fill record(s) at positions a VarDict region has no record at: {} from VarDict's rows, {} inside a deletion or MNV and {} with no reads; where regions overlap, another region's record at the same position is written in place of one.",
             fills.rows + fills.spanned + fills.no_reads,
             fills.rows,
             fills.spanned,
@@ -457,10 +465,13 @@ struct Sink<'r> {
     progress: proglog::ProgLog,
 }
 
-/// The VarDict regions seen and the records written outside them, kept to fill a BED file's
-/// regions VarDict wrote no row for.
+/// The intervals of `--fill-gvcf-bed`, checked against the reference before any row is read, with
+/// the VarDict regions seen and the records written outside them, kept to fill the intervals'
+/// parts VarDict wrote no row for.
 #[derive(Default)]
 struct Filler {
+    /// The BED file's intervals, as contig, 1-based start and inclusive end.
+    bed: Vec<(String, u64, u64)>,
     /// Each contig's VarDict regions, as 1-based, inclusive ranges.
     segments: AHashMap<String, Vec<(u64, u64)>>,
     /// Each contig's positions of records written outside the VarDict region of their row.
@@ -723,33 +734,22 @@ impl Sink<'_> {
         Ok(())
     }
 
-    /// Fills each position of a BED file's regions outside every VarDict region and every record as
-    /// a position without reads, ranked as from the region with this ordinal.
-    fn fill_bed(&mut self, bed: &Path, ordinal: u64) -> Result<(), Box<dyn error::Error>> {
-        let intervals = read_bed(bed)?;
-        let filler = self
-            .filler
-            .take()
-            .expect("--fill-gvcf-bed requires --fill-gvcf!");
+    /// Fills each position of the BED file's intervals outside every VarDict region and every record
+    /// as a position without reads, ranked as from the region with this ordinal.
+    fn fill_bed(&mut self, ordinal: u64) -> Result<(), Box<dyn error::Error>> {
+        let Some(filler) = self.filler.take() else {
+            return Ok(());
+        };
         let covered: AHashMap<&str, Vec<(u64, u64)>> = filler
             .segments
             .iter()
             .map(|(contig, ranges)| (contig.as_str(), merge(ranges.clone())))
             .collect();
         let none = AHashSet::new();
-        for (contig, start, end) in intervals {
-            let length = self.reference.length(&contig).map_err(|_| {
-                format!("Contig '{contig}' of the BED file {bed:?} is not in the reference!")
-            })?;
-            if end > length {
-                return Err(format!(
-                    "The BED region {contig}:{start}-{end} ends past {contig}, which has {length} bases in the reference!"
-                )
-                .into());
-            }
+        for (contig, start, end) in &filler.bed {
             let ranges = covered.get(contig.as_str()).map_or(&[][..], Vec::as_slice);
-            let outside = filler.outside.get(&contig).unwrap_or(&none);
-            for (from, to) in uncovered(start, end, ranges) {
+            let outside = filler.outside.get(contig).unwrap_or(&none);
+            for (from, to) in uncovered(*start, *end, ranges) {
                 for position in (from..=to).filter(|position| !outside.contains(position)) {
                     let filled = Filled {
                         position,
@@ -758,7 +758,7 @@ impl Sink<'_> {
                         ref_reverse: 0,
                         depth: 0,
                     };
-                    self.add_fill(&contig, filled, ordinal)?;
+                    self.add_fill(contig, filled, ordinal)?;
                 }
             }
         }
@@ -1291,6 +1291,22 @@ mod tests {
         assert_eq!(exit, 0);
         assert!(diff(output.path().to_str().unwrap(), "tests/calls.vcf"));
         Ok(())
+    }
+
+    #[test]
+    fn test_vartovcf_refuses_a_fill_bed_without_fill_gvcf() {
+        let input = BufReader::new(File::open("tests/calls.fill-gvcf.var").unwrap());
+        let error = vartovcf(
+            input,
+            &Options {
+                output: Some("/dev/null".into()),
+                reference: PathBuf::from("tests/reference.fa"),
+                fill_gvcf_bed: Some(PathBuf::from("tests/calls.fill-gvcf.bed")),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "--fill-gvcf-bed requires --fill-gvcf!");
     }
 
     #[test]

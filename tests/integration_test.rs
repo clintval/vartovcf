@@ -122,6 +122,33 @@ mod tests {
         Ok(())
     }
 
+    #[rstest]
+    #[case("chr1\t1092\t1112\nchrX\t0\t5\n", "Contig 'chrX' on line 2")]
+    #[case("chr12\t5990\t6001\n", "ends at 6001, past the 6000 bases of chr12")]
+    #[case("chr1\t12\t3\n", "on line 1")]
+    fn run_end_to_end_refuses_a_bed_it_cannot_fill(
+        #[case] bed: &str,
+        #[case] expected: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let file = NamedTempFile::new().expect("Cannot create temporary file!");
+        std::fs::write(file.path(), bed)?;
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        let assert = cmd
+            .args(["--reference", "tests/reference.fa", "--output", "/dev/null"])
+            .args([
+                "--input",
+                "tests/calls.fill-gvcf.var",
+                "--fill-gvcf",
+                "--fill-gvcf-bed",
+            ])
+            .arg(file.path())
+            .assert()
+            .code(1);
+        let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+        assert!(stderr.contains(expected), "{stderr}");
+        Ok(())
+    }
+
     #[test]
     #[rustfmt::skip]
     fn run_end_to_end_on_skippable_records() -> Result<(), Box<dyn std::error::Error>> {
