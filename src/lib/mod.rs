@@ -375,6 +375,9 @@ fn convert<I: Read>(
             continue; // A row without a REF allele is one not to deserialize.
         }
         if options.skip_non_variants && field(5).eq_ignore_ascii_case(field(6)) {
+            columns.drop_fisher_columns(&mut carry, &mut scratch);
+            let (calls, _) = parse_row(&carry, columns)?;
+            sink.add_counts(&calls[..layout.samples()], ordinal)?;
             continue;
         }
 
@@ -428,7 +431,7 @@ fn convert<I: Read>(
     };
     if options.fill_gvcf {
         info!(
-            "Filled {} position(s) without a reference-only record: {} from VarDict's rows, {} inside a deletion or MNV and {} with no reads.",
+            "Filled {} position(s) without a reference-only record: {} from VarDict's rows, {} inside a deletion, MNV or Complex call and {} with no reads.",
             fills.rows + fills.spanned + fills.no_reads,
             fills.rows,
             fills.spanned,
@@ -704,7 +707,7 @@ impl Sink<'_> {
         let rid = self.records.rid(contig)?;
         let (start, end) = (start.max(1), end.min(length));
         if start <= end {
-            self.sorter.push_region(rid, start, end, true)?;
+            self.sorter.push_region(rid, start, end)?;
         }
         Ok(())
     }
@@ -720,8 +723,7 @@ impl Sink<'_> {
             let length = self.reference.length(contig)? as i64;
             let (start, end) = (start.max(1), end.min(length));
             if start <= end {
-                self.sorter
-                    .push_region(rid, start as u64, end as u64, false)?;
+                self.sorter.push_region(rid, start as u64, end as u64)?;
             }
         }
         Ok(())
@@ -749,13 +751,14 @@ impl Sink<'_> {
             contig: String::new(),
             rid: None,
             walk: Walk::default(),
-            vardict_end: 0,
             end: 0,
             position: 0,
             counts_region: None,
             wrote_record: false,
             read_record: false,
             read_reference: false,
+            over_depth: 0,
+            first_over_depth: None,
         };
         while let Some(entry) = entries.next_entry()? {
             if stop() || !writer.entry(entry)? {
@@ -764,6 +767,12 @@ impl Sink<'_> {
         }
         if !writer.leave_contig()? {
             return Ok(None);
+        }
+        if let Some(first) = &writer.first_over_depth {
+            warn!(
+                "The reads VarDict counted at {} position(s) add up to more than VarDict's DP there without a row labeled Complex to explain it, first at {first}; SITE_DP keeps their sum.",
+                writer.over_depth
+            );
         }
         if fill_gvcf && writer.read_record && !writer.read_reference {
             warn!(
@@ -792,7 +801,8 @@ struct Writer<'w> {
     contig: String,
     rid: Option<u32>,
     walk: Walk,
-    vardict_end: u64,
+    over_depth: usize,
+    first_over_depth: Option<String>,
     end: u64,
     position: u64,
     counts_region: Option<u64>,
@@ -823,12 +833,7 @@ impl Writer<'_> {
             self.wrote_record = false;
         }
         match entry {
-            Entry::Region { end, vardict, .. } => {
-                self.end = self.end.max(end);
-                if vardict {
-                    self.vardict_end = self.vardict_end.max(end);
-                }
-            }
+            Entry::Region { end, .. } => self.end = self.end.max(end),
             Entry::Counts { region, counts, .. } => {
                 if self.counts_region.is_none_or(|first| first == region) {
                     self.counts_region = Some(region);
@@ -841,18 +846,18 @@ impl Writer<'_> {
                 ..
             } => {
                 let site = self.walk.site();
-                if !self.wrote_record && !reference_only && site.fill != Fill::NoReads {
-                    self.fill()?;
+                let counted = site.fill == Fill::Rows;
+                if !self.wrote_record && !reference_only && counted {
+                    self.fill(true)?;
                 }
                 self.wrote_record = true;
                 self.read_reference |= reference_only;
                 self.read_record = true;
-                let site_dp: PerSample =
-                    if position <= self.vardict_end && site.fill != Fill::NoReads {
-                        site.site_dp
-                    } else {
-                        [i32::missing(); SAMPLES]
-                    };
+                let site_dp: PerSample = if counted {
+                    site.site_dp
+                } else {
+                    [i32::missing(); SAMPLES]
+                };
                 stamp(line, &site_dp, &mut self.line);
                 self.write_line()?;
             }
@@ -872,7 +877,6 @@ impl Writer<'_> {
         self.contig.push_str(name);
         self.rid = Some(rid);
         self.walk = Walk::default();
-        self.vardict_end = 0;
         self.end = 0;
         self.position = 0;
         Ok(())
@@ -890,8 +894,17 @@ impl Writer<'_> {
 
     /// Finishes the position it is at, filling it when no record was written there.
     fn leave_position(&mut self) -> Result<(), Box<dyn error::Error>> {
-        if self.position > 0 && !self.wrote_record {
-            self.fill()?;
+        if self.position == 0 {
+            return Ok(());
+        }
+        if self.walk.site().exceeds_depth {
+            self.over_depth += 1;
+            if self.first_over_depth.is_none() {
+                self.first_over_depth = Some(format!("{}:{}", self.contig, self.position));
+            }
+        }
+        if !self.wrote_record {
+            self.fill(false)?;
         }
         Ok(())
     }
@@ -908,14 +921,15 @@ impl Writer<'_> {
             }
             self.walk.at(position);
             self.position = position;
-            self.fill()?;
+            self.fill(false)?;
         }
         Ok(true)
     }
 
     /// Writes a reference-only record at the position it is at, from what VarDict counted there,
-    /// when filling and the position lies in a region entered.
-    fn fill(&mut self) -> Result<(), Box<dyn error::Error>> {
+    /// when filling and the position lies in a region entered; a record before ALT records at the
+    /// position carries depth only, so its genotype is missing.
+    fn fill(&mut self, before_alt: bool) -> Result<(), Box<dyn error::Error>> {
         if !self.fill_gvcf || self.position > self.end {
             return Ok(());
         }
@@ -947,6 +961,7 @@ impl Writer<'_> {
         let extras = Extras {
             context: context.as_deref(),
             site_dp: &site.site_dp[..1],
+            unknown_genotype: before_alt,
             ..Extras::default()
         };
         let calls = std::slice::from_ref(&call);
@@ -1048,14 +1063,15 @@ fn compact(record: &StringRecord, columns: Columns) -> StringRecord {
 }
 
 /// What a record carries besides its calls: the merge of an MNV that absorbed partials, the reads
-/// a partial lost to its MNV per sample, its reference 3-mer, and its depth at POS per sample,
-/// FORMAT SITE_DP, left out when empty.
+/// a partial lost to its MNV per sample, its reference 3-mer, its depth at POS per sample, FORMAT
+/// SITE_DP, left out when empty, and whether its genotype is missing whatever its reads.
 #[derive(Clone, Copy, Default)]
 struct Extras<'e> {
     merged: Option<&'e Merged<'e>>,
     moved: Option<&'e [i32]>,
     context: Option<&'e str>,
     site_dp: &'e [i32],
+    unknown_genotype: bool,
 }
 
 /// Builds one VCF record with a sample column per call, the tumor (or only) sample first; FILTER and
@@ -1144,9 +1160,15 @@ fn build_record<'w>(
 
     let genotypes = Values::<_, 4>::collect(
         GenotypeAllele::UnphasedMissing,
-        calls
-            .iter()
-            .flat_map(|call| call.gt_value(MIN_HOM_ALT_AF).iter().copied()),
+        calls.iter().flat_map(|call| {
+            let missing = &[GenotypeAllele::UnphasedMissing; 2][..];
+            let alleles = if extras.unknown_genotype {
+                missing
+            } else {
+                call.gt_value(MIN_HOM_ALT_AF)
+            };
+            alleles.iter().copied()
+        }),
     );
     variant.push_genotypes(&genotypes)?;
     variant.push_format_integer("AD", &each_allele(calls, TumorOnlyVariant::ad_value))?;
@@ -1157,7 +1179,6 @@ fn build_record<'w>(
         &each(calls, TumorOnlyVariant::strand_bias_fisher_p_value),
     )?;
     variant.push_format_integer("DP", &each(calls, |call| call.depth))?;
-    variant.push_format_integer("SITE_DP", extras.site_dp)?;
     variant.push_format_float("AF", &each(calls, TumorOnlyVariant::af_value))?;
     variant.push_format_integer("HICNT", &each(calls, TumorOnlyVariant::hicnt_value))?;
     variant.push_format_float(
@@ -1194,6 +1215,7 @@ fn build_record<'w>(
         variant.push_format_integer("SV_SOFTCLIP_READS", &each(&counts, |count| count.0))?;
         variant.push_format_integer("SV_DISCORDANT_READS", &each(&counts, |count| count.1))?;
     }
+    variant.push_format_integer("SITE_DP", extras.site_dp)?;
 
     Ok(Some(variant))
 }

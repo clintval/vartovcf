@@ -73,8 +73,9 @@ pub struct Counts {
     /// Whether VarDict labels the row Complex, as it overcounts such a row's REF reads.
     pub complex: bool,
     /// The last base past the position that a deletion's or MNV's REF covers, or 0 for any other
-    /// row; a symbolic allele spans nothing, as its reads are VarDict's evidence for it, not reads
-    /// covering its bases.
+    /// row. A `<DEL>` VarDict found in the reads' alignments, without split or discordant reads,
+    /// spans to its END, as its reads cover its bases; one found by that evidence, and any other
+    /// symbolic allele, spans nothing.
     pub span_to: u64,
     /// The forward REF reads.
     pub ref_forward: PerSample,
@@ -103,10 +104,10 @@ impl Counts {
             }
             values
         };
-        let span_to = if call.alt_allele.starts_with('<') {
-            0
-        } else {
-            call.start + call.ref_allele.len() as u64 - 1
+        let span_to = match call.alt_allele {
+            "<DEL>" if call.sv_read_counts() == Some((0, 0)) => call.end,
+            alt if alt.starts_with('<') => 0,
+            _ => call.start + call.ref_allele.len() as u64 - 1,
         };
         let inserted = inserts(call);
         let zero = [0; SAMPLES];
@@ -187,6 +188,9 @@ impl Counts {
 struct Counted {
     /// Whether the row whose REF reads stand for the position's is labeled Complex.
     complex: bool,
+    /// Whether any row here is labeled Complex, whose REF reads VarDict can count again as its
+    /// allele's.
+    any_complex: bool,
     /// That row's forward REF reads.
     ref_forward: PerSample,
     /// That row's reverse REF reads.
@@ -207,6 +211,7 @@ impl Counted {
     fn new(counts: &Counts) -> Self {
         Counted {
             complex: counts.complex,
+            any_complex: counts.complex,
             ref_forward: counts.ref_forward,
             ref_reverse: counts.ref_reverse,
             depth: counts.depth,
@@ -227,6 +232,7 @@ impl Counted {
             self.ref_reverse = other.ref_reverse;
             self.depth = other.depth;
         }
+        self.any_complex |= other.complex;
         for sample in 0..SAMPLES {
             self.max_depth[sample] = self.max_depth[sample].max(other.depth[sample]);
             self.alt_reads[sample] += other.alt_reads[sample];
@@ -250,9 +256,12 @@ pub struct Site {
     /// position, as only they cover it, or 0 without either.
     pub depth: PerSample,
     /// The reads VarDict counted at the position as REF or as any allele, an insertion's once, with
-    /// the reads of each deletion or MNV spanning it, no more than the most depth of a row counted
-    /// there.
+    /// the reads of each deletion or MNV spanning it; where a row labeled Complex was counted, no
+    /// more than the most depth of a row counted there.
     pub site_dp: PerSample,
+    /// Whether, without a row labeled Complex, the reads add up to more than the most depth of a
+    /// row counted there in some sample, which VarDict's counts should not do.
+    pub exceeds_depth: bool,
 }
 
 impl Site {
@@ -263,6 +272,7 @@ impl Site {
         ref_reverse: [0; SAMPLES],
         depth: [0; SAMPLES],
         site_dp: [0; SAMPLES],
+        exceeds_depth: false,
     };
 }
 
@@ -326,13 +336,19 @@ impl Walk {
                     ref_reverse: row.ref_reverse,
                     depth: row.depth,
                     site_dp: [0; SAMPLES],
+                    exceeds_depth: false,
                 };
                 for sample in 0..SAMPLES {
                     let reads = row.ref_forward[sample]
                         + row.ref_reverse[sample]
                         + row.alt_reads[sample]
                         + self.reads[sample];
-                    site.site_dp[sample] = reads.min(row.max_depth[sample]);
+                    site.site_dp[sample] = if row.any_complex {
+                        reads.min(row.max_depth[sample])
+                    } else {
+                        site.exceeds_depth |= reads > row.max_depth[sample];
+                        reads
+                    };
                     site.ref_forward[sample] += row.inserted_forward[sample];
                     site.ref_reverse[sample] += row.inserted_reverse[sample];
                 }
@@ -344,6 +360,7 @@ impl Walk {
                 ref_reverse: [0; SAMPLES],
                 depth: self.reads,
                 site_dp: self.reads,
+                exceeds_depth: false,
             },
             (None, true) => Site::NO_READS,
         }
@@ -356,6 +373,7 @@ mod tests {
     use rstest::rstest;
 
     use super::*;
+    use crate::record::SvInfo;
 
     /// A tumor-only row's call with these alleles, depths and REF and ALT reads, each split evenly
     /// across strands.
@@ -510,13 +528,49 @@ mod tests {
     }
 
     #[test]
-    fn test_a_symbolic_allele_spans_nothing() {
-        let rows = [TumorOnlyVariant {
+    fn test_a_symbolic_deletion_spans_its_bases_only_without_sv_evidence() {
+        let deletion = TumorOnlyVariant {
             end: 15,
             ..call(10, "C", "<DEL>", "C/-5", 200, 0, 200)
-        }];
-        assert_eq!(site_dps(&rows, 10..=13), vec![0, 200, 0, 0]);
-        assert_eq!(sites_at(&rows, 12..=12), vec![(Fill::NoReads, 0, 0, 0)]);
+        };
+        assert_eq!(
+            site_dps(std::slice::from_ref(&deletion), 10..=16),
+            vec![0, 200, 200, 200, 200, 200, 0]
+        );
+        let evidence = TumorOnlyVariant {
+            sv_info: Some(SvInfo {
+                supporting_split_reads: 2,
+                supporting_pairs: 3,
+                supporting_clusters: 1,
+            }),
+            ..deletion.clone()
+        };
+        assert_eq!(site_dps(&[evidence], 10..=13), vec![0, 200, 0, 0]);
+        for alt in ["<DUP>", "<INV>"] {
+            let rows = [TumorOnlyVariant {
+                alt_allele: alt,
+                ..deletion.clone()
+            }];
+            assert_eq!(site_dps(&rows, 12..=13), vec![0, 0]);
+        }
+    }
+
+    #[test]
+    fn test_site_dp_keeps_a_sum_above_dp_without_a_complex_row() {
+        let rows = [
+            call(5, "C", "A", "C/A", 100, 90, 20),
+            call(5, "C", "T", "C/T", 100, 90, 10),
+        ];
+        let rows: Vec<&[TumorOnlyVariant]> = rows.iter().map(std::slice::from_ref).collect();
+        let site = walk(&rows, 5..=5)[0];
+        assert_eq!((site.site_dp[0], site.exceeds_depth), (120, true));
+        let complex = [
+            call(5, "CG", "AT", "CG/AT", 100, 90, 20),
+            call(5, "C", "T", "C/T", 100, 90, 10),
+        ];
+        let complex: Vec<&[TumorOnlyVariant]> = complex.iter().map(std::slice::from_ref).collect();
+        let site = walk(&complex, 5..=5)[0];
+        assert_eq!((site.site_dp[0], site.exceeds_depth), (100, false));
     }
 
     #[test]
@@ -609,13 +663,13 @@ mod tests {
     fn test_a_spanned_sites_depth_is_the_reads_spanning_it() {
         let rows = [
             call(10, "CGGAT", "C", "C/-4", 100, 70, 30),
-            call(11, "GGAT", "G", "G/-3", 100, 80, 20),
+            call(11, "GGAT", "G", "G/-3", 130, 80, 20),
         ];
         assert_eq!(
             sites_at(&rows, 11..=15),
             vec![
                 (Fill::Rows, 70, 100, 100),
-                (Fill::Rows, 80, 100, 100),
+                (Fill::Rows, 80, 130, 130),
                 (Fill::Spanned, 0, 50, 50),
                 (Fill::Spanned, 0, 50, 50),
                 (Fill::NoReads, 0, 0, 0),

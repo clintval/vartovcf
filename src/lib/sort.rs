@@ -86,8 +86,6 @@ pub enum Entry<'a> {
         start: u64,
         /// The region's last position.
         end: u64,
-        /// Whether VarDict piled the region up.
-        vardict: bool,
     },
     /// What VarDict counted at the position in one row of the region with this ordinal.
     Counts {
@@ -171,18 +169,10 @@ impl RecordSorter {
     }
 
     /// Adds a region of the contig with index `rid` from `start` to `end`, 1-based and inclusive.
-    pub fn push_region(
-        &mut self,
-        rid: u32,
-        start: u64,
-        end: u64,
-        vardict: bool,
-    ) -> Result<(), String> {
+    pub fn push_region(&mut self, rid: u32, start: u64, end: u64) -> Result<(), String> {
         self.begin(rid, start, REGION);
         key::push_uint(&mut self.key, end);
-        key::push_uint(&mut self.key, u8::from(vardict));
         self.value.extend_from_slice(&end.to_le_bytes());
-        self.value.push(u8::from(vardict));
         self.sorter.push(&self.key, &self.value).map_err(describe)
     }
 
@@ -249,7 +239,6 @@ impl Entries {
                 rid,
                 start: position,
                 end: u64::from_le_bytes(value[13..21].try_into().unwrap()),
-                vardict: value[21] == 1,
             },
             COUNTS => Entry::Counts {
                 rid,
@@ -416,8 +405,8 @@ mod tests {
         sorter
             .push_counts(0, 100, 1, b"first region again")
             .unwrap();
-        sorter.push_region(0, 100, 120, true).unwrap();
-        sorter.push_region(0, 101, 103, false).unwrap();
+        sorter.push_region(0, 100, 120).unwrap();
+        sorter.push_region(0, 101, 103).unwrap();
         sorter.push_counts(0, 99, 1, b"before").unwrap();
         let mut entries = sorter.entries().unwrap();
         let mut read = Vec::new();
@@ -446,28 +435,18 @@ mod tests {
                 }
             )
         };
-        let region = |start: u64, end: u64, vardict: bool| {
-            format!(
-                "{:?}",
-                Entry::Region {
-                    rid: 0,
-                    start,
-                    end,
-                    vardict
-                }
-            )
-        };
+        let region = |start: u64, end: u64| format!("{:?}", Entry::Region { rid: 0, start, end });
         assert_eq!(
             read,
             vec![
                 counts(99, 1, b"before"),
-                region(100, 120, true),
+                region(100, 120),
                 counts(100, 1, b"first region"),
                 counts(100, 1, b"first region again"),
                 counts(100, 2, b"second region"),
                 record(true, b"reference\n"),
                 record(false, b"record\n"),
-                region(101, 103, false),
+                region(101, 103),
             ]
         );
     }
