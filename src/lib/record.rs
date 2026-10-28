@@ -733,30 +733,33 @@ const MNV_MOVED_READS_DESCRIPTION: &str = r#"ALT reads moved from this partial r
 /// The FORMAT description of the ALT reads the folded partial rows added to each sample.
 const MNV_PARTIAL_READS_DESCRIPTION: &str = r#"ALT reads the partial rows folded into this MNV (INFO MNV_PARTIALS) added to AD[1]; written only on records that absorbed partials."#;
 
-/// Create a VCF header for VarDict/VarDictJava in tumor-only mode, declaring the applied FILTER labels
-/// and, when MNV partials are folded, the fields that describe the fold.
+/// Create a VCF header for VarDict/VarDictJava in tumor-only mode, declaring the applied FILTER labels,
+/// the fields that describe the fold when MNV partials are folded, and the 3-mer context when asked.
 pub fn tumor_only_header(
     sample: &str,
     filters: &FilterThresholds,
     fix: Option<&LeakyMnvFix>,
+    context_3mer: bool,
 ) -> Header {
-    vcf_header(&[sample], filters, fix)
+    vcf_header(&[sample], filters, fix, context_3mer)
 }
 
 /// Create a VCF header for VarDict/VarDictJava run on a tumor and normal pair, declaring the applied
-/// FILTER labels and, when MNV partials are folded, the fields that describe the fold.
+/// FILTER labels, the fields that describe the fold when MNV partials are folded, and the 3-mer
+/// context when asked.
 pub fn tumor_normal_header(
     tumor: &str,
     normal: &str,
     filters: &FilterThresholds,
     fix: Option<&LeakyMnvFix>,
+    context_3mer: bool,
 ) -> Header {
-    vcf_header(&[tumor, normal], filters, fix)
+    vcf_header(&[tumor, normal], filters, fix, context_3mer)
 }
 
 /// Create a VCF header for one tumor-only sample or a tumor and normal pair.
 #[rustfmt::skip]
-fn vcf_header(samples: &[&str], filters: &FilterThresholds, fix: Option<&LeakyMnvFix>) -> Header {
+fn vcf_header(samples: &[&str], filters: &FilterThresholds, fix: Option<&LeakyMnvFix>, context_3mer: bool) -> Header {
     let tumor_normal = samples.len() == 2;
     let source = [CARGO_PKG_NAME, CARGO_PKG_VERSION].join("-");
     let mut header = Header::builder()
@@ -778,6 +781,9 @@ fn vcf_header(samples: &[&str], filters: &FilterThresholds, fix: Option<&LeakyMn
     }
     if let Some(fix) = fix {
         add_info(&mut header, "MNV_PARTIALS", info::Number::Count(1), info::Type::Integer, &mnv_partials_description(fix));
+    }
+    if context_3mer {
+        add_info(&mut header, "CONTEXT_3mer", info::Number::Count(1), info::Type::String, r#"The reference bases at POS-1, POS and POS+1, uppercase even where the reference is soft-masked, with N for a base past either end of the contig. POS is the record's after normalization, so an insertion's or deletion's 3-mer is centered on its anchor base, the reference base before the inserted or deleted bases. Not reverse-complemented when the base at POS is a purine, and an IUPAC ambiguity code is kept as the reference spells it, even where REF writes the first base it stands for."#);
     }
     add_filter(&mut header, "PASS", r#"The call failed none of the FILTER labels, which test the tumor (or only) sample; a call whose tumor sample has no reads of the ALT allele keeps no FILTER (.)."#);
     for (id, description) in filters.header_filters() {
@@ -1337,7 +1343,7 @@ mod tests {
 
     #[test]
     fn test_header_is_written_as_vcf_4_2_with_the_source_last() {
-        let header = tumor_only_header("dna00001", &FilterThresholds::default(), None);
+        let header = tumor_only_header("dna00001", &FilterThresholds::default(), None, false);
         let text = String::from_utf8(crate::vcf::header_bytes(&header).unwrap()).unwrap();
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines[0], "##fileformat=VCFv4.2");
@@ -1349,7 +1355,7 @@ mod tests {
 
     #[test]
     fn test_tumor_only_header() {
-        let header = tumor_only_header("dna00001", &FilterThresholds::default(), None);
+        let header = tumor_only_header("dna00001", &FilterThresholds::default(), None, false);
         let file = NamedTempFile::new().expect("Cannot create temporary file!");
         let (header, text) = read_back(&header, &file);
         let records: Vec<&str> = text.lines().filter(|line| line.starts_with("##")).collect();
@@ -1493,7 +1499,7 @@ mod tests {
 
     #[test]
     fn test_tumor_normal_header() {
-        let header = tumor_normal_header("T", "N", &FilterThresholds::default(), None);
+        let header = tumor_normal_header("T", "N", &FilterThresholds::default(), None, false);
         let file = NamedTempFile::new().expect("Cannot create temporary file!");
         let (header, _) = read_back(&header, &file);
         let samples: Vec<&[u8]> = header.sample_names().iter().map(|s| s.as_bytes()).collect();
@@ -1520,5 +1526,25 @@ mod tests {
             (format::Type::Integer, format::Number::AlternateBases)
         );
         assert!(format_type("QMEAN").is_some());
+    }
+
+    #[rstest]
+    #[case(false, None)]
+    #[case(true, Some((info::Type::String, info::Number::Count(1))))]
+    fn test_header_declares_the_3mer_context_only_when_asked(
+        #[case] context_3mer: bool,
+        #[case] expected: Option<(info::Type, info::Number)>,
+    ) {
+        let filters = FilterThresholds::default();
+        for header in [
+            tumor_only_header("dna00001", &filters, None, context_3mer),
+            tumor_normal_header("T", "N", &filters, None, context_3mer),
+        ] {
+            let declared = header
+                .infos()
+                .get("CONTEXT_3mer")
+                .map(|info| (info.ty(), info.number()));
+            assert_eq!(declared, expected);
+        }
     }
 }

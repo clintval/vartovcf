@@ -167,6 +167,8 @@ pub struct Options<'a> {
     pub normal_sample: Option<&'a str>,
     /// Skip non-variant sites (where ref_allele == alt_allele).
     pub skip_non_variants: bool,
+    /// Write INFO CONTEXT_3mer, the reference bases at POS-1, POS and POS+1, on every record.
+    pub context_3mer: bool,
     /// How to fold the partial rows of each MNV back into it, by their counts at a leak rate or
     /// by their reads, or `None` to not fold; see [`mnv`].
     pub fix_leaky_mnv: Option<LeakyMnvFix>,
@@ -263,8 +265,14 @@ fn convert<I: Read>(
             normal_sample,
             filters,
             options.fix_leaky_mnv.as_ref(),
+            options.context_3mer,
         ),
-        None => tumor_only_header(&sample, filters, options.fix_leaky_mnv.as_ref()),
+        None => tumor_only_header(
+            &sample,
+            filters,
+            options.fix_leaky_mnv.as_ref(),
+            options.context_3mer,
+        ),
     };
 
     fasta_contigs_to_vcf_header(&options.reference, &mut header);
@@ -301,6 +309,7 @@ fn convert<I: Read>(
         line: Vec::new(),
         seen: SeenRows::default(),
         filters,
+        context_3mer: options.context_3mer,
         folder,
         folds: FoldCounts::default(),
         progress: ProgLogBuilder::new()
@@ -415,6 +424,7 @@ struct Sink<'r> {
     line: Vec<u8>,
     seen: SeenRows,
     filters: &'r FilterThresholds,
+    context_3mer: bool,
     folder: Option<Folder>,
     folds: FoldCounts,
     progress: proglog::ProgLog,
@@ -462,6 +472,7 @@ impl Sink<'_> {
     ) -> Result<(), Box<dyn error::Error>> {
         let written: Vec<TumorOnlyVariant> =
             calls.iter().map(|call| normalized.apply(call)).collect();
+        let context = self.context(&written[0])?;
         let Some(record) = build_record(
             &mut self.records,
             &written,
@@ -469,6 +480,7 @@ impl Sink<'_> {
             self.filters,
             merged,
             None,
+            context.as_deref(),
         )?
         else {
             return Ok(());
@@ -493,6 +505,7 @@ impl Sink<'_> {
     ) -> Result<(), Box<dyn error::Error>> {
         let written: Vec<TumorOnlyVariant> =
             kept.iter().map(|call| normalized.apply(call)).collect();
+        let context = self.context(&written[0])?;
         let Some(record) = build_record(
             &mut self.records,
             &written,
@@ -500,6 +513,7 @@ impl Sink<'_> {
             self.filters,
             None,
             Some(moved),
+            context.as_deref(),
         )?
         else {
             return Ok(());
@@ -511,6 +525,13 @@ impl Sink<'_> {
         self.sorter.push(key, rank, &self.line)?;
         self.progress.record();
         Ok(())
+    }
+
+    /// The reference's 3-mer around a normalized call's POS, when asked for.
+    fn context(&mut self, call: &TumorOnlyVariant) -> Result<Option<String>, String> {
+        self.context_3mer
+            .then(|| self.reference.context(call.contig, call.start, 1))
+            .transpose()
     }
 
     /// Adds the rows of one VarDict region, a block it writes together for one target, with the
@@ -640,8 +661,9 @@ fn compact(record: &StringRecord, columns: Columns) -> StringRecord {
 
 /// Builds one VCF record with a sample column per call, the tumor (or only) sample first; FILTER and
 /// the site's INFO come from the first call, and a tumor-normal record carries its VARDICT_STATUS.
-/// An MNV that absorbed partials carries its merge, and a partial that lost reads to its MNV the
-/// reads `moved` per sample. Returns `None` for a record the writer skips.
+/// An MNV that absorbed partials carries its merge, a partial that lost reads to its MNV the reads
+/// `moved` per sample, and a record given its reference 3-mer its `context`. Returns `None` for a
+/// record the writer skips.
 fn build_record<'w>(
     records: &'w mut RecordWriter,
     calls: &[TumorOnlyVariant],
@@ -649,6 +671,7 @@ fn build_record<'w>(
     filters: &FilterThresholds,
     merged: Option<&Merged>,
     moved: Option<&[i32]>,
+    context: Option<&str>,
 ) -> Result<Option<Record<'w>>, Box<dyn error::Error>> {
     let var = &calls[0];
     let Some(mut variant) = records.record(
@@ -718,6 +741,10 @@ fn build_record<'w>(
 
     if let Some(merged) = merged {
         variant.push_info_integer("MNV_PARTIALS", &[merged.partials as i32])?;
+    }
+
+    if let Some(context) = context {
+        variant.push_info_string("CONTEXT_3mer", context)?;
     }
 
     let genotypes = Values::<_, 4>::collect(

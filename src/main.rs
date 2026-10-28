@@ -49,6 +49,10 @@ struct Opt {
     #[arg(long)]
     skip_non_variants: bool,
 
+    /// Write INFO CONTEXT_3mer on every record: the reference bases at POS-1, POS and POS+1, uppercase, with N past either end of the contig
+    #[arg(long)]
+    context_3mer: bool,
+
     /// Fold the partial rows VarDict writes for a multi-nucleotide variant (MNV), from reads that end, have a no-call (N) or a low-quality base inside it, back into the MNV; see the README
     #[arg(long)]
     fix_leaky_mnv: bool,
@@ -184,6 +188,7 @@ fn main() -> Result<(), Error> {
         sample: opt.sample.as_deref(),
         normal_sample: opt.normal_sample.as_deref(),
         skip_non_variants: opt.skip_non_variants,
+        context_3mer: opt.context_3mer,
         fix_leaky_mnv: opt.fix_leaky_mnv.then(|| match &opt.reads {
             Some(bams) => LeakyMnvFix::Reads {
                 bams: split_bams(bams),
