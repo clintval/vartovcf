@@ -97,6 +97,15 @@ impl RecordWriter {
         &self.header
     }
 
+    /// The index of a contig among the header's `##contig` lines.
+    pub fn rid(&self, contig: &str) -> Result<u32, String> {
+        self.header
+            .contigs()
+            .get_index_of(contig)
+            .and_then(|rid| u32::try_from(rid).ok())
+            .ok_or_else(|| format!("Contig '{contig}' has no ##contig line in the VCF header!"))
+    }
+
     /// Starts a record of a contig the header declares, at a 1-based position, with its REF and an
     /// ALT that is `.` when there is none. An IUPAC ambiguity code in REF is written as the first
     /// base it stands for, alphabetically; when that makes REF equal to ALT, the record is skipped
@@ -109,12 +118,7 @@ impl RecordWriter {
         ref_allele: &str,
         alt_allele: &str,
     ) -> Result<Option<Record<'_>>, String> {
-        let rid = self
-            .header
-            .contigs()
-            .get_index_of(contig)
-            .and_then(|rid| u32::try_from(rid).ok())
-            .ok_or_else(|| format!("Contig '{contig}' has no ##contig line in the VCF header!"))?;
+        let rid = self.rid(contig)?;
         let start = usize::try_from(position)
             .ok()
             .and_then(|position| Position::try_from(position).ok())

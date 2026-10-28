@@ -189,7 +189,7 @@ In the example above, the fourth read's template is read at the MNV's last base:
 
 Every record is normalized against `--reference`, which must be the FASTA VarDict was run with: an indel moves to its left-most position and shared leading and trailing bases are trimmed, leaving an indel one shared base and a substitution the span from its first to its last changed base, so a gapped MNV keeps its inner unchanged bases, as `bcftools norm -f` does, so `bcftools norm` is not needed. A REF allele that differs from the reference is an error. Alleles are written uppercase even where the reference is soft-masked, unlike `bcftools norm` ([samtools/bcftools#2606](https://github.com/samtools/bcftools/issues/2606)). Reference-only rows and symbolic structural variants are not moved.
 
-Each call is written once. Rows of one VarDict region that normalize to one call, such as one indel VarDict placed at two positions in a repeat, hold different reads of it, and the row with the most ALT reads in the tumor (or only) sample is written, then the most in all samples, then the most depth in the tumor (or only) sample, so the choice never depends on row order. Overlapping BED regions repeat calls, and the first region's record is written. A region's rows are held until it ends, and a key for each substitution row of a region, folded rows included, is kept so none is written or folded again, so memory grows with the largest VarDict region and with the number of substitution rows.
+Each call is written once. Rows of one VarDict region that normalize to one call, such as one indel VarDict placed at two positions in a repeat, hold different reads of it, and the row with the most ALT reads in the tumor (or only) sample is written, then the most in all samples, then the most depth in the tumor (or only) sample, so the choice never depends on row order. Overlapping BED regions repeat calls, and the first region's record is written. With `--fix-leaky-mnv`, a region's rows are held until it ends, and a key for each substitution row of a region, folded rows included, is kept so none is written or folded again, so memory grows with the largest VarDict region and with the number of substitution rows.
 
 ### Sequence context
 
@@ -217,7 +217,7 @@ A VarDict region that no line's region matches fails the run, naming the options
 > [!NOTE]
 > A `NO_READS` position can have reads when:
 > - VarDict trims a Complex call's leading bases after picking the position's rows, leaving the base it started at with none.
-> - A deletion or MNV starts before the region, so the region does not write it.
+> - A deletion or MNV starts before the region, and no region counted it.
 
 ### Site depth
 
@@ -227,11 +227,13 @@ Every record carries FORMAT `SITE_DP`, the depth at its POS, the same on every r
 - Plus the reads of each deletion or MNV counted at an earlier base whose REF covers the position, so an MNV's inner bases keep their depth.
 - No more than the most DP of VarDict's rows counted there.
 
-It is counted in VarDict's coordinates, before normalization, so a moved indel takes the depth where it lands, and is missing on a record whose POS lies outside its VarDict region. With `--fill-gvcf`, summing `SITE_DP` over the reference-only records gives each region's depth with no grouping by position, and AD[1] / `SITE_DP` is an allele's share of its position's reads.
+It is counted in VarDict's coordinates, before normalization, so a moved indel takes the depth where it lands. Where VarDict regions overlap, the first region that counted a row at a position gives its depth, and a record whose POS lies outside every VarDict region has none. With `--fill-gvcf`, summing `SITE_DP` over the reference-only records gives each region's depth with no grouping by position, and AD[1] / `SITE_DP` is an allele's share of its position's reads.
+
+What VarDict counted in each row goes into the sort beside the records, under the position VarDict counted it at, and the writer walks both in position order, holding only one position's counts and the deletions and MNVs spanning it, so neither `SITE_DP` nor `--fill-gvcf` holds a region.
 
 ### Sorting
 
-Records are sorted by contig, in the reference's order, then by POS, REF and ALT, as `bcftools sort` does, so `bcftools sort` is not needed, and they are written only once the input ends. Up to 64 MiB of records are held in memory, plus one VarDict region's rows and a key per substitution row, and the rest spill to a `spillsort-*` directory under `--tmp-dir`, `$TMPDIR` by default, which is removed when `vartovcf` exits or fails. A SIGINT or SIGTERM stops it at its next input row or the next record written and removes the output file, though output already sent to standard output may end in a partial record; a second signal exits at once and leaves its temporary files and an incomplete output file.
+Records are sorted by contig, in the reference's order, then by POS, REF and ALT, as `bcftools sort` does, so `bcftools sort` is not needed, and they are written only once the input ends. Up to 64 MiB of records, with each row's counts and each region's bounds, are held in memory, plus one VarDict region's rows and a key per substitution row with `--fix-leaky-mnv`, and the rest spill to a `spillsort-*` directory under `--tmp-dir`, `$TMPDIR` by default, which is removed when `vartovcf` exits or fails. A SIGINT or SIGTERM stops it at its next input row or the next record written and removes the output file, though output already sent to standard output may end in a partial record; a second signal exits at once and leaves its temporary files and an incomplete output file.
 
 ### Output
 

@@ -1,22 +1,29 @@
-//! Sorts output records by coordinate in bounded memory with `spillsort`, spilling to disk.
-use std::io::Write;
+//! Sorts output records by coordinate in bounded memory with `spillsort`, spilling to disk, with
+//! the VarDict regions and what VarDict counted in each row, so the writer reads them all in one
+//! pass in position order.
 use std::path::{Path, PathBuf};
 
 use spillsort::{Config, Merged, Sorter, key};
 
-use crate::fill::Fill;
 use crate::record::TumorOnlyVariant;
 
 /// The most memory the records being sorted are held in before they spill to the temporary
 /// directory; `spillsort` peaks at about a quarter more.
 pub const MAX_BYTES: usize = 64 << 20;
 
-/// Records sorted by contig, in the header's order, then POS, REF, ALT and END, the call they make.
-/// Of the records of one call, only the first by [`Rank`] is written.
+/// The kinds of entries, in the order they come at one position.
+const REGION: u8 = 0;
+const COUNTS: u8 = 1;
+const RECORD: u8 = 2;
+
+/// Records sorted by contig, in the header's order, then POS, REF, ALT and END, the call they make,
+/// among the VarDict regions starting at each position and what VarDict counted there. Of the
+/// records of one call, only the first by [`Rank`] is read back.
 pub struct RecordSorter {
     sorter: Sorter,
     key: Vec<u8>,
     value: Vec<u8>,
+    counted: u64,
 }
 
 /// The sort key of a record: its contig's index in the header, its 0-based POS, REF, ALT, empty
@@ -35,15 +42,12 @@ pub struct SortKey<'a> {
     pub end: u64,
 }
 
-/// Which record of a call is written, ordered best first: one VarDict wrote before one filled in
-/// for a position without a record, a fill from VarDict's rows before one inside a deletion or MNV
-/// and that before one without reads, then the first VarDict region's, then the most ALT reads in
-/// the tumor (or only) sample, then in all samples, then the most depth in the tumor, then VarDict's
-/// lowest position, REF and ALT for the row, so the choice never depends on the order of the rows
-/// within a region, or on the order of the regions between fills of different kinds.
+/// Which record of a call is written, ordered best first: the first VarDict region's, then the most
+/// ALT reads in the tumor (or only) sample, then in all samples, then the most depth in the tumor,
+/// then VarDict's lowest position, REF and ALT for the row, so the choice never depends on the order
+/// of the rows within a region.
 #[derive(Clone, Copy, Debug)]
 pub struct Rank<'a> {
-    fill: Option<Fill>,
     region: u64,
     tumor_reads: u64,
     reads: u64,
@@ -59,7 +63,6 @@ impl<'a> Rank<'a> {
     pub fn new(region: u64, calls: &[TumorOnlyVariant], row: &TumorOnlyVariant<'a>) -> Self {
         let reads = |call: &TumorOnlyVariant| call.alt_depth.max(0) as u64;
         Rank {
-            fill: None,
             region,
             tumor_reads: reads(&calls[0]),
             reads: calls.iter().map(reads).sum(),
@@ -69,12 +72,55 @@ impl<'a> Rank<'a> {
             alt_allele: row.alt_allele.as_bytes(),
         }
     }
+}
 
-    /// This rank for a record filled in for a position without one, as this fill.
-    pub fn filled(self, fill: Fill) -> Self {
-        Rank {
-            fill: Some(fill),
-            ..self
+/// One entry read back from the sort, on the contig with index `rid` at a 1-based position.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Entry<'a> {
+    /// A region starting at the position and ending at `end`, inclusive: a VarDict region, or one
+    /// only a BED file names.
+    Region {
+        /// The contig's index in the header.
+        rid: u32,
+        /// The region's first position.
+        start: u64,
+        /// The region's last position.
+        end: u64,
+        /// Whether VarDict piled the region up.
+        vardict: bool,
+    },
+    /// What VarDict counted at the position in one row of the region with this ordinal.
+    Counts {
+        /// The contig's index in the header.
+        rid: u32,
+        /// The position VarDict counted the row at.
+        position: u64,
+        /// The ordinal of the row's VarDict region.
+        region: u64,
+        /// The counts, as the row's writer encoded them.
+        counts: &'a [u8],
+    },
+    /// The VCF line of the first record of a call at the position, its POS.
+    Record {
+        /// The contig's index in the header.
+        rid: u32,
+        /// The record's POS.
+        position: u64,
+        /// Whether the record has no ALT allele.
+        reference_only: bool,
+        /// The VCF line.
+        line: &'a [u8],
+    },
+}
+
+impl Entry<'_> {
+    /// The contig's index in the header and the position of the entry.
+    pub fn locus(&self) -> (u32, u64) {
+        match *self {
+            Entry::Region { rid, start, .. } => (rid, start),
+            Entry::Counts { rid, position, .. } | Entry::Record { rid, position, .. } => {
+                (rid, position)
+            }
         }
     }
 }
@@ -88,25 +134,29 @@ impl RecordSorter {
             sorter,
             key: Vec::new(),
             value: Vec::new(),
+            counted: 0,
         })
+    }
+
+    /// Starts an entry's key and value at a position of the contig with index `rid`.
+    fn begin(&mut self, rid: u32, position: u64, kind: u8) {
+        self.key.clear();
+        key::push_uint(&mut self.key, rid);
+        key::push_uint(&mut self.key, position);
+        key::push_uint(&mut self.key, kind);
+        self.value.clear();
+        self.value.push(kind);
+        self.value.extend_from_slice(&rid.to_le_bytes());
+        self.value.extend_from_slice(&position.to_le_bytes());
     }
 
     /// Adds a record's VCF line under the call it makes, ranked against the call's other records.
     pub fn push(&mut self, call: SortKey, rank: Rank, line: &[u8]) -> Result<(), String> {
-        self.key.clear();
-        key::push_uint(&mut self.key, call.rid);
-        key::push_uint(&mut self.key, call.pos);
+        self.begin(call.rid, call.pos + 1, RECORD);
         key::push_bytes(&mut self.key, call.ref_allele);
         key::push_bytes(&mut self.key, call.alt_allele);
         key::push_uint(&mut self.key, call.end);
         let call_length = u32::try_from(self.key.len()).map_err(|_| describe_length())?;
-        let fill: u8 = match rank.fill {
-            None => 0,
-            Some(Fill::Rows) => 1,
-            Some(Fill::Spanned) => 2,
-            Some(Fill::NoReads) => 3,
-        };
-        key::push_uint(&mut self.key, fill);
         key::push_uint(&mut self.key, rank.region);
         key::push_uint(&mut self.key, u64::MAX - rank.tumor_reads);
         key::push_uint(&mut self.key, u64::MAX - rank.reads);
@@ -114,39 +164,107 @@ impl RecordSorter {
         key::push_uint(&mut self.key, rank.start);
         key::push_bytes(&mut self.key, rank.ref_allele);
         key::push_bytes(&mut self.key, rank.alt_allele);
-        self.value.clear();
+        self.value.push(u8::from(call.alt_allele.is_empty()));
         self.value.extend_from_slice(&call_length.to_le_bytes());
         self.value.extend_from_slice(line);
         self.sorter.push(&self.key, &self.value).map_err(describe)
     }
 
-    /// Writes the line of the first record of each call in order, checking `stop` between records;
-    /// returns how many lines were written, or `None` if `stop` returned true.
-    pub fn write_to(
-        self,
-        out: &mut impl Write,
-        stop: &dyn Fn() -> bool,
-    ) -> Result<Option<u64>, String> {
-        let mut merged: Merged = self.sorter.finish().map_err(describe)?;
-        let mut previous: Vec<u8> = Vec::new();
-        let mut written = 0;
-        while let Some((key, value)) = merged.next_record().map_err(describe)? {
-            if stop() {
+    /// Adds a region of the contig with index `rid` from `start` to `end`, 1-based and inclusive.
+    pub fn push_region(
+        &mut self,
+        rid: u32,
+        start: u64,
+        end: u64,
+        vardict: bool,
+    ) -> Result<(), String> {
+        self.begin(rid, start, REGION);
+        key::push_uint(&mut self.key, end);
+        key::push_uint(&mut self.key, u8::from(vardict));
+        self.value.extend_from_slice(&end.to_le_bytes());
+        self.value.push(u8::from(vardict));
+        self.sorter.push(&self.key, &self.value).map_err(describe)
+    }
+
+    /// Adds what VarDict counted in one row at a 1-based position of the contig with index `rid`,
+    /// in the region with this ordinal; a position's counts come back by region, then as added.
+    pub fn push_counts(
+        &mut self,
+        rid: u32,
+        position: u64,
+        region: u64,
+        counts: &[u8],
+    ) -> Result<(), String> {
+        self.begin(rid, position, COUNTS);
+        key::push_uint(&mut self.key, region);
+        key::push_uint(&mut self.key, self.counted);
+        self.counted += 1;
+        self.value.extend_from_slice(&region.to_le_bytes());
+        self.value.extend_from_slice(counts);
+        self.sorter.push(&self.key, &self.value).map_err(describe)
+    }
+
+    /// Finishes the sort, returning its entries in order.
+    pub fn entries(self) -> Result<Entries, String> {
+        Ok(Entries {
+            merged: self.sorter.finish().map_err(describe)?,
+            previous: Vec::new(),
+            value: Vec::new(),
+        })
+    }
+}
+
+/// The sorted entries, read back one at a time, with only the first record of each call.
+pub struct Entries {
+    merged: Merged,
+    previous: Vec<u8>,
+    value: Vec<u8>,
+}
+
+impl Entries {
+    /// The next entry, or `None` after the last.
+    pub fn next_entry(&mut self) -> Result<Option<Entry<'_>>, String> {
+        loop {
+            let Some((key, value)) = self.merged.next_record().map_err(describe)? else {
                 return Ok(None);
+            };
+            if value[0] == RECORD {
+                let length = u32::from_le_bytes(value[14..18].try_into().unwrap()) as usize;
+                let call = &key[..length];
+                if self.previous == call {
+                    continue;
+                }
+                self.previous.clear();
+                self.previous.extend_from_slice(call);
             }
-            let (call_length, line) = value.split_at(4);
-            let call_length = u32::from_le_bytes(call_length.try_into().unwrap()) as usize;
-            let call = &key[..call_length];
-            if previous == call {
-                continue;
-            }
-            previous.clear();
-            previous.extend_from_slice(call);
-            out.write_all(line)
-                .map_err(|error| format!("Could not write the output: {error}!"))?;
-            written += 1;
+            self.value.clear();
+            self.value.extend_from_slice(value);
+            break;
         }
-        Ok(Some(written))
+        let value = &self.value;
+        let rid = u32::from_le_bytes(value[1..5].try_into().unwrap());
+        let position = u64::from_le_bytes(value[5..13].try_into().unwrap());
+        let entry = match value[0] {
+            REGION => Entry::Region {
+                rid,
+                start: position,
+                end: u64::from_le_bytes(value[13..21].try_into().unwrap()),
+                vardict: value[21] == 1,
+            },
+            COUNTS => Entry::Counts {
+                rid,
+                position,
+                region: u64::from_le_bytes(value[13..21].try_into().unwrap()),
+                counts: &value[21..],
+            },
+            _ => Entry::Record {
+                rid,
+                position,
+                reference_only: value[13] == 1,
+                line: &value[18..],
+            },
+        };
+        Ok(Some(entry))
     }
 }
 
@@ -203,7 +321,6 @@ mod tests {
 
     fn rank(region: u64, tumor_reads: u64, tumor_depth: u64, start: u64) -> Rank<'static> {
         Rank {
-            fill: None,
             region,
             tumor_reads,
             reads: tumor_reads,
@@ -223,15 +340,25 @@ mod tests {
         )
     }
 
+    /// The lines of the records read back from a sorter, in order.
+    fn lines(sorter: RecordSorter) -> String {
+        let mut entries = sorter.entries().unwrap();
+        let mut out = Vec::new();
+        while let Some(entry) = entries.next_entry().unwrap() {
+            if let Entry::Record { line, .. } = entry {
+                out.extend_from_slice(line);
+            }
+        }
+        String::from_utf8(out).unwrap()
+    }
+
     fn ranked(records: &[(SortKey, Rank, &str)]) -> String {
         let dir = TempDir::new().unwrap();
         let mut sorter = RecordSorter::new(dir.path()).unwrap();
         for (key, rank, line) in records {
             sorter.push(*key, *rank, line.as_bytes()).unwrap();
         }
-        let mut out = Vec::new();
-        sorter.write_to(&mut out, &|| false).unwrap();
-        String::from_utf8(out).unwrap()
+        lines(sorter)
     }
 
     #[test]
@@ -275,37 +402,74 @@ mod tests {
     }
 
     #[test]
-    fn test_writes_a_record_vardict_wrote_before_a_filled_one_of_its_call() {
-        let call = key(0, 100, "A", "");
-        let lines = ranked(&[
-            (call, rank(1, 0, 900, 100).filled(Fill::Rows), "filled\n"),
-            (call, rank(2, 0, 10, 100), "vardict\n"),
-        ]);
-        assert_eq!(lines, "vardict\n");
-    }
-
-    #[test]
-    fn test_writes_the_fill_that_knows_most_about_a_position_whatever_its_region() {
-        let call = key(0, 100, "A", "");
-        let lines = ranked(&[
-            (call, rank(1, 0, 0, 100).filled(Fill::NoReads), "no reads\n"),
-            (
-                call,
-                rank(2, 0, 280, 100).filled(Fill::Spanned),
-                "spanned\n",
-            ),
-            (call, rank(3, 0, 300, 100).filled(Fill::Rows), "rows\n"),
-        ]);
-        assert_eq!(lines, "rows\n");
-        let lines = ranked(&[
-            (call, rank(1, 0, 0, 100).filled(Fill::NoReads), "no reads\n"),
-            (
-                call,
-                rank(2, 0, 280, 100).filled(Fill::Spanned),
-                "spanned\n",
-            ),
-        ]);
-        assert_eq!(lines, "spanned\n");
+    fn test_reads_regions_then_counts_then_records_at_each_position() {
+        let dir = TempDir::new().unwrap();
+        let mut sorter = RecordSorter::new(dir.path()).unwrap();
+        sorter
+            .push(key(0, 99, "A", "C"), rank(0, 0, 0, 0), b"record\n")
+            .unwrap();
+        sorter
+            .push(key(0, 99, "A", ""), rank(0, 0, 0, 0), b"reference\n")
+            .unwrap();
+        sorter.push_counts(0, 100, 2, b"second region").unwrap();
+        sorter.push_counts(0, 100, 1, b"first region").unwrap();
+        sorter
+            .push_counts(0, 100, 1, b"first region again")
+            .unwrap();
+        sorter.push_region(0, 100, 120, true).unwrap();
+        sorter.push_region(0, 101, 103, false).unwrap();
+        sorter.push_counts(0, 99, 1, b"before").unwrap();
+        let mut entries = sorter.entries().unwrap();
+        let mut read = Vec::new();
+        while let Some(entry) = entries.next_entry().unwrap() {
+            read.push(format!("{entry:?}"));
+        }
+        let counts = |position: u64, region: u64, counts: &[u8]| {
+            format!(
+                "{:?}",
+                Entry::Counts {
+                    rid: 0,
+                    position,
+                    region,
+                    counts
+                }
+            )
+        };
+        let record = |reference_only: bool, line: &[u8]| {
+            format!(
+                "{:?}",
+                Entry::Record {
+                    rid: 0,
+                    position: 100,
+                    reference_only,
+                    line
+                }
+            )
+        };
+        let region = |start: u64, end: u64, vardict: bool| {
+            format!(
+                "{:?}",
+                Entry::Region {
+                    rid: 0,
+                    start,
+                    end,
+                    vardict
+                }
+            )
+        };
+        assert_eq!(
+            read,
+            vec![
+                counts(99, 1, b"before"),
+                region(100, 120, true),
+                counts(100, 1, b"first region"),
+                counts(100, 1, b"first region again"),
+                counts(100, 2, b"second region"),
+                record(true, b"reference\n"),
+                record(false, b"record\n"),
+                region(101, 103, false),
+            ]
+        );
     }
 
     #[test]
@@ -333,21 +497,8 @@ mod tests {
                 .unwrap();
         }
         assert!(sorter.sorter.runs() > 0);
-        let mut out = Vec::new();
-        assert_eq!(sorter.write_to(&mut out, &|| false).unwrap(), Some(2048));
+        assert_eq!(lines(sorter).len(), 2048 * line.len());
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
-    }
-
-    #[test]
-    fn test_stops_when_asked() {
-        let dir = TempDir::new().unwrap();
-        let mut sorter = RecordSorter::new(dir.path()).unwrap();
-        sorter
-            .push(key(0, 1, "A", "C"), rank(0, 0, 0, 0), b"line\n")
-            .unwrap();
-        let mut out = Vec::new();
-        assert_eq!(sorter.write_to(&mut out, &|| true).unwrap(), None);
-        assert!(out.is_empty());
     }
 
     #[test]

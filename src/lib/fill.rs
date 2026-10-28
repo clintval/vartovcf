@@ -1,5 +1,6 @@
-//! Fills the positions of VarDict's regions that have no reference-only record with one, so a gVCF
-//! of VarDict's pileup (`-p`) output has exactly one at every position VarDict piled up.
+//! How the positions of VarDict's regions that have no reference-only record are filled with one,
+//! so a gVCF of VarDict's pileup (`-p`) output has exactly one at every position VarDict piled up,
+//! and the regions of a BED file VarDict wrote no row for.
 //!
 //! A position of a region has none when VarDict wrote only ALT rows for it, as it does at every
 //! position with an allele, when the rows it wrote for it were written elsewhere or folded, when no
@@ -12,11 +13,8 @@ use std::path::{Path, PathBuf};
 
 use ahash::{AHashMap, AHashSet};
 
-use crate::site::{Site, Sites};
-
-/// How a filled position's depth was found, the value of INFO `GVCF_FILL`, ordered from the fill
-/// that knows the most about the position to the one that knows the least.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+/// How a filled position's depth was found, the value of INFO `GVCF_FILL`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fill {
     /// From the rows VarDict counted at the position, none a reference-only record written there.
     Rows,
@@ -37,37 +35,11 @@ impl Fill {
     }
 }
 
-/// A reference-only record to write at a position without one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Filled {
-    /// The 1-based position.
-    pub position: u64,
-    /// What VarDict counted there.
-    pub site: Site,
-}
-
 /// The contig and the 1-based start and end of a VarDict region from its `chr:start-end` column.
 pub fn parse_segment(segment: &str) -> Option<(&str, u64, u64)> {
     let (contig, range) = segment.rsplit_once(':')?;
     let (start, end) = range.split_once('-')?;
     Some((contig, start.parse().ok()?, end.parse().ok()?))
-}
-
-/// The fills of the positions `start..=end` of a region missing from `written`, the positions of
-/// its reference-only records, each made from what VarDict counted there when it is reached.
-pub fn region_fills<'a>(
-    sites: &'a Sites,
-    written: &'a AHashSet<u64>,
-    start: u64,
-    end: u64,
-) -> impl Iterator<Item = Filled> + 'a {
-    let mut sweep = sites.sweep();
-    (start..=end)
-        .filter(move |position| !written.contains(position))
-        .map(move |position| Filled {
-            position,
-            site: sweep.at(position),
-        })
 }
 
 /// How VarDict turns a BED line into the region it piles up: widened by `extend` bases on each
@@ -190,42 +162,6 @@ impl Bed {
     }
 }
 
-/// Sorts 1-based, inclusive ranges and joins those that overlap or touch.
-pub fn merge(mut ranges: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
-    ranges.sort_unstable();
-    let mut merged: Vec<(u64, u64)> = Vec::with_capacity(ranges.len());
-    for (start, end) in ranges {
-        match merged.last_mut() {
-            Some(last) if start <= last.1 + 1 => last.1 = last.1.max(end),
-            _ => merged.push((start, end)),
-        }
-    }
-    merged
-}
-
-/// The parts of the 1-based, inclusive range `start..=end` outside every range of `covered`, which
-/// [`merge`] has sorted and joined.
-pub fn uncovered(start: u64, end: u64, covered: &[(u64, u64)]) -> Vec<(u64, u64)> {
-    let mut parts = Vec::new();
-    let mut next = start;
-    for &(from, to) in covered {
-        if to < next {
-            continue;
-        }
-        if from > end {
-            break;
-        }
-        if from > next {
-            parts.push((next, from - 1));
-        }
-        next = to + 1;
-    }
-    if next <= end {
-        parts.push((next, end));
-    }
-    parts
-}
-
 /// Reads a BED file's lines from the first three columns of each, split on whitespace, refusing a
 /// line without a start and an end no lower than it, a contig `contig_length` does not know and an
 /// end past the contig's; blank, `#`, `track` and `browser` lines are skipped.
@@ -276,13 +212,11 @@ pub fn read_bed(
 
 #[cfg(test)]
 mod tests {
-    use ahash::AHashSet;
     use pretty_assertions::assert_eq;
     use rstest::rstest;
     use std::io::Write;
 
     use super::*;
-    use crate::record::TumorOnlyVariant;
 
     #[test]
     fn test_parse_segment_splits_the_contig_from_the_range_after_the_last_colon() {
@@ -294,65 +228,6 @@ mod tests {
         assert_eq!(parse_segment("chr1"), None);
         assert_eq!(parse_segment("chr1:9-x"), None);
         assert_eq!(parse_segment(""), None);
-    }
-
-    #[test]
-    fn test_region_fills_each_position_without_a_reference_only_record_in_order() {
-        let rows = [
-            TumorOnlyVariant {
-                contig: "chr1",
-                start: 3,
-                end: 3,
-                ref_allele: "C",
-                alt_allele: "A",
-                gt: "C/A",
-                depth: 60,
-                ref_forward: 30,
-                ref_reverse: 28,
-                alt_depth: 2,
-                variant_type: "SNV",
-                ..TumorOnlyVariant::default()
-            },
-            TumorOnlyVariant {
-                contig: "chr1",
-                start: 4,
-                end: 4,
-                ref_allele: "G",
-                alt_allele: "G",
-                gt: "G/G",
-                depth: 50,
-                ref_forward: 25,
-                ref_reverse: 25,
-                ..TumorOnlyVariant::default()
-            },
-        ];
-        let rows: Vec<&[TumorOnlyVariant]> = rows.iter().map(std::slice::from_ref).collect();
-        let sites = Sites::new(&rows);
-        let written: AHashSet<u64> = [4].into_iter().collect();
-        let fills: Vec<Filled> = region_fills(&sites, &written, 2, 5).collect();
-        assert_eq!(
-            fills,
-            vec![
-                Filled {
-                    position: 2,
-                    site: Site::NO_READS
-                },
-                Filled {
-                    position: 3,
-                    site: Site {
-                        fill: Fill::Rows,
-                        ref_forward: [30, 0],
-                        ref_reverse: [28, 0],
-                        depth: [60, 0],
-                        site_dp: [60, 0],
-                    }
-                },
-                Filled {
-                    position: 5,
-                    site: Site::NO_READS
-                },
-            ]
-        );
     }
 
     #[rstest]
@@ -427,23 +302,6 @@ mod tests {
             format!(
                 "VarDict's region chr1:1095-1112 is the region of no line of the BED file \"x.bed\" with --fill-gvcf-bed-extend 0: {hint}"
             )
-        );
-    }
-
-    #[test]
-    fn test_uncovered_leaves_out_the_covered_ranges() {
-        let covered = [(3, 5), (8, 9), (12, 20)];
-        assert_eq!(uncovered(1, 14, &covered), vec![(1, 2), (6, 7), (10, 11)]);
-        assert_eq!(uncovered(4, 5, &covered), vec![]);
-        assert_eq!(uncovered(21, 22, &covered), vec![(21, 22)]);
-        assert_eq!(uncovered(1, 2, &[]), vec![(1, 2)]);
-    }
-
-    #[test]
-    fn test_merge_sorts_and_joins_overlapping_and_adjacent_ranges() {
-        assert_eq!(
-            merge(vec![(8, 9), (1, 3), (2, 5), (6, 6), (11, 12)]),
-            vec![(1, 6), (8, 9), (11, 12)]
         );
     }
 

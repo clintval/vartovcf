@@ -1,6 +1,7 @@
-//! What VarDict counted at each position of one of its regions, in VarDict's own coordinates, so a
-//! record can carry the depth at its POS and a position without a reference-only record can be
-//! filled.
+//! What VarDict counted at each position, in VarDict's own coordinates, so a record can carry the
+//! depth at its POS and a position without a reference-only record can be filled. Each row's
+//! counts go into the sort under the position VarDict counted it at, and the writer walks them in
+//! position order.
 //!
 //! VarDict counts each row's reads at one position: the first deleted base of a deletion it writes
 //! with the base before, the anchor of an insertion followed by matched bases, which it writes from
@@ -9,8 +10,6 @@
 
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
-
-use ahash::AHashMap;
 
 use crate::fill::Fill;
 use crate::record::{TumorOnlyVariant, variant_class};
@@ -67,11 +66,125 @@ fn inserts(call: &TumorOnlyVariant) -> bool {
     }
 }
 
-/// The rows VarDict counted at one position.
+/// What VarDict counted in one row, at the position it counted the row at, kept in the sort until
+/// the writer reaches that position.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Counts {
+    /// Whether VarDict labels the row Complex, as it overcounts such a row's REF reads.
+    pub complex: bool,
+    /// The last base past the position that a deletion's or MNV's REF covers, or 0 for any other
+    /// row.
+    pub span_to: u64,
+    /// The forward REF reads.
+    pub ref_forward: PerSample,
+    /// The reverse REF reads.
+    pub ref_reverse: PerSample,
+    /// The depth.
+    pub depth: PerSample,
+    /// The ALT reads.
+    pub alt_reads: PerSample,
+    /// The forward ALT reads of an insertion, which VarDict takes from REF's, or 0 for any other row.
+    pub inserted_forward: PerSample,
+    /// The reverse ALT reads of an insertion, or 0 for any other row.
+    pub inserted_reverse: PerSample,
+}
+
+impl Counts {
+    /// The position VarDict counted a row at, and what it counted there, from the row's calls, one
+    /// per sample with the tumor (or only) sample's first.
+    pub fn of(row: &[TumorOnlyVariant]) -> (u64, Counts) {
+        let call = &row[0];
+        let position = vardict_position(call);
+        let each = |value: fn(&TumorOnlyVariant) -> i32| -> PerSample {
+            let mut values = [0; SAMPLES];
+            for (slot, call) in values.iter_mut().zip(row.iter()) {
+                *slot = value(call);
+            }
+            values
+        };
+        let span_to = match call.alt_allele {
+            "<DEL>" => call.end,
+            alt if !alt.starts_with('<') => call.start + call.ref_allele.len() as u64 - 1,
+            _ => 0,
+        };
+        let inserted = inserts(call);
+        let zero = [0; SAMPLES];
+        let counts = Counts {
+            complex: call.variant_type == "Complex",
+            span_to: if span_to > position { span_to } else { 0 },
+            ref_forward: each(|call| call.ref_forward),
+            ref_reverse: each(|call| call.ref_reverse),
+            depth: each(|call| call.depth),
+            alt_reads: each(|call| call.alt_depth),
+            inserted_forward: if inserted {
+                each(|call| call.alt_forward)
+            } else {
+                zero
+            },
+            inserted_reverse: if inserted {
+                each(|call| call.alt_reverse)
+            } else {
+                zero
+            },
+        };
+        (position, counts)
+    }
+
+    /// Appends the counts as bytes, which [`Counts::decode`] reads back.
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(u8::from(self.complex));
+        out.extend_from_slice(&self.span_to.to_le_bytes());
+        for values in self.values() {
+            for value in values {
+                out.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+    }
+
+    /// Reads back counts that [`Counts::encode`] wrote.
+    pub fn decode(bytes: &[u8]) -> Counts {
+        let mut counts = Counts {
+            complex: bytes[0] == 1,
+            span_to: u64::from_le_bytes(bytes[1..9].try_into().unwrap()),
+            ..Counts::default()
+        };
+        let (words, _) = bytes[9..].as_chunks::<4>();
+        let mut words = words.iter().map(|word| i32::from_le_bytes(*word));
+        for values in counts.values_mut() {
+            for value in values.iter_mut() {
+                *value = words.next().expect("Counts are encoded whole!");
+            }
+        }
+        counts
+    }
+
+    fn values(&self) -> [PerSample; 6] {
+        [
+            self.ref_forward,
+            self.ref_reverse,
+            self.depth,
+            self.alt_reads,
+            self.inserted_forward,
+            self.inserted_reverse,
+        ]
+    }
+
+    fn values_mut(&mut self) -> [&mut PerSample; 6] {
+        [
+            &mut self.ref_forward,
+            &mut self.ref_reverse,
+            &mut self.depth,
+            &mut self.alt_reads,
+            &mut self.inserted_forward,
+            &mut self.inserted_reverse,
+        ]
+    }
+}
+
+/// The rows VarDict counted at one position, combined.
 #[derive(Clone, Copy)]
 struct Counted {
-    /// Whether the row whose REF reads stand for the position's is labeled Complex, whose REF reads
-    /// VarDict overcounts.
+    /// Whether the row whose REF reads stand for the position's is labeled Complex.
     complex: bool,
     /// That row's forward REF reads.
     ref_forward: PerSample,
@@ -83,113 +196,38 @@ struct Counted {
     max_depth: PerSample,
     /// The ALT reads of every row here.
     alt_reads: PerSample,
-    /// The forward ALT reads of the insertions here, which VarDict takes from REF's.
+    /// The forward ALT reads of the insertions here.
     inserted_forward: PerSample,
     /// The reverse ALT reads of the insertions here.
     inserted_reverse: PerSample,
 }
 
-/// The bases after its counted position that a deletion or MNV covers, with its depth and ALT
-/// reads.
-#[derive(Clone, Copy)]
-struct Span {
-    from: u64,
-    to: u64,
-    depth: PerSample,
-    reads: PerSample,
-}
-
-/// What VarDict counted in one region's rows, by position.
-pub struct Sites {
-    counted: AHashMap<u64, Counted>,
-    spans: Vec<Span>,
-}
-
-impl Sites {
-    /// What VarDict counted in a region's rows, each row the calls of its samples, the tumor (or
-    /// only) sample first.
-    pub fn new(rows: &[&[TumorOnlyVariant]]) -> Self {
-        let mut counted: AHashMap<u64, Counted> = AHashMap::new();
-        let mut spans: Vec<Span> = Vec::new();
-        for row in rows {
-            let call = &row[0];
-            let position = vardict_position(call);
-            let each = |value: fn(&TumorOnlyVariant) -> i32| -> PerSample {
-                let mut values = [0; SAMPLES];
-                for (slot, call) in values.iter_mut().zip(row.iter()) {
-                    *slot = value(call);
-                }
-                values
-            };
-            let (depth, alt_reads) = (each(|call| call.depth), each(|call| call.alt_depth));
-            let inserted = inserts(call);
-            let zero = [0; SAMPLES];
-            let row_counted = Counted {
-                complex: call.variant_type == "Complex",
-                ref_forward: each(|call| call.ref_forward),
-                ref_reverse: each(|call| call.ref_reverse),
-                depth,
-                max_depth: depth,
-                alt_reads,
-                inserted_forward: if inserted {
-                    each(|call| call.alt_forward)
-                } else {
-                    zero
-                },
-                inserted_reverse: if inserted {
-                    each(|call| call.alt_reverse)
-                } else {
-                    zero
-                },
-            };
-            counted
-                .entry(position)
-                .and_modify(|site| site.add(&row_counted))
-                .or_insert(row_counted);
-            let last = match call.alt_allele {
-                "<DEL>" => Some(call.end),
-                alt if !alt.starts_with('<') => Some(call.start + call.ref_allele.len() as u64 - 1),
-                _ => None,
-            };
-            if let Some(to) = last.filter(|&last| last > position) {
-                spans.push(Span {
-                    from: position + 1,
-                    to,
-                    depth,
-                    reads: alt_reads,
-                });
-            }
-        }
-        spans.sort_unstable_by_key(|span| span.from);
-        Sites { counted, spans }
-    }
-
-    /// A walk over positions in increasing order.
-    pub fn sweep(&self) -> Sweep<'_> {
-        Sweep {
-            sites: self,
-            next: 0,
-            by_end: BinaryHeap::new(),
-            by_depth: BinaryHeap::new(),
-            reads: [0; SAMPLES],
-        }
-    }
-}
-
 impl Counted {
+    fn new(counts: &Counts) -> Self {
+        Counted {
+            complex: counts.complex,
+            ref_forward: counts.ref_forward,
+            ref_reverse: counts.ref_reverse,
+            depth: counts.depth,
+            max_depth: counts.depth,
+            alt_reads: counts.alt_reads,
+            inserted_forward: counts.inserted_forward,
+            inserted_reverse: counts.inserted_reverse,
+        }
+    }
+
     /// Adds another row counted at the same position: its reads join the position's, and its REF
     /// reads stand for the position's when it is not Complex and the chosen row is, or when it has
     /// more depth in the tumor (or only) sample with neither or both Complex.
-    fn add(&mut self, other: &Counted) {
-        let better = |row: &Counted| (!row.complex, row.depth[0]);
-        if better(other) > better(self) {
+    fn add(&mut self, other: &Counts) {
+        if (!other.complex, other.depth[0]) > (!self.complex, self.depth[0]) {
             self.complex = other.complex;
             self.ref_forward = other.ref_forward;
             self.ref_reverse = other.ref_reverse;
             self.depth = other.depth;
         }
         for sample in 0..SAMPLES {
-            self.max_depth[sample] = self.max_depth[sample].max(other.max_depth[sample]);
+            self.max_depth[sample] = self.max_depth[sample].max(other.depth[sample]);
             self.alt_reads[sample] += other.alt_reads[sample];
             self.inserted_forward[sample] += other.inserted_forward[sample];
             self.inserted_reverse[sample] += other.inserted_reverse[sample];
@@ -197,17 +235,7 @@ impl Counted {
     }
 }
 
-/// A walk over a region's positions in increasing order, holding the deletions and MNVs that span
-/// the last position asked about.
-pub struct Sweep<'s> {
-    sites: &'s Sites,
-    next: usize,
-    by_end: BinaryHeap<Reverse<(u64, usize)>>,
-    by_depth: BinaryHeap<(i32, Reverse<u64>, usize)>,
-    reads: PerSample,
-}
-
-/// What is known at one position of a region.
+/// What is known at one position.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Site {
     /// How a reference-only record there is filled.
@@ -237,27 +265,43 @@ impl Site {
     };
 }
 
-impl Sweep<'_> {
-    /// What is known at a position, which is never below the last one asked about.
-    pub fn at(&mut self, position: u64) -> Site {
-        let spans = &self.sites.spans;
-        while self.next < spans.len() && spans[self.next].from <= position {
-            let span = spans[self.next];
-            self.by_end.push(Reverse((span.to, self.next)));
-            self.by_depth
-                .push((span.depth[0], Reverse(span.to), self.next));
-            for sample in 0..SAMPLES {
-                self.reads[sample] += span.reads[sample];
-            }
-            self.next += 1;
+/// A walk over one contig's positions in increasing order, fed what VarDict counted at each, which
+/// holds only the rows of the position it is at and the deletions and MNVs spanning it.
+#[derive(Default)]
+pub struct Walk {
+    position: u64,
+    counted: Option<Counted>,
+    pending: Vec<(u64, PerSample, PerSample)>,
+    by_end: BinaryHeap<Reverse<(u64, PerSample)>>,
+    by_depth: BinaryHeap<(i32, Reverse<u64>, PerSample)>,
+    reads: PerSample,
+}
+
+impl Walk {
+    /// Moves to a position, never below the one it is at; the deletions and MNVs counted at the
+    /// position it leaves then span the bases after it.
+    pub fn at(&mut self, position: u64) {
+        if position <= self.position {
+            return;
         }
-        while let Some(&Reverse((to, index))) = self.by_end.peek() {
+        for (to, depth, reads) in self.pending.drain(..) {
+            if to >= position {
+                self.by_end.push(Reverse((to, reads)));
+                self.by_depth.push((depth[0], Reverse(to), depth));
+                for (total, reads) in self.reads.iter_mut().zip(reads) {
+                    *total += reads;
+                }
+            }
+        }
+        self.counted = None;
+        self.position = position;
+        while let Some(&Reverse((to, reads))) = self.by_end.peek() {
             if to >= position {
                 break;
             }
             self.by_end.pop();
-            for sample in 0..SAMPLES {
-                self.reads[sample] -= spans[index].reads[sample];
+            for (total, reads) in self.reads.iter_mut().zip(reads) {
+                *total -= reads;
             }
         }
         while self
@@ -267,8 +311,23 @@ impl Sweep<'_> {
         {
             self.by_depth.pop();
         }
-        let spanning = self.by_depth.peek().map(|&(_, _, index)| spans[index]);
-        match (self.sites.counted.get(&position), spanning) {
+    }
+
+    /// Adds a row VarDict counted at the position the walk is at.
+    pub fn add(&mut self, counts: &Counts) {
+        match &mut self.counted {
+            Some(counted) => counted.add(counts),
+            None => self.counted = Some(Counted::new(counts)),
+        }
+        if counts.span_to > self.position {
+            self.pending
+                .push((counts.span_to, counts.depth, counts.alt_reads));
+        }
+    }
+
+    /// What is known at the position the walk is at.
+    pub fn site(&self) -> Site {
+        match (&self.counted, self.by_depth.peek()) {
             (Some(row), _) => {
                 let mut site = Site {
                     fill: Fill::Rows,
@@ -288,11 +347,11 @@ impl Sweep<'_> {
                 }
                 site
             }
-            (None, Some(span)) => Site {
+            (None, Some(&(_, _, depth))) => Site {
                 fill: Fill::Spanned,
                 ref_forward: [0; SAMPLES],
                 ref_reverse: [0; SAMPLES],
-                depth: span.depth,
+                depth,
                 site_dp: self.reads,
             },
             (None, None) => Site::NO_READS,
@@ -343,14 +402,51 @@ mod tests {
         }
     }
 
-    /// The SITE_DP of the tumor (or only) sample at each position, swept in order.
+    /// What is known at each of these positions, walking from the first row's counted position,
+    /// or the first of these positions when it is lower.
+    fn walk(rows: &[&[TumorOnlyVariant]], positions: std::ops::RangeInclusive<u64>) -> Vec<Site> {
+        let mut counts: Vec<(u64, Counts)> = rows.iter().map(|row| Counts::of(row)).collect();
+        counts.sort_by_key(|&(position, _)| position);
+        let first = counts
+            .first()
+            .map_or(*positions.start(), |&(position, _)| position);
+        let mut walk = Walk::default();
+        (first.min(*positions.start())..=*positions.end())
+            .map(|position| {
+                walk.at(position);
+                for (_, row) in counts.iter().filter(|(at, _)| *at == position) {
+                    walk.add(row);
+                }
+                (position, walk.site())
+            })
+            .filter(|(position, _)| positions.contains(position))
+            .map(|(_, site)| site)
+            .collect()
+    }
+
+    /// The SITE_DP of the tumor (or only) sample of tumor-only rows at each position.
     fn site_dps(rows: &[TumorOnlyVariant], positions: std::ops::RangeInclusive<u64>) -> Vec<i32> {
         let rows: Vec<&[TumorOnlyVariant]> = rows.iter().map(std::slice::from_ref).collect();
-        let sites = Sites::new(&rows);
-        let mut sweep = sites.sweep();
-        positions
-            .map(|position| sweep.at(position).site_dp[0])
+        walk(&rows, positions)
+            .into_iter()
+            .map(|site| site.site_dp[0])
             .collect()
+    }
+
+    #[test]
+    fn test_counts_read_back_as_they_were_written() {
+        let tumor = TumorOnlyVariant {
+            alt_forward: 7,
+            alt_reverse: 3,
+            ..call(5, "C", "CA", "C/+1", 100, 60, 10)
+        };
+        let normal = call(5, "C", "CA", "C/+1", -1, i32::MAX, 0);
+        let (position, counts) = Counts::of(&[tumor, normal]);
+        assert_eq!(position, 5);
+        assert_eq!(counts.inserted_forward, [7, 0]);
+        let mut bytes = Vec::new();
+        counts.encode(&mut bytes);
+        assert_eq!(Counts::decode(&bytes), counts);
     }
 
     #[test]
@@ -440,8 +536,7 @@ mod tests {
         let normal = call(5, "C", "A", "C/A", 80, 79, 1);
         let rows = [[tumor, normal]];
         let rows: Vec<&[TumorOnlyVariant]> = rows.iter().map(|row| &row[..]).collect();
-        let sites = Sites::new(&rows);
-        assert_eq!(sites.sweep().at(5).site_dp, [100, 80]);
+        assert_eq!(walk(&rows, 5..=5)[0].site_dp, [100, 80]);
     }
 
     /// What is known at each position, swept in order, as the tumor (or only) sample's fill, REF
@@ -451,11 +546,9 @@ mod tests {
         positions: std::ops::RangeInclusive<u64>,
     ) -> Vec<(Fill, i32, i32, i32)> {
         let rows: Vec<&[TumorOnlyVariant]> = rows.iter().map(std::slice::from_ref).collect();
-        let sites = Sites::new(&rows);
-        let mut sweep = sites.sweep();
-        positions
-            .map(|position| {
-                let site = sweep.at(position);
+        walk(&rows, positions)
+            .into_iter()
+            .map(|site| {
                 let ref_reads = site.ref_forward[0] + site.ref_reverse[0];
                 (site.fill, ref_reads, site.depth[0], site.site_dp[0])
             })
@@ -522,18 +615,9 @@ mod tests {
             call(5, "GCAT", "G", "G/-3", 300, 200, 100),
             call(6, "C", "T", "C/T", 301, 280, 20),
         ];
-        let rows: Vec<&[TumorOnlyVariant]> = rows.iter().map(std::slice::from_ref).collect();
-        let sites = Sites::new(&rows);
-        let mut sweep = sites.sweep();
-        let fills: Vec<(Fill, i32, i32)> = (5..=9)
-            .map(|position| {
-                let site = sweep.at(position);
-                (
-                    site.fill,
-                    site.ref_forward[0] + site.ref_reverse[0],
-                    site.depth[0],
-                )
-            })
+        let fills: Vec<(Fill, i32, i32)> = sites_at(&rows, 5..=9)
+            .into_iter()
+            .map(|(fill, ref_reads, depth, _)| (fill, ref_reads, depth))
             .collect();
         assert_eq!(
             fills,

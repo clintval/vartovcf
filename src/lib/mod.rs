@@ -14,9 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::fai::{fasta_contigs_to_vcf_header, fasta_path_to_vcf_header};
-use crate::fill::{
-    Bed, BedLayout, Fill, Filled, merge, parse_segment, read_bed, region_fills, uncovered,
-};
+use crate::fill::{Bed, BedLayout, Fill, parse_segment, read_bed};
 use crate::filter::FilterThresholds;
 use crate::mnv::{Fold, LeakRate, LeakyMnvFix, Merged, Rule, fold_partials};
 use crate::normalize::{Normalized, normalize};
@@ -27,8 +25,8 @@ use crate::record::TumorNormalVariant;
 use crate::record::TumorOnlyVariant;
 use crate::record::{tumor_normal_fisher_p_value, tumor_normal_header, tumor_only_header};
 use crate::reference::Reference;
-use crate::site::{SAMPLES, Site, Sites};
-use crate::sort::{Rank, RecordSorter, SortKey, resolve_tmp_dir};
+use crate::site::{Counts, PerSample, SAMPLES, Walk};
+use crate::sort::{Entry, Rank, RecordSorter, SortKey, resolve_tmp_dir};
 use crate::vcf::{GenotypeAllele, Numeric, Record, RecordWriter, header_bytes};
 
 pub mod fai;
@@ -152,7 +150,6 @@ impl Columns {
     }
 
     /// Drops the columns `-fisher` adds, rebuilding the row in `scratch` to spare an allocation.
-    #[cfg(test)]
     fn drop_fisher_columns(&self, record: &mut StringRecord, scratch: &mut StringRecord) {
         if self.fisher {
             self.copy_row(record, scratch);
@@ -265,6 +262,7 @@ fn convert<I: Read>(
 
     // Peek at the first row to learn the layout and sample before the header is made.
     let mut carry = StringRecord::new();
+    let mut scratch = StringRecord::new();
     let mut peeked = reader.read_record(&mut carry)?;
     let columns = if peeked {
         let columns = detect_columns(&carry)?;
@@ -341,11 +339,8 @@ fn convert<I: Read>(
         context_3mer: options.context_3mer,
         folder,
         folds: FoldCounts::default(),
-        filler: options.fill_gvcf.then(|| Filler {
-            bed,
-            ..Filler::default()
-        }),
-        fills: FillCounts::default(),
+        bed,
+        counts: Vec::new(),
         progress: ProgLogBuilder::new()
             .name("main")
             .verb("Processed")
@@ -353,6 +348,8 @@ fn convert<I: Read>(
             .unit(100_000)
             .build(),
     };
+
+    sink.enter_bed()?;
 
     let row_sample = row_sample.unwrap_or_default();
     let column = columns.segment_column();
@@ -366,11 +363,12 @@ fn convert<I: Read>(
         }
         let field = |index: usize| carry.get(index).unwrap_or_default();
         if field(column) != segment {
-            sink.add_region(&region, &segment, columns, ordinal)?;
+            sink.add_region(&region, columns, ordinal)?;
             region.clear();
             ordinal += 1;
             segment.clear();
             segment.push_str(field(column));
+            sink.enter_region(&segment)?;
         }
 
         if field(5).is_empty() {
@@ -384,10 +382,15 @@ fn convert<I: Read>(
             let message = format!("Expected sample '{}' found '{}'!", row_sample, field(0));
             return Err(message.into());
         };
-        region.push(compact(&carry, columns));
+        if options.fix_leaky_mnv.is_some() {
+            region.push(compact(&carry, columns));
+        } else {
+            columns.drop_fisher_columns(&mut carry, &mut scratch);
+            let (calls, status) = parse_row(&carry, columns)?;
+            sink.add(&calls[..layout.samples()], status, ordinal)?;
+        }
     }
-    sink.add_region(&region, &segment, columns, ordinal)?;
-    sink.fill_bed(ordinal + 1)?;
+    sink.add_region(&region, columns, ordinal)?;
     if let Some(Folder::Reads(sources)) = &sink.folder {
         let summary = sources.summary;
         info!(
@@ -417,22 +420,22 @@ fn convert<I: Read>(
             folds.whole, folds.split, folds.mnvs, folds.reads
         );
     }
-    if sink.filler.is_some() {
-        let fills = sink.fills;
+    output
+        .write_all(&header_text)
+        .map_err(|error| format!("Could not write the output: {error}!"))?;
+    let Some(fills) = sink.write(output, options.fill_gvcf, &|| signal() != 0)? else {
+        return Ok(None);
+    };
+    if options.fill_gvcf {
         info!(
-            "Made {} fill record(s) at positions a VarDict region has no record at: {} from VarDict's rows, {} inside a deletion or MNV and {} with no reads; where regions overlap, another region's record at the same position is written in place of one.",
+            "Filled {} position(s) without a reference-only record: {} from VarDict's rows, {} inside a deletion or MNV and {} with no reads.",
             fills.rows + fills.spanned + fills.no_reads,
             fills.rows,
             fills.spanned,
             fills.no_reads
         );
     }
-
-    output
-        .write_all(&header_text)
-        .map_err(|error| format!("Could not write the output: {error}!"))?;
-    let written = sink.sorter.write_to(output, &|| signal() != 0)?;
-    Ok(written.map(|_| index))
+    Ok(Some(index))
 }
 
 /// Parses a row into its calls, one per sample with the tumor (or only) sample first and a default
@@ -465,22 +468,9 @@ struct Sink<'r> {
     context_3mer: bool,
     folder: Option<Folder>,
     folds: FoldCounts,
-    filler: Option<Filler>,
-    fills: FillCounts,
-    progress: proglog::ProgLog,
-}
-
-/// The BED file of `--fill-gvcf-bed`, checked against the reference before any row is read, with
-/// the VarDict regions seen and the records written outside them, kept to fill the parts of its
-/// lines' regions VarDict wrote no row for.
-#[derive(Default)]
-struct Filler {
-    /// The BED file of `--fill-gvcf-bed`, when given.
     bed: Option<Bed>,
-    /// Each contig's VarDict regions, as 1-based, inclusive ranges.
-    segments: AHashMap<String, Vec<(u64, u64)>>,
-    /// Each contig's positions of records written outside the VarDict region of their row.
-    outside: AHashMap<String, AHashSet<u64>>,
+    counts: Vec<u8>,
+    progress: proglog::ProgLog,
 }
 
 /// How many positions were filled, by how their depth was found.
@@ -559,7 +549,6 @@ impl Sink<'_> {
     fn add_region(
         &mut self,
         region: &[StringRecord],
-        segment: &str,
         columns: Columns,
         ordinal: u64,
     ) -> Result<(), Box<dyn error::Error>> {
@@ -591,11 +580,11 @@ impl Sink<'_> {
                 fold_partials(&calls, &written, Rule::Reads(&fates))
             }
         };
-        let sites = Sites::new(&calls);
-        let bounds = parse_segment(segment).map(|(_, start, end)| start..=end);
-        let site_dps = site_dps(&sites, &normalized, bounds.as_ref());
-        let mut positions: Vec<u64> = Vec::with_capacity(calls.len());
-        let mut reference_positions: Vec<u64> = Vec::new();
+        let missing = [i32::missing(); SAMPLES];
+        let extras = Extras {
+            site_dp: &missing[..samples],
+            ..Extras::default()
+        };
         for (row, fold) in folds.into_iter().enumerate() {
             match &fold {
                 Fold::Keep => {}
@@ -611,53 +600,47 @@ impl Sink<'_> {
                 }
             }
             let call = &normalized[row];
-            let missing = [i32::missing(); SAMPLES];
-            let site_dp = site_dps.get(&call.start).unwrap_or(&missing);
-            let extras = Extras {
-                site_dp: &site_dp[..samples],
-                ..Extras::default()
-            };
-            let added = match fold {
-                _ if written[row] => true,
-                Fold::Keep => self.add_record(
-                    calls[row],
-                    call,
-                    statuses[row],
-                    extras,
-                    ordinal,
-                    &calls[row][0],
-                )?,
-                Fold::Merged(merged) => self.add_record(
-                    &merged.calls,
-                    call,
-                    statuses[row],
-                    Extras {
-                        merged: Some(&merged),
-                        ..extras
-                    },
-                    ordinal,
-                    &calls[row][0],
-                )?,
+            match fold {
+                _ if written[row] => {}
+                Fold::Keep => {
+                    self.add_record(
+                        calls[row],
+                        call,
+                        statuses[row],
+                        extras,
+                        ordinal,
+                        &calls[row][0],
+                    )?;
+                }
+                Fold::Merged(merged) => {
+                    self.add_record(
+                        &merged.calls,
+                        call,
+                        statuses[row],
+                        Extras {
+                            merged: Some(&merged),
+                            ..extras
+                        },
+                        ordinal,
+                        &calls[row][0],
+                    )?;
+                }
                 Fold::Split {
                     calls: kept, moved, ..
-                } => self.add_record(
-                    &kept,
-                    call,
-                    statuses[row],
-                    Extras {
-                        moved: Some(&moved),
-                        ..extras
-                    },
-                    ordinal,
-                    &kept[0],
-                )?,
-                Fold::Into(_) => false,
-            };
-            if added {
-                positions.push(call.start);
-                if call.ref_allele == call.alt_allele {
-                    reference_positions.push(call.start);
+                } => {
+                    self.add_record(
+                        &kept,
+                        call,
+                        statuses[row],
+                        Extras {
+                            moved: Some(&moved),
+                            ..extras
+                        },
+                        ordinal,
+                        &kept[0],
+                    )?;
                 }
+                Fold::Into(_) => {}
             }
         }
         for (row, call) in calls.iter().zip(&normalized) {
@@ -665,110 +648,282 @@ impl Sink<'_> {
                 self.seen.insert(row[0].contig, call)?;
             }
         }
-        if self.filler.is_some() && !segment.is_empty() {
-            self.fill_region(&sites, &reference_positions, &positions, segment, ordinal)?;
+        for row in &calls {
+            self.add_counts(row, ordinal)?;
         }
         Ok(())
     }
 
-    /// Fills each position of a VarDict region without a reference-only record from what VarDict
-    /// counted in the region, given the positions of the reference-only records and of all the
-    /// records its rows were written as, here or in an earlier region, after checking the region
-    /// against the BED file of `--fill-gvcf-bed`; see [`fill::region_fills`].
-    fn fill_region(
+    /// Normalizes a row's record, from the region with this ordinal, and adds it to the sort with
+    /// what VarDict counted in the row.
+    fn add(
         &mut self,
-        sites: &Sites,
-        reference_positions: &[u64],
-        positions: &[u64],
-        segment: &str,
-        ordinal: u64,
+        calls: &[TumorOnlyVariant],
+        status: Option<&str>,
+        region: u64,
     ) -> Result<(), Box<dyn error::Error>> {
+        let normalized = normalize(&mut self.reference, &calls[0])?;
+        let missing = [i32::missing(); SAMPLES];
+        let extras = Extras {
+            site_dp: &missing[..calls.len()],
+            ..Extras::default()
+        };
+        self.add_record(calls, &normalized, status, extras, region, &calls[0])?;
+        self.add_counts(calls, region)
+    }
+
+    /// Adds what VarDict counted in a row, its calls one per sample, of the region with this
+    /// ordinal to the sort, under the position VarDict counted it at.
+    fn add_counts(
+        &mut self,
+        row: &[TumorOnlyVariant],
+        region: u64,
+    ) -> Result<(), Box<dyn error::Error>> {
+        let (position, counts) = Counts::of(row);
+        if position == 0 {
+            return Ok(());
+        }
+        let rid = self.records.rid(row[0].contig)?;
+        self.counts.clear();
+        counts.encode(&mut self.counts);
+        self.sorter
+            .push_counts(rid, position, region, &self.counts)?;
+        Ok(())
+    }
+
+    /// Adds a VarDict region, from its `chr:start-end` column, to the sort, clipped to its contig,
+    /// after checking it against the BED file of `--fill-gvcf-bed`.
+    fn enter_region(&mut self, segment: &str) -> Result<(), Box<dyn error::Error>> {
         let (contig, start, end) = parse_segment(segment).ok_or_else(|| {
             format!("Expected VarDict's region as chr:start-end, found '{segment}'!")
         })?;
-        let filler = self.filler.as_mut().expect("Only called when filling!");
-        if let Some(bed) = &filler.bed {
+        if let Some(bed) = &self.bed {
             bed.check(contig, start, end)?;
         }
-        let (start, end) = (start.max(1), end.min(self.reference.length(contig)?));
-        let written: AHashSet<u64> = reference_positions.iter().copied().collect();
-        let fills = region_fills(sites, &written, start, end);
-        let filler = self.filler.as_mut().expect("Only called when filling!");
-        filler
-            .segments
-            .entry(contig.to_string())
-            .or_default()
-            .push((start, end));
-        let outside = positions
-            .iter()
-            .filter(|&&position| position < start || position > end);
-        for &position in outside {
-            filler
-                .outside
-                .entry(contig.to_string())
-                .or_default()
-                .insert(position);
-        }
-        for filled in fills {
-            self.add_fill(contig, filled, ordinal)?;
+        let length = self.reference.length(contig)?;
+        let rid = self.records.rid(contig)?;
+        let (start, end) = (start.max(1), end.min(length));
+        if start <= end {
+            self.sorter.push_region(rid, start, end, true)?;
         }
         Ok(())
     }
 
-    /// Fills each position of the BED file's intervals outside every VarDict region and every record
-    /// as a position without reads, ranked as from the region with this ordinal.
-    fn fill_bed(&mut self, ordinal: u64) -> Result<(), Box<dyn error::Error>> {
-        let Some(filler) = self.filler.take() else {
+    /// Adds the region of each line of the BED file of `--fill-gvcf-bed` to the sort, clipped to
+    /// its contig.
+    fn enter_bed(&mut self) -> Result<(), Box<dyn error::Error>> {
+        let Some(bed) = &self.bed else {
             return Ok(());
         };
-        let covered: AHashMap<&str, Vec<(u64, u64)>> = filler
-            .segments
-            .iter()
-            .map(|(contig, ranges)| (contig.as_str(), merge(ranges.clone())))
-            .collect();
-        let none = AHashSet::new();
-        for (contig, start, end) in filler.bed.iter().flat_map(Bed::regions) {
+        for (contig, start, end) in bed.regions() {
+            let rid = self.records.rid(contig)?;
             let length = self.reference.length(contig)? as i64;
             let (start, end) = (start.max(1), end.min(length));
-            if start > end {
-                continue;
-            }
-            let ranges = covered.get(contig).map_or(&[][..], Vec::as_slice);
-            let outside = filler.outside.get(contig).unwrap_or(&none);
-            for (from, to) in uncovered(start as u64, end as u64, ranges) {
-                for position in (from..=to).filter(|position| !outside.contains(position)) {
-                    let filled = Filled {
-                        position,
-                        site: Site::NO_READS,
-                    };
-                    self.add_fill(contig, filled, ordinal)?;
-                }
+            if start <= end {
+                self.sorter
+                    .push_region(rid, start as u64, end as u64, false)?;
             }
         }
-        self.filler = Some(filler);
         Ok(())
     }
 
-    /// Adds a reference-only record filled in at a position without one, ranked below one VarDict
-    /// wrote there.
-    fn add_fill(
-        &mut self,
-        contig: &str,
-        filled: Filled,
-        region: u64,
-    ) -> Result<(), Box<dyn error::Error>> {
-        let base = [self.reference.base(contig, filled.position - 1)?];
+    /// Writes the sorted records to the output, returning how many positions were filled, or `None`
+    /// when `stop` asked the run to stop first.
+    fn write(
+        self,
+        output: &mut Output,
+        fill_gvcf: bool,
+        stop: &dyn Fn() -> bool,
+    ) -> Result<Option<FillCounts>, Box<dyn error::Error>> {
+        let mut entries = self.sorter.entries()?;
+        let mut writer = Writer {
+            records: self.records,
+            reference: self.reference,
+            filters: self.filters,
+            context_3mer: self.context_3mer,
+            fill_gvcf,
+            output,
+            stop,
+            line: Vec::new(),
+            fills: FillCounts::default(),
+            contig: String::new(),
+            rid: None,
+            walk: Walk::default(),
+            vardict_end: 0,
+            end: 0,
+            position: 0,
+            counts_region: None,
+            wrote_record: false,
+        };
+        while let Some(entry) = entries.next_entry()? {
+            if stop() || !writer.entry(entry)? {
+                return Ok(None);
+            }
+        }
+        if !writer.leave_contig()? {
+            return Ok(None);
+        }
+        Ok(Some(writer.fills))
+    }
+}
+
+/// Writes the sorted entries as VCF records in one pass, holding only what VarDict counted at the
+/// position it is at and the deletions and MNVs spanning it. Each record gets FORMAT SITE_DP at its
+/// POS, missing outside every VarDict region, and with `--fill-gvcf` each position of a region
+/// without a reference-only record gets one. Where regions overlap, a position's counts are taken
+/// from the first region that counted a row there.
+struct Writer<'w> {
+    records: RecordWriter,
+    reference: Reference,
+    filters: &'w FilterThresholds,
+    context_3mer: bool,
+    fill_gvcf: bool,
+    output: &'w mut Output,
+    stop: &'w dyn Fn() -> bool,
+    line: Vec<u8>,
+    fills: FillCounts,
+    contig: String,
+    rid: Option<u32>,
+    walk: Walk,
+    vardict_end: u64,
+    end: u64,
+    position: u64,
+    counts_region: Option<u64>,
+    wrote_record: bool,
+}
+
+impl Writer<'_> {
+    /// Writes what an entry adds, first leaving the positions and contig before it; returns false
+    /// when `stop` asked the run to stop.
+    fn entry(&mut self, entry: Entry) -> Result<bool, Box<dyn error::Error>> {
+        let (rid, position) = entry.locus();
+        if self.rid != Some(rid) {
+            if !self.leave_contig()? {
+                return Ok(false);
+            }
+            self.enter_contig(rid)?;
+        }
+        if position > self.position {
+            self.leave_position()?;
+            if !self.fill_gap(self.position + 1, position - 1)? {
+                return Ok(false);
+            }
+            self.walk.at(position);
+            self.position = position;
+            self.counts_region = None;
+            self.wrote_record = false;
+        }
+        match entry {
+            Entry::Region { end, vardict, .. } => {
+                self.end = self.end.max(end);
+                if vardict {
+                    self.vardict_end = self.vardict_end.max(end);
+                }
+            }
+            Entry::Counts { region, counts, .. } => {
+                if self.counts_region.is_none_or(|first| first == region) {
+                    self.counts_region = Some(region);
+                    self.walk.add(&Counts::decode(counts));
+                }
+            }
+            Entry::Record {
+                reference_only,
+                line,
+                ..
+            } => {
+                if !self.wrote_record && !reference_only {
+                    self.fill()?;
+                }
+                self.wrote_record = true;
+                let site_dp: PerSample = if position <= self.vardict_end {
+                    self.walk.site().site_dp
+                } else {
+                    [i32::missing(); SAMPLES]
+                };
+                stamp(line, &site_dp, &mut self.line);
+                self.write_line()?;
+            }
+        }
+        Ok(true)
+    }
+
+    /// Starts the contig with index `rid`.
+    fn enter_contig(&mut self, rid: u32) -> Result<(), Box<dyn error::Error>> {
+        let (name, _) = self
+            .records
+            .header()
+            .contigs()
+            .get_index(rid as usize)
+            .ok_or_else(|| format!("No contig has index {rid} in the VCF header!"))?;
+        self.contig.clear();
+        self.contig.push_str(name);
+        self.rid = Some(rid);
+        self.walk = Walk::default();
+        self.vardict_end = 0;
+        self.end = 0;
+        self.position = 0;
+        Ok(())
+    }
+
+    /// Finishes the contig: the position it is at, then every position of its regions after it;
+    /// returns false when `stop` asked the run to stop.
+    fn leave_contig(&mut self) -> Result<bool, Box<dyn error::Error>> {
+        if self.rid.is_none() {
+            return Ok(true);
+        }
+        self.leave_position()?;
+        self.fill_gap(self.position + 1, self.end)
+    }
+
+    /// Finishes the position it is at, filling it when no record was written there.
+    fn leave_position(&mut self) -> Result<(), Box<dyn error::Error>> {
+        if self.position > 0 && !self.wrote_record {
+            self.fill()?;
+        }
+        Ok(())
+    }
+
+    /// Fills each position from `from` to `to`, none of which has an entry, inside the regions
+    /// entered; returns false when `stop` asked the run to stop.
+    fn fill_gap(&mut self, from: u64, to: u64) -> Result<bool, Box<dyn error::Error>> {
+        if !self.fill_gvcf {
+            return Ok(true);
+        }
+        for position in from..=to.min(self.end) {
+            if (self.stop)() {
+                return Ok(false);
+            }
+            self.walk.at(position);
+            self.position = position;
+            self.fill()?;
+        }
+        Ok(true)
+    }
+
+    /// Writes a reference-only record at the position it is at, from what VarDict counted there,
+    /// when filling and the position lies in a region entered.
+    fn fill(&mut self) -> Result<(), Box<dyn error::Error>> {
+        if !self.fill_gvcf || self.position > self.end {
+            return Ok(());
+        }
+        let site = self.walk.site();
+        let position = self.position;
+        let base = [self.reference.base(&self.contig, position - 1)?];
         let base = std::str::from_utf8(&base).map_err(|_| {
             format!(
-                "Expected a reference base at {contig}:{}, found byte {}!",
-                filled.position, base[0]
+                "Expected a reference base at {}:{position}, found byte {}!",
+                self.contig, base[0]
             )
         })?;
-        let site = filled.site;
+        let context = if self.context_3mer {
+            Some(self.reference.context(&self.contig, position, 1)?)
+        } else {
+            None
+        };
         let call = TumorOnlyVariant {
-            contig,
-            start: filled.position,
-            end: filled.position,
+            contig: &self.contig,
+            start: position,
+            end: position,
             ref_allele: base,
             alt_allele: base,
             depth: site.depth[0],
@@ -776,33 +931,20 @@ impl Sink<'_> {
             ref_reverse: site.ref_reverse[0],
             ..TumorOnlyVariant::default()
         };
-        let calls = std::slice::from_ref(&call);
-        let context = self.context(&call)?;
         let extras = Extras {
             context: context.as_deref(),
             site_dp: &site.site_dp[..1],
             ..Extras::default()
         };
+        let calls = std::slice::from_ref(&call);
         let Some(mut record) = build_record(&mut self.records, calls, None, self.filters, extras)?
         else {
             return Ok(());
         };
         record.push_info_string("GVCF_FILL", site.fill.as_str())?;
-        let key = SortKey {
-            rid: record.rid(),
-            pos: filled.position - 1,
-            ref_allele: base.as_bytes(),
-            alt_allele: &[],
-            end: filled.position,
-        };
         self.line.clear();
         record.write(&mut self.line)?;
-        self.sorter.push(
-            key,
-            Rank::new(region, calls, &call).filled(site.fill),
-            &self.line,
-        )?;
-        self.progress.record();
+        self.write_line()?;
         match site.fill {
             Fill::Rows => self.fills.rows += 1,
             Fill::Spanned => self.fills.spanned += 1,
@@ -810,6 +952,51 @@ impl Sink<'_> {
         }
         Ok(())
     }
+
+    /// Writes the line held to the output.
+    fn write_line(&mut self) -> Result<(), String> {
+        self.output
+            .write_all(&self.line)
+            .map_err(|error| format!("Could not write the output: {error}!"))
+    }
+}
+
+/// Copies a record's VCF line into `out` with each sample's FORMAT SITE_DP value replaced by the
+/// sample's of `site_dp`, written `.` when missing.
+fn stamp(line: &[u8], site_dp: &[i32], out: &mut Vec<u8>) {
+    out.clear();
+    let body = line.strip_suffix(b"\n").unwrap_or(line);
+    let mut index = None;
+    for (column, field) in body.split(|&byte| byte == b'\t').enumerate() {
+        if column > 0 {
+            out.push(b'\t');
+        }
+        match (column, index) {
+            (8, _) => {
+                index = field
+                    .split(|&byte| byte == b':')
+                    .position(|key| key == b"SITE_DP");
+                out.extend_from_slice(field);
+            }
+            (9.., Some(index)) => {
+                for (place, value) in field.split(|&byte| byte == b':').enumerate() {
+                    if place > 0 {
+                        out.push(b':');
+                    }
+                    if place != index {
+                        out.extend_from_slice(value);
+                        continue;
+                    }
+                    match site_dp.get(column - 9).filter(|depth| !depth.is_missing()) {
+                        Some(depth) => out.extend_from_slice(depth.to_string().as_bytes()),
+                        None => out.push(b'.'),
+                    }
+                }
+            }
+            _ => out.extend_from_slice(field),
+        }
+    }
+    out.push(b'\n');
 }
 
 /// The sort key of a record on the contig with this index, which is also what makes two records
@@ -856,27 +1043,6 @@ struct Extras<'e> {
     moved: Option<&'e [i32]>,
     context: Option<&'e str>,
     site_dp: &'e [i32],
-}
-
-/// The depth per sample at each normalized call's POS within a VarDict region, from what VarDict
-/// counted in the region; a POS outside the region has none.
-fn site_dps(
-    sites: &Sites,
-    normalized: &[Normalized],
-    region: Option<&std::ops::RangeInclusive<u64>>,
-) -> AHashMap<u64, [i32; SAMPLES]> {
-    let mut positions: Vec<u64> = normalized
-        .iter()
-        .map(|call| call.start)
-        .filter(|position| region.is_some_and(|region| region.contains(position)))
-        .collect();
-    positions.sort_unstable();
-    positions.dedup();
-    let mut sweep = sites.sweep();
-    positions
-        .into_iter()
-        .map(|position| (position, sweep.at(position).site_dp))
-        .collect()
 }
 
 /// Builds one VCF record with a sample column per call, the tumor (or only) sample first; FILTER and
@@ -1304,6 +1470,48 @@ mod tests {
         assert_eq!(exit, 0);
         assert!(diff(output.path().to_str().unwrap(), "tests/calls.vcf"));
         Ok(())
+    }
+
+    #[test]
+    fn test_writing_stops_once_a_signal_arrives() {
+        let rows = std::fs::read_to_string("tests/calls.g.var").unwrap();
+        let calls = std::cell::Cell::new(0);
+        let signal = || {
+            calls.set(calls.get() + 1);
+            if calls.get() > rows.lines().count() {
+                2
+            } else {
+                0
+            }
+        };
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("out.vcf");
+        let mut output = Output::create(Some(&path)).unwrap();
+        let options = Options {
+            reference: PathBuf::from("tests/reference.fa"),
+            sample: Some("dna00001"),
+            ..Default::default()
+        };
+        let index =
+            crate::convert(rows.as_bytes(), &options, dir.path(), &mut output, &signal).unwrap();
+        assert!(index.is_none());
+        assert_eq!(calls.get(), rows.lines().count() + 1);
+    }
+
+    #[test]
+    fn test_stamp_writes_each_samples_site_dp_in_place() {
+        let mut out = Vec::new();
+        stamp(
+            b"c\t5\t.\tA\tC\t.\t.\t.\tGT:DP:SITE_DP:AF\t0/1:30:.:0.5\t0/0:20:.:0\n",
+            &[25, i32::missing()],
+            &mut out,
+        );
+        assert_eq!(
+            out,
+            b"c\t5\t.\tA\tC\t.\t.\t.\tGT:DP:SITE_DP:AF\t0/1:30:25:0.5\t0/0:20:.:0\n"
+        );
+        stamp(b"c\t5\t.\tA\tC\t.\t.\t.\n", &[25], &mut out);
+        assert_eq!(out, b"c\t5\t.\tA\tC\t.\t.\t.\n");
     }
 
     #[test]
