@@ -191,7 +191,7 @@ Each call is written once. Rows of one VarDict region that normalize to one call
 
 ### Sequence context
 
-With `--context-3mer`, every record carries INFO `CONTEXT_3mer`, the reference bases at POS-1, POS and POS+1 after normalization, uppercase, with `N` for a base past either end of the contig. The middle base is never reverse-complemented to a pyrimidine: an analysis collapses strands itself, and a 192-class spectrum needs them kept.
+With `--context-3mer`, every record carries INFO `CONTEXT_3mer`, the reference bases at POS-1, POS and POS+1 after normalization, uppercase, with `N` for a base past either end of the contig, so an insertion's or deletion's 3-mer is centered on its anchor base. It is not reverse-complemented when the base at POS is a purine: an analysis collapses strands itself, and a 192-class spectrum needs them kept.
 
 ### Sorting
 

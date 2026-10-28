@@ -783,7 +783,7 @@ fn vcf_header(samples: &[&str], filters: &FilterThresholds, fix: Option<&LeakyMn
         add_info(&mut header, "MNV_PARTIALS", info::Number::Count(1), info::Type::Integer, &mnv_partials_description(fix));
     }
     if context_3mer {
-        add_info(&mut header, "CONTEXT_3mer", info::Number::Count(1), info::Type::String, r#"The reference bases at POS-1, POS and POS+1, uppercase even where the reference is soft-masked, with N for a base past either end of the contig. POS is the record's own after normalization, so the middle base of an insertion or deletion is its anchor base. Not reverse-complemented to a pyrimidine middle base, and an IUPAC ambiguity code is kept as the reference spells it, even where REF writes the first base it stands for."#);
+        add_info(&mut header, "CONTEXT_3mer", info::Number::Count(1), info::Type::String, r#"The reference bases at POS-1, POS and POS+1, uppercase even where the reference is soft-masked, with N for a base past either end of the contig. POS is the record's after normalization, so an insertion's or deletion's 3-mer is centered on its anchor base, the reference base before the inserted or deleted bases. Not reverse-complemented when the base at POS is a purine, and an IUPAC ambiguity code is kept as the reference spells it, even where REF writes the first base it stands for."#);
     }
     add_filter(&mut header, "PASS", r#"The call failed none of the FILTER labels, which test the tumor (or only) sample; a call whose tumor sample has no reads of the ALT allele keeps no FILTER (.)."#);
     for (id, description) in filters.header_filters() {
