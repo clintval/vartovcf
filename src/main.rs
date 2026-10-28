@@ -50,7 +50,7 @@ struct Opt {
     #[arg(long)]
     skip_non_variants: bool,
 
-    /// Write a reference-only record at each position of VarDict's regions (its chr:start-end column) that has none, so a gVCF of tumor-only -p output has a record at every position; INFO GVCF_FILL says how its depth was found. Holds each VarDict region's rows until it ends; see the README
+    /// Write a reference-only record at each position of VarDict's regions (its chr:start-end column) that has none, so a gVCF of tumor-only -p output has exactly one at every position; INFO GVCF_FILL says how its depth was found. See the README
     #[arg(long, conflicts_with = "skip_non_variants")]
     fill_gvcf: bool,
 

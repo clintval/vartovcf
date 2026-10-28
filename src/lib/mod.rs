@@ -27,8 +27,9 @@ use crate::record::TumorNormalVariant;
 use crate::record::TumorOnlyVariant;
 use crate::record::{tumor_normal_fisher_p_value, tumor_normal_header, tumor_only_header};
 use crate::reference::Reference;
+use crate::site::{SAMPLES, Site, Sites};
 use crate::sort::{Rank, RecordSorter, SortKey, resolve_tmp_dir};
-use crate::vcf::{GenotypeAllele, Record, RecordWriter, header_bytes};
+use crate::vcf::{GenotypeAllele, Numeric, Record, RecordWriter, header_bytes};
 
 pub mod fai;
 pub mod fill;
@@ -42,6 +43,7 @@ pub mod output;
 pub mod reads;
 pub mod record;
 pub mod reference;
+pub mod site;
 pub mod sort;
 pub mod vcf;
 
@@ -150,6 +152,7 @@ impl Columns {
     }
 
     /// Drops the columns `-fisher` adds, rebuilding the row in `scratch` to spare an allocation.
+    #[cfg(test)]
     fn drop_fisher_columns(&self, record: &mut StringRecord, scratch: &mut StringRecord) {
         if self.fisher {
             self.copy_row(record, scratch);
@@ -262,7 +265,6 @@ fn convert<I: Read>(
 
     // Peek at the first row to learn the layout and sample before the header is made.
     let mut carry = StringRecord::new();
-    let mut scratch = StringRecord::new();
     let mut peeked = reader.read_record(&mut carry)?;
     let columns = if peeked {
         let columns = detect_columns(&carry)?;
@@ -382,13 +384,7 @@ fn convert<I: Read>(
             let message = format!("Expected sample '{}' found '{}'!", row_sample, field(0));
             return Err(message.into());
         };
-        if options.fix_leaky_mnv.is_some() || options.fill_gvcf {
-            region.push(compact(&carry, columns));
-        } else {
-            columns.drop_fisher_columns(&mut carry, &mut scratch);
-            let (calls, status) = parse_row(&carry, columns)?;
-            sink.add(&calls[..layout.samples()], status, None, ordinal)?;
-        }
+        region.push(compact(&carry, columns));
     }
     sink.add_region(&region, &segment, columns, ordinal)?;
     sink.fill_bed(ordinal + 1)?;
@@ -511,44 +507,27 @@ enum Folder {
 }
 
 impl Sink<'_> {
-    /// Normalizes a record of the region with this ordinal and adds it to the sort, ranked against
-    /// other records of its call: the first region's records first, then the best supported, by
-    /// [`Rank`], so the sort writes the one each call keeps.
-    fn add(
-        &mut self,
-        calls: &[TumorOnlyVariant],
-        status: Option<&str>,
-        merged: Option<&Merged>,
-        region: u64,
-    ) -> Result<(), Box<dyn error::Error>> {
-        let normalized = normalize(&mut self.reference, &calls[0])?;
-        self.add_normalized(calls, &normalized, status, merged, region, &calls[0])?;
-        Ok(())
-    }
-
-    /// Adds a record already normalized, ranked by its calls and by the row it was written for,
-    /// returning whether the writer kept it.
-    fn add_normalized(
+    /// Adds a record already normalized, from the region with this ordinal, to the sort, ranked
+    /// against other records of its call by its calls and by the row it was written for: the first
+    /// region's records first, then the best supported, by [`Rank`], so the sort writes the one each
+    /// call keeps. Returns whether the writer kept it.
+    fn add_record(
         &mut self,
         calls: &[TumorOnlyVariant],
         normalized: &Normalized,
         status: Option<&str>,
-        merged: Option<&Merged>,
+        extras: Extras,
         region: u64,
         row: &TumorOnlyVariant,
     ) -> Result<bool, Box<dyn error::Error>> {
         let written: Vec<TumorOnlyVariant> =
             calls.iter().map(|call| normalized.apply(call)).collect();
         let context = self.context(&written[0])?;
-        let Some(record) = build_record(
-            &mut self.records,
-            &written,
-            status,
-            self.filters,
-            merged,
-            None,
-            context.as_deref(),
-        )?
+        let extras = Extras {
+            context: context.as_deref(),
+            ..extras
+        };
+        let Some(record) = build_record(&mut self.records, &written, status, self.filters, extras)?
         else {
             return Ok(false);
         };
@@ -556,40 +535,6 @@ impl Sink<'_> {
         self.line.clear();
         record.write(&mut self.line)?;
         let rank = Rank::new(region, calls, row);
-        self.sorter.push(key, rank, &self.line)?;
-        self.progress.record();
-        Ok(true)
-    }
-
-    /// Adds a partial row that kept some reads while `moved` reads per sample went to its MNV,
-    /// returning whether the writer kept it.
-    fn add_split(
-        &mut self,
-        kept: &[TumorOnlyVariant],
-        moved: &[i32],
-        normalized: &Normalized,
-        status: Option<&str>,
-        region: u64,
-    ) -> Result<bool, Box<dyn error::Error>> {
-        let written: Vec<TumorOnlyVariant> =
-            kept.iter().map(|call| normalized.apply(call)).collect();
-        let context = self.context(&written[0])?;
-        let Some(record) = build_record(
-            &mut self.records,
-            &written,
-            status,
-            self.filters,
-            None,
-            Some(moved),
-            context.as_deref(),
-        )?
-        else {
-            return Ok(false);
-        };
-        let key = sort_key(record.rid(), normalized);
-        self.line.clear();
-        record.write(&mut self.line)?;
-        let rank = Rank::new(region, kept, &kept[0]);
         self.sorter.push(key, rank, &self.line)?;
         self.progress.record();
         Ok(true)
@@ -646,7 +591,11 @@ impl Sink<'_> {
                 fold_partials(&calls, &written, Rule::Reads(&fates))
             }
         };
+        let sites = Sites::new(&calls);
+        let bounds = parse_segment(segment).map(|(_, start, end)| start..=end);
+        let site_dps = site_dps(&sites, &normalized, bounds.as_ref());
         let mut positions: Vec<u64> = Vec::with_capacity(calls.len());
+        let mut reference_positions: Vec<u64> = Vec::new();
         for (row, fold) in folds.into_iter().enumerate() {
             match &fold {
                 Fold::Keep => {}
@@ -661,31 +610,54 @@ impl Sink<'_> {
                         .sum::<i64>();
                 }
             }
+            let call = &normalized[row];
+            let missing = [i32::missing(); SAMPLES];
+            let site_dp = site_dps.get(&call.start).unwrap_or(&missing);
+            let extras = Extras {
+                site_dp: &site_dp[..samples],
+                ..Extras::default()
+            };
             let added = match fold {
                 _ if written[row] => true,
-                Fold::Keep => self.add_normalized(
+                Fold::Keep => self.add_record(
                     calls[row],
-                    &normalized[row],
+                    call,
                     statuses[row],
-                    None,
+                    extras,
                     ordinal,
                     &calls[row][0],
                 )?,
-                Fold::Merged(merged) => self.add_normalized(
+                Fold::Merged(merged) => self.add_record(
                     &merged.calls,
-                    &normalized[row],
+                    call,
                     statuses[row],
-                    Some(&merged),
+                    Extras {
+                        merged: Some(&merged),
+                        ..extras
+                    },
                     ordinal,
                     &calls[row][0],
                 )?,
                 Fold::Split {
                     calls: kept, moved, ..
-                } => self.add_split(&kept, &moved, &normalized[row], statuses[row], ordinal)?,
+                } => self.add_record(
+                    &kept,
+                    call,
+                    statuses[row],
+                    Extras {
+                        moved: Some(&moved),
+                        ..extras
+                    },
+                    ordinal,
+                    &kept[0],
+                )?,
                 Fold::Into(_) => false,
             };
             if added {
-                positions.push(normalized[row].start);
+                positions.push(call.start);
+                if call.ref_allele == call.alt_allele {
+                    reference_positions.push(call.start);
+                }
             }
         }
         for (row, call) in calls.iter().zip(&normalized) {
@@ -694,17 +666,19 @@ impl Sink<'_> {
             }
         }
         if self.filler.is_some() && !segment.is_empty() {
-            self.fill_region(&calls, &positions, segment, ordinal)?;
+            self.fill_region(&sites, &reference_positions, &positions, segment, ordinal)?;
         }
         Ok(())
     }
 
-    /// Fills each position of a VarDict region without a record from the region's rows, given the
-    /// positions of the records its rows were written as, here or in an earlier region, after
-    /// checking the region against the BED file of `--fill-gvcf-bed`; see [`fill::region_fills`].
+    /// Fills each position of a VarDict region without a reference-only record from what VarDict
+    /// counted in the region, given the positions of the reference-only records and of all the
+    /// records its rows were written as, here or in an earlier region, after checking the region
+    /// against the BED file of `--fill-gvcf-bed`; see [`fill::region_fills`].
     fn fill_region(
         &mut self,
-        calls: &[&[TumorOnlyVariant]],
+        sites: &Sites,
+        reference_positions: &[u64],
         positions: &[u64],
         segment: &str,
         ordinal: u64,
@@ -717,16 +691,15 @@ impl Sink<'_> {
             bed.check(contig, start, end)?;
         }
         let (start, end) = (start.max(1), end.min(self.reference.length(contig)?));
-        let written: AHashSet<u64> = positions.iter().copied().collect();
-        let tumor: Vec<&TumorOnlyVariant> = calls.iter().map(|row| &row[0]).collect();
-        let fills = region_fills(&tumor, &written, start, end);
+        let written: AHashSet<u64> = reference_positions.iter().copied().collect();
+        let fills = region_fills(sites, &written, start, end);
         let filler = self.filler.as_mut().expect("Only called when filling!");
         filler
             .segments
             .entry(contig.to_string())
             .or_default()
             .push((start, end));
-        let outside = written
+        let outside = positions
             .iter()
             .filter(|&&position| position < start || position > end);
         for &position in outside {
@@ -766,10 +739,7 @@ impl Sink<'_> {
                 for position in (from..=to).filter(|position| !outside.contains(position)) {
                     let filled = Filled {
                         position,
-                        fill: Fill::NoReads,
-                        ref_forward: 0,
-                        ref_reverse: 0,
-                        depth: 0,
+                        site: Site::NO_READS,
                     };
                     self.add_fill(contig, filled, ordinal)?;
                 }
@@ -794,32 +764,30 @@ impl Sink<'_> {
                 filled.position, base[0]
             )
         })?;
+        let site = filled.site;
         let call = TumorOnlyVariant {
             contig,
             start: filled.position,
             end: filled.position,
             ref_allele: base,
             alt_allele: base,
-            depth: filled.depth,
-            ref_forward: filled.ref_forward,
-            ref_reverse: filled.ref_reverse,
+            depth: site.depth[0],
+            ref_forward: site.ref_forward[0],
+            ref_reverse: site.ref_reverse[0],
             ..TumorOnlyVariant::default()
         };
         let calls = std::slice::from_ref(&call);
         let context = self.context(&call)?;
-        let Some(mut record) = build_record(
-            &mut self.records,
-            calls,
-            None,
-            self.filters,
-            None,
-            None,
-            context.as_deref(),
-        )?
+        let extras = Extras {
+            context: context.as_deref(),
+            site_dp: &site.site_dp[..1],
+            ..Extras::default()
+        };
+        let Some(mut record) = build_record(&mut self.records, calls, None, self.filters, extras)?
         else {
             return Ok(());
         };
-        record.push_info_string("GVCF_FILL", filled.fill.as_str())?;
+        record.push_info_string("GVCF_FILL", site.fill.as_str())?;
         let key = SortKey {
             rid: record.rid(),
             pos: filled.position - 1,
@@ -831,11 +799,11 @@ impl Sink<'_> {
         record.write(&mut self.line)?;
         self.sorter.push(
             key,
-            Rank::new(region, calls, &call).filled(filled.fill),
+            Rank::new(region, calls, &call).filled(site.fill),
             &self.line,
         )?;
         self.progress.record();
-        match filled.fill {
+        match site.fill {
             Fill::Rows => self.fills.rows += 1,
             Fill::Spanned => self.fills.spanned += 1,
             Fill::NoReads => self.fills.no_reads += 1,
@@ -879,19 +847,47 @@ fn compact(record: &StringRecord, columns: Columns) -> StringRecord {
     copy
 }
 
+/// What a record carries besides its calls: the merge of an MNV that absorbed partials, the reads
+/// a partial lost to its MNV per sample, its reference 3-mer, and its depth at POS per sample,
+/// FORMAT SITE_DP, left out when empty.
+#[derive(Clone, Copy, Default)]
+struct Extras<'e> {
+    merged: Option<&'e Merged<'e>>,
+    moved: Option<&'e [i32]>,
+    context: Option<&'e str>,
+    site_dp: &'e [i32],
+}
+
+/// The depth per sample at each normalized call's POS within a VarDict region, from what VarDict
+/// counted in the region; a POS outside the region has none.
+fn site_dps(
+    sites: &Sites,
+    normalized: &[Normalized],
+    region: Option<&std::ops::RangeInclusive<u64>>,
+) -> AHashMap<u64, [i32; SAMPLES]> {
+    let mut positions: Vec<u64> = normalized
+        .iter()
+        .map(|call| call.start)
+        .filter(|position| region.is_some_and(|region| region.contains(position)))
+        .collect();
+    positions.sort_unstable();
+    positions.dedup();
+    let mut sweep = sites.sweep();
+    positions
+        .into_iter()
+        .map(|position| (position, sweep.at(position).site_dp))
+        .collect()
+}
+
 /// Builds one VCF record with a sample column per call, the tumor (or only) sample first; FILTER and
 /// the site's INFO come from the first call, and a tumor-normal record carries its VARDICT_STATUS.
-/// An MNV that absorbed partials carries its merge, a partial that lost reads to its MNV the reads
-/// `moved` per sample, and a record given its reference 3-mer its `context`. Returns `None` for a
-/// record the writer skips.
+/// The record also carries its [`Extras`]. Returns `None` for a record the writer skips.
 fn build_record<'w>(
     records: &'w mut RecordWriter,
     calls: &[TumorOnlyVariant],
     status: Option<&str>,
     filters: &FilterThresholds,
-    merged: Option<&Merged>,
-    moved: Option<&[i32]>,
-    context: Option<&str>,
+    extras: Extras,
 ) -> Result<Option<Record<'w>>, Box<dyn error::Error>> {
     let var = &calls[0];
     let Some(mut variant) = records.record(
@@ -959,11 +955,11 @@ fn build_record<'w>(
         )?;
     }
 
-    if let Some(merged) = merged {
+    if let Some(merged) = extras.merged {
         variant.push_info_integer("MNV_PARTIALS", &[merged.partials as i32])?;
     }
 
-    if let Some(context) = context {
+    if let Some(context) = extras.context {
         variant.push_info_string("CONTEXT_3mer", context)?;
     }
 
@@ -982,6 +978,7 @@ fn build_record<'w>(
         &each(calls, TumorOnlyVariant::strand_bias_fisher_p_value),
     )?;
     variant.push_format_integer("DP", &each(calls, |call| call.depth))?;
+    variant.push_format_integer("SITE_DP", extras.site_dp)?;
     variant.push_format_float("AF", &each(calls, TumorOnlyVariant::af_value))?;
     variant.push_format_integer("HICNT", &each(calls, TumorOnlyVariant::hicnt_value))?;
     variant.push_format_float(
@@ -1003,10 +1000,10 @@ fn build_record<'w>(
         &each(calls, TumorOnlyVariant::mean_mismatches_value),
     )?;
 
-    if let Some(merged) = merged {
+    if let Some(merged) = extras.merged {
         variant.push_format_integer("MNV_PARTIAL_READS", &merged.partial_reads)?;
     }
-    if let Some(moved) = moved {
+    if let Some(moved) = extras.moved {
         variant.push_format_integer("MNV_MOVED_READS", moved)?;
     }
 
