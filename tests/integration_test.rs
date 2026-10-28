@@ -1227,6 +1227,78 @@ mod tests {
     }
 
     #[test]
+    fn run_end_to_end_names_a_malformed_rows_line_after_sorting_rows_to_fold()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = TempDir::new()?;
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        let assert = cmd
+            .args(["--reference", "tests/reference.fa", "--sample", "dna00001"])
+            .args(["--fix-leaky-mnv", "--tmp-dir"])
+            .arg(dir.path())
+            .pipe_stdin("tests/calls.malformed.var")?
+            .assert()
+            .code(1);
+        let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+        assert!(
+            stderr.contains("Could not parse column 8 on line 2"),
+            "{stderr}"
+        );
+        assert!(!stderr.contains("panicked"), "{stderr}");
+        assert_eq!(std::fs::read_dir(dir.path())?.count(), 0);
+        Ok(())
+    }
+
+    #[rstest]
+    #[case(
+        "tests/calls.leaky-mnv.var",
+        "tests/calls.leaky-mnv.vcf",
+        &["--reference", "tests/reference.fa", "--filter-strand-bias", "0.01", "--filter-low-af", "0.02"]
+    )]
+    #[case(
+        "tests/calls.tumor-normal.leaky-mnv.var",
+        "tests/calls.tumor-normal.leaky-mnv.vcf",
+        &["--reference", "tests/tumor-normal.fa", "--normal-sample", "N"]
+    )]
+    fn run_end_to_end_folds_a_regions_rows_alike_in_any_order(
+        #[case] input: &str,
+        #[case] expected: &str,
+        #[case] args: &[&str],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let rows = read_to_string(input)?;
+        let segment = |row: &str| {
+            let fields: Vec<&str> = row.split('\t').collect();
+            let prefix = format!("{}:", fields[2]);
+            fields
+                .iter()
+                .rfind(|field| field.starts_with(&prefix))
+                .map(|field| field.to_string())
+        };
+        let mut regions: Vec<(Option<String>, Vec<&str>)> = Vec::new();
+        for row in rows.lines() {
+            match regions.last_mut() {
+                Some((last, region)) if *last == segment(row) => region.push(row),
+                _ => regions.push((segment(row), vec![row])),
+            }
+        }
+        let reversed: String = regions
+            .iter()
+            .flat_map(|(_, region)| region.iter().rev())
+            .map(|row| format!("{row}\n"))
+            .collect();
+        assert_ne!(reversed, rows);
+        let output = NamedTempFile::new().expect("Cannot create temporary file!");
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        cmd.args(args)
+            .args(["--fix-leaky-mnv", "--output"])
+            .arg(output.path())
+            .write_stdin(reversed)
+            .assert()
+            .success();
+        assert!(diff(output.path().to_str().unwrap(), expected));
+        Ok(())
+    }
+
+    #[test]
     #[rustfmt::skip]
     fn run_end_to_end_fails_cleanly_on_an_sv_without_a_length() -> Result<(), Box<dyn std::error::Error>> {
         let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;

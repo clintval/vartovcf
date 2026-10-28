@@ -26,7 +26,7 @@ use crate::record::TumorOnlyVariant;
 use crate::record::{tumor_normal_fisher_p_value, tumor_normal_header, tumor_only_header};
 use crate::reference::Reference;
 use crate::site::{Counts, PerSample, SAMPLES, Walk};
-use crate::sort::{Entry, Rank, RecordSorter, SortKey, resolve_tmp_dir};
+use crate::sort::{Entry, Rank, RecordSorter, RowSorter, SortKey, resolve_tmp_dir};
 use crate::vcf::{GenotypeAllele, Numeric, Record, RecordWriter, header_bytes};
 
 pub mod fai;
@@ -192,9 +192,10 @@ pub struct Options<'a> {
 
 /// Runs the tool `vartovcf` on an input VAR file or stream and writes the records to a VCF file.
 ///
-/// Each VarDict region's rows are parsed and, when asked, their leaky MNV partials folded, both in
-/// VarDict's own coordinates; each record is then normalized against the reference and sorted, and
-/// each call is written once, after the input ends.
+/// VarDict's rows are parsed and, when asked, their leaky MNV partials folded, a cluster of a
+/// region's overlapping rows at a time after the rows are sorted, both in VarDict's own
+/// coordinates; each record is then normalized against the reference and sorted, and each call is
+/// written once, after the input ends.
 ///
 /// Returns the exit code: 0 for success, also when standard output's reader closes it early, or 128
 /// plus the signal that stopped the run, after removing its temporary files, output file and index.
@@ -341,6 +342,10 @@ fn convert<I: Read>(
         folds: FoldCounts::default(),
         bed,
         counts: Vec::new(),
+        rows: match options.fix_leaky_mnv {
+            Some(_) => Some(RowSorter::new(tmp_dir)?),
+            None => None,
+        },
         progress: ProgLogBuilder::new()
             .name("main")
             .verb("Processed")
@@ -355,7 +360,6 @@ fn convert<I: Read>(
     let column = columns.segment_column();
     let mut segment = String::new();
     let mut ordinal: u64 = 0;
-    let mut region: Vec<StringRecord> = Vec::new();
 
     while std::mem::take(&mut peeked) || read_row(&mut reader, &mut carry, columns)? {
         if signal() != 0 {
@@ -363,8 +367,6 @@ fn convert<I: Read>(
         }
         let field = |index: usize| carry.get(index).unwrap_or_default();
         if field(column) != segment {
-            sink.add_region(&region, columns, ordinal)?;
-            region.clear();
             ordinal += 1;
             segment.clear();
             segment.push_str(field(column));
@@ -385,15 +387,21 @@ fn convert<I: Read>(
             let message = format!("Expected sample '{}' found '{}'!", row_sample, field(0));
             return Err(message.into());
         };
-        if options.fix_leaky_mnv.is_some() {
-            region.push(compact(&carry, columns));
+        columns.drop_fisher_columns(&mut carry, &mut scratch);
+        if let Some(rows) = &mut sink.rows {
+            let start = carry
+                .get(3)
+                .and_then(|start| start.parse().ok())
+                .unwrap_or(0);
+            rows.push(ordinal, start, &carry)?;
         } else {
-            columns.drop_fisher_columns(&mut carry, &mut scratch);
             let (calls, status) = parse_row(&carry, columns)?;
             sink.add(&calls[..layout.samples()], status, ordinal)?;
         }
     }
-    sink.add_region(&region, columns, ordinal)?;
+    if !sink.fold_rows(columns, &|| signal() != 0)? {
+        return Ok(None);
+    }
     if let Some(Folder::Reads(sources)) = &sink.folder {
         let summary = sources.summary;
         info!(
@@ -473,6 +481,7 @@ struct Sink<'r> {
     folds: FoldCounts,
     bed: Option<Bed>,
     counts: Vec<u8>,
+    rows: Option<RowSorter>,
     progress: proglog::ProgLog,
 }
 
@@ -540,16 +549,55 @@ impl Sink<'_> {
             .transpose()
     }
 
-    /// Adds the rows of one VarDict region, a block it writes together for one target, with the
-    /// partial rows of each MNV folded into it; VarDict orders a tumor-only region's positions by
-    /// hash, so a partial row can come before or after its MNV.
+    /// Folds the leaky MNV partials of each VarDict region's rows, read back from their sort a
+    /// region at a time in input order, and adds them to the sort, a cluster of rows at a time: a
+    /// cluster holds the rows starting inside the REF of an earlier row of it, so every MNV comes
+    /// with every row it can fold, and no region is held whole. Returns false when `stop` asked the
+    /// run to stop.
+    fn fold_rows(
+        &mut self,
+        columns: Columns,
+        stop: &dyn Fn() -> bool,
+    ) -> Result<bool, Box<dyn error::Error>> {
+        let Some(sorter) = self.rows.take() else {
+            return Ok(true);
+        };
+        let mut rows = sorter.rows()?;
+        let mut cluster: Vec<StringRecord> = Vec::new();
+        let (mut region, mut end) = (0, 0);
+        while let Some((ordinal, row)) = rows.next_row()? {
+            if stop() {
+                return Ok(false);
+            }
+            let start: u64 = row.get(3).and_then(|start| start.parse().ok()).unwrap_or(0);
+            let ref_length = row.get(5).map_or(0, str::len) as u64;
+            if !cluster.is_empty() && (ordinal != region || start > end) {
+                self.add_cluster(&cluster, columns, region)?;
+                cluster.clear();
+            }
+            if cluster.is_empty() {
+                region = ordinal;
+                end = start;
+            }
+            end = end.max((start + ref_length).saturating_sub(1));
+            cluster.push(row.clone());
+        }
+        if !cluster.is_empty() {
+            self.add_cluster(&cluster, columns, region)?;
+        }
+        Ok(true)
+    }
+
+    /// Adds a cluster of one VarDict region's rows, with the partial rows of each MNV folded into it;
+    /// VarDict orders a tumor-only region's positions by hash, so the rows come sorted by start.
     ///
     /// A substitution an earlier region added, or folded as a partial, is not added again, and is
     /// not folded into an MNV here, so its reads are never counted twice; a partial an MNV an earlier
     /// region already wrote takes here is dropped, as that MNV is not written again. The set of
     /// substitutions seen is kept for this, and only for substitutions, so it grows with the run's
-    /// substitution rows, not its rows.
-    fn add_region(
+    /// substitution rows, not its rows. Rows of a region that normalize to one substitution overlap,
+    /// so they fall in one cluster, and the set gains a cluster's substitutions once it is added.
+    fn add_cluster(
         &mut self,
         region: &[StringRecord],
         columns: Columns,
@@ -1048,14 +1096,6 @@ fn is_substitution(call: &Normalized) -> bool {
             .all(|base| base.is_ascii_alphabetic())
 }
 
-/// Copies a row into a record holding only its fields, without `-fisher`'s, and its position, as a
-/// region's rows are held until the region ends.
-fn compact(record: &StringRecord, columns: Columns) -> StringRecord {
-    let mut copy = StringRecord::with_capacity(record.as_slice().len(), record.len());
-    columns.copy_row(record, &mut copy);
-    copy
-}
-
 /// What a record carries besides its calls: the merge of an MNV that absorbed partials, the reads
 /// a partial lost to its MNV per sample, its reference 3-mer, and its depth at POS per sample,
 /// FORMAT SITE_DP, left out when empty.
@@ -1541,6 +1581,32 @@ mod tests {
             crate::convert(rows.as_bytes(), &options, dir.path(), &mut output, &signal).unwrap();
         assert!(index.is_none());
         assert_eq!(calls.get(), stop_at + 1);
+    }
+
+    #[test]
+    fn test_folding_stops_once_a_signal_arrives() {
+        let rows = std::fs::read_to_string("tests/calls.leaky-mnv.var").unwrap();
+        let calls = std::cell::Cell::new(0);
+        let signal = || {
+            calls.set(calls.get() + 1);
+            if calls.get() > rows.lines().count() {
+                2
+            } else {
+                0
+            }
+        };
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut output = Output::create(Some(&dir.path().join("out.vcf"))).unwrap();
+        let options = Options {
+            reference: PathBuf::from("tests/reference.fa"),
+            sample: Some("dna00001"),
+            fix_leaky_mnv: Some(LeakyMnvFix::Counts(LeakRate::default())),
+            ..Default::default()
+        };
+        let index =
+            crate::convert(rows.as_bytes(), &options, dir.path(), &mut output, &signal).unwrap();
+        assert!(index.is_none());
+        assert_eq!(calls.get(), rows.lines().count() + 1);
     }
 
     #[test]
