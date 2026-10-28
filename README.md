@@ -32,6 +32,7 @@ Or build from source with Rust 1.89 or newer:
 - Reads tumor-only and tumor-normal output, detecting which from the first row
 - Optionally folds an MNV's partial rows back into it, see [Leaky MNVs](#leaky-mnvs)
 - Runs the strand-bias Fisher test itself, so VarDictJava's `-fisher` is optional
+- Optionally writes each record's reference 3-mer, see [Sequence context](#sequence-context)
 
 ### Example Usage
 
@@ -187,6 +188,10 @@ In the example above, the fourth read's template is read at the MNV's last base:
 Every record is normalized against `--reference`, which must be the FASTA VarDict was run with: an indel moves to its left-most position and shared leading and trailing bases are trimmed, leaving an indel one shared base and a substitution the span from its first to its last changed base, so a gapped MNV keeps its inner unchanged bases, as `bcftools norm -f` does, so `bcftools norm` is not needed. A REF allele that differs from the reference is an error. Alleles are written uppercase even where the reference is soft-masked, unlike `bcftools norm` ([samtools/bcftools#2606](https://github.com/samtools/bcftools/issues/2606)). Reference-only rows and symbolic structural variants are not moved.
 
 Each call is written once. Rows of one VarDict region that normalize to one call, such as one indel VarDict placed at two positions in a repeat, hold different reads of it, and the row with the most ALT reads in the tumor (or only) sample is written, then the most in all samples, then the most depth in the tumor (or only) sample, so the choice never depends on row order. Overlapping BED regions repeat calls, and the first region's record is written. With `--fix-leaky-mnv`, a region's rows are held until it ends, and a key for each substitution row of a region, folded rows included, is kept so none is written or folded again, so memory grows with the largest VarDict region and with the number of substitution rows.
+
+### Sequence context
+
+With `--context-3mer`, every record carries INFO `CONTEXT_3mer`, the reference bases at POS-1, POS and POS+1 after normalization, uppercase, with `N` for a base past either end of the contig. The middle base is never reverse-complemented to a pyrimidine: an analysis collapses strands itself, and a 192-class spectrum needs them kept.
 
 ### Sorting
 

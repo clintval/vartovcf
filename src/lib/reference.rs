@@ -78,6 +78,22 @@ impl Reference {
         Ok(self.bases(contig, position, position + 1)?[0])
     }
 
+    /// Returns the uppercase bases of a contig from `flank` before a 1-based position to `flank`
+    /// after it, with `N` for each base past either end of the contig.
+    pub fn context(&mut self, contig: &str, position: u64, flank: u64) -> Result<String, String> {
+        let length = self.length(contig)?;
+        let start = (position - 1).saturating_sub(flank);
+        let end = (position + flank).min(length);
+        let before = (flank + 1).saturating_sub(position) as usize;
+        let after = (position + flank).saturating_sub(length) as usize;
+        let bases = self.bases(contig, start, end)?;
+        let mut context = String::with_capacity(2 * flank as usize + 1);
+        context.extend(std::iter::repeat_n('N', before));
+        context.extend(bases.iter().map(|&base| char::from(base)));
+        context.extend(std::iter::repeat_n('N', after));
+        Ok(context)
+    }
+
     /// Returns the length of a contig, or an error naming a contig the reference lacks.
     pub fn length(&self, contig: &str) -> Result<u64, String> {
         self.entry(contig).map(|entry| entry.length)
@@ -415,5 +431,17 @@ pub(crate) mod tests {
         let mut reference = Reference::from_path(&path).unwrap();
         assert_eq!(reference.length("c1").unwrap(), 4);
         assert_eq!(reference.bases("c1", 0, 4).unwrap(), b"ACGT");
+    }
+
+    #[test]
+    fn test_reads_a_context_uppercase_with_n_past_either_contig_end() {
+        let (_dir, path) = fasta(&[("c1", "acGTa"), ("c2", "g")]);
+        let mut reference = Reference::from_path(&path).unwrap();
+        assert_eq!(reference.context("c1", 3, 1).unwrap(), "CGT");
+        assert_eq!(reference.context("c1", 1, 1).unwrap(), "NAC");
+        assert_eq!(reference.context("c1", 5, 1).unwrap(), "TAN");
+        assert_eq!(reference.context("c2", 1, 1).unwrap(), "NGN");
+        assert_eq!(reference.context("c1", 2, 2).unwrap(), "NACGT");
+        assert!(reference.context("c9", 1, 1).is_err());
     }
 }
