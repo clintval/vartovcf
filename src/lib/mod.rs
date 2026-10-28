@@ -846,14 +846,10 @@ impl Writer<'_> {
                 ..
             } => {
                 let site = self.walk.site();
-                let counted = site.fill == Fill::Rows;
-                if !self.wrote_record && !reference_only && counted {
-                    self.fill(true)?;
-                }
                 self.wrote_record = true;
                 self.read_reference |= reference_only;
                 self.read_record = true;
-                let site_dp: PerSample = if counted {
+                let site_dp: PerSample = if site.fill == Fill::Rows {
                     site.site_dp
                 } else {
                     [i32::missing(); SAMPLES]
@@ -904,7 +900,7 @@ impl Writer<'_> {
             }
         }
         if !self.wrote_record {
-            self.fill(false)?;
+            self.fill()?;
         }
         Ok(())
     }
@@ -921,15 +917,14 @@ impl Writer<'_> {
             }
             self.walk.at(position);
             self.position = position;
-            self.fill(false)?;
+            self.fill()?;
         }
         Ok(true)
     }
 
-    /// Writes a reference-only record at the position it is at, from what VarDict counted there,
-    /// when filling and the position lies in a region entered; a record before ALT records at the
-    /// position carries depth only, so its genotype is missing.
-    fn fill(&mut self, before_alt: bool) -> Result<(), Box<dyn error::Error>> {
+    /// Writes a reference-only record at the position it is at, which has no record, from what
+    /// VarDict counted there, when filling and the position lies in a region entered.
+    fn fill(&mut self) -> Result<(), Box<dyn error::Error>> {
         if !self.fill_gvcf || self.position > self.end {
             return Ok(());
         }
@@ -961,7 +956,6 @@ impl Writer<'_> {
         let extras = Extras {
             context: context.as_deref(),
             site_dp: &site.site_dp[..1],
-            unknown_genotype: before_alt,
             ..Extras::default()
         };
         let calls = std::slice::from_ref(&call);
@@ -1063,15 +1057,14 @@ fn compact(record: &StringRecord, columns: Columns) -> StringRecord {
 }
 
 /// What a record carries besides its calls: the merge of an MNV that absorbed partials, the reads
-/// a partial lost to its MNV per sample, its reference 3-mer, its depth at POS per sample, FORMAT
-/// SITE_DP, left out when empty, and whether its genotype is missing whatever its reads.
+/// a partial lost to its MNV per sample, its reference 3-mer, and its depth at POS per sample,
+/// FORMAT SITE_DP, left out when empty.
 #[derive(Clone, Copy, Default)]
 struct Extras<'e> {
     merged: Option<&'e Merged<'e>>,
     moved: Option<&'e [i32]>,
     context: Option<&'e str>,
     site_dp: &'e [i32],
-    unknown_genotype: bool,
 }
 
 /// Builds one VCF record with a sample column per call, the tumor (or only) sample first; FILTER and
@@ -1160,15 +1153,9 @@ fn build_record<'w>(
 
     let genotypes = Values::<_, 4>::collect(
         GenotypeAllele::UnphasedMissing,
-        calls.iter().flat_map(|call| {
-            let missing = &[GenotypeAllele::UnphasedMissing; 2][..];
-            let alleles = if extras.unknown_genotype {
-                missing
-            } else {
-                call.gt_value(MIN_HOM_ALT_AF)
-            };
-            alleles.iter().copied()
-        }),
+        calls
+            .iter()
+            .flat_map(|call| call.gt_value(MIN_HOM_ALT_AF).iter().copied()),
     );
     variant.push_genotypes(&genotypes)?;
     variant.push_format_integer("AD", &each_allele(calls, TumorOnlyVariant::ad_value))?;

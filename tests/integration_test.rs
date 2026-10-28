@@ -852,16 +852,16 @@ mod tests {
     }
 
     #[test]
-    fn run_end_to_end_fills_a_position_with_only_alt_records_without_a_genotype()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn run_end_to_end_fills_no_position_that_has_a_record() -> Result<(), Box<dyn std::error::Error>>
+    {
         let rows = read_to_string("tests/calls.fill-gvcf.var")?;
         let (records, _) = site_depths(&rows, &["--fix-leaky-mnv", "--fill-gvcf"])?;
         assert_eq!(
-            at(&records, &["1100"]),
+            at(&records, &["1100", "1101"]),
             vec![
-                "chr1 1100 G . ROWS ./. 196 400 400",
                 "chr1 1100 G T . 0/1 196,30 400 400",
                 "chr1 1100 GG CA . 0/1 .,210 404 400",
+                "chr1 1101 G . ROWS 0/0 196 404 400",
             ]
         );
         Ok(())
@@ -947,7 +947,6 @@ mod tests {
             at(&records, &["1100", "1101", "1102"]),
             vec![
                 "chr1 1100 G . NO_READS ./. 0 0 0",
-                "chr1 1101 G . ROWS ./. 70 100 100",
                 "chr1 1101 GG TA . 0/1 .,30 100 100",
                 "chr1 1102 G . . 0/0 70 100 100",
             ]
