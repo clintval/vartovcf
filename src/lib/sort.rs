@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use spillsort::{Config, Merged, Sorter, key};
 
+use crate::fill::Fill;
 use crate::record::TumorOnlyVariant;
 
 /// The most memory the records being sorted are held in before they spill to the temporary
@@ -35,13 +36,14 @@ pub struct SortKey<'a> {
 }
 
 /// Which record of a call is written, ordered best first: one VarDict wrote before one filled in
-/// for a position without a record, then the first VarDict region's, then the most ALT reads in the
-/// tumor (or only) sample, then in all samples, then the most depth in the tumor, then VarDict's
+/// for a position without a record, a fill from VarDict's rows before one inside a deletion or MNV
+/// and that before one without reads, then the first VarDict region's, then the most ALT reads in
+/// the tumor (or only) sample, then in all samples, then the most depth in the tumor, then VarDict's
 /// lowest position, REF and ALT for the row, so the choice never depends on the order of the rows
-/// within a region.
+/// within a region, or on the order of the regions between fills of different kinds.
 #[derive(Clone, Copy, Debug)]
 pub struct Rank<'a> {
-    filled: bool,
+    fill: Option<Fill>,
     region: u64,
     tumor_reads: u64,
     reads: u64,
@@ -57,7 +59,7 @@ impl<'a> Rank<'a> {
     pub fn new(region: u64, calls: &[TumorOnlyVariant], row: &TumorOnlyVariant<'a>) -> Self {
         let reads = |call: &TumorOnlyVariant| call.alt_depth.max(0) as u64;
         Rank {
-            filled: false,
+            fill: None,
             region,
             tumor_reads: reads(&calls[0]),
             reads: calls.iter().map(reads).sum(),
@@ -68,10 +70,10 @@ impl<'a> Rank<'a> {
         }
     }
 
-    /// This rank for a record filled in for a position without one.
-    pub fn filled(self) -> Self {
+    /// This rank for a record filled in for a position without one, as this fill.
+    pub fn filled(self, fill: Fill) -> Self {
         Rank {
-            filled: true,
+            fill: Some(fill),
             ..self
         }
     }
@@ -98,7 +100,13 @@ impl RecordSorter {
         key::push_bytes(&mut self.key, call.alt_allele);
         key::push_uint(&mut self.key, call.end);
         let call_length = u32::try_from(self.key.len()).map_err(|_| describe_length())?;
-        key::push_uint(&mut self.key, u8::from(rank.filled));
+        let fill: u8 = match rank.fill {
+            None => 0,
+            Some(Fill::Rows) => 1,
+            Some(Fill::Spanned) => 2,
+            Some(Fill::NoReads) => 3,
+        };
+        key::push_uint(&mut self.key, fill);
         key::push_uint(&mut self.key, rank.region);
         key::push_uint(&mut self.key, u64::MAX - rank.tumor_reads);
         key::push_uint(&mut self.key, u64::MAX - rank.reads);
@@ -195,7 +203,7 @@ mod tests {
 
     fn rank(region: u64, tumor_reads: u64, tumor_depth: u64, start: u64) -> Rank<'static> {
         Rank {
-            filled: false,
+            fill: None,
             region,
             tumor_reads,
             reads: tumor_reads,
@@ -270,10 +278,34 @@ mod tests {
     fn test_writes_a_record_vardict_wrote_before_a_filled_one_of_its_call() {
         let call = key(0, 100, "A", "");
         let lines = ranked(&[
-            (call, rank(1, 0, 900, 100).filled(), "filled\n"),
+            (call, rank(1, 0, 900, 100).filled(Fill::Rows), "filled\n"),
             (call, rank(2, 0, 10, 100), "vardict\n"),
         ]);
         assert_eq!(lines, "vardict\n");
+    }
+
+    #[test]
+    fn test_writes_the_fill_that_knows_most_about_a_position_whatever_its_region() {
+        let call = key(0, 100, "A", "");
+        let lines = ranked(&[
+            (call, rank(1, 0, 0, 100).filled(Fill::NoReads), "no reads\n"),
+            (
+                call,
+                rank(2, 0, 280, 100).filled(Fill::Spanned),
+                "spanned\n",
+            ),
+            (call, rank(3, 0, 300, 100).filled(Fill::Rows), "rows\n"),
+        ]);
+        assert_eq!(lines, "rows\n");
+        let lines = ranked(&[
+            (call, rank(1, 0, 0, 100).filled(Fill::NoReads), "no reads\n"),
+            (
+                call,
+                rank(2, 0, 280, 100).filled(Fill::Spanned),
+                "spanned\n",
+            ),
+        ]);
+        assert_eq!(lines, "spanned\n");
     }
 
     #[test]

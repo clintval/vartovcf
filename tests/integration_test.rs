@@ -101,7 +101,7 @@ mod tests {
     #[rstest]
     #[case(&["--input", "tests/calls.tumor-normal.var", "--fill-gvcf"], "--fill-gvcf needs tumor-only input")]
     #[case(&["--input", "tests/calls.g.var", "--fill-gvcf", "--skip-non-variants"], "cannot be used with")]
-    #[case(&["--input", "tests/calls.g.var", "--fill-gvcf-bed", "tests/calls.fill-gvcf.bed"], "--fill-gvcf")]
+    #[case(&["--input", "tests/calls.g.var", "--fill-gvcf-bed", "tests/calls.fill-gvcf.bed"], "the following required arguments were not provided:\n  --fill-gvcf")]
     fn run_end_to_end_refuses_a_fill_it_cannot_make(
         #[case] args: &[&str],
         #[case] expected: &str,
@@ -119,6 +119,86 @@ mod tests {
             .code(1);
         let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
         assert!(stderr.contains(expected), "{stderr}");
+        Ok(())
+    }
+
+    /// Runs `--fill-gvcf` on an input with these options, returning the output, empty when the run
+    /// failed and removed it, and the error stream.
+    fn fill(input: &str, args: &[&str]) -> Result<(String, String), Box<dyn std::error::Error>> {
+        let output = NamedTempFile::new().expect("Cannot create temporary file!");
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        let run = cmd
+            .args([
+                "--reference",
+                "tests/reference.fa",
+                "--sample",
+                "dna00001",
+                "--fill-gvcf",
+            ])
+            .args([
+                "--input",
+                input,
+                "--output",
+                output.path().to_str().unwrap(),
+            ])
+            .args(args)
+            .output()?;
+        let written = read_to_string(output.path()).unwrap_or_default();
+        Ok((written, String::from_utf8(run.stderr)?))
+    }
+
+    #[test]
+    fn run_end_to_end_fills_from_a_1_based_bed_as_from_the_0_based_one()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let bed = NamedTempFile::new().expect("Cannot create temporary file!");
+        let lines: String = read_to_string("tests/calls.fill-gvcf.bed")?
+            .lines()
+            .map(|line| {
+                let fields: Vec<&str> = line.split('\t').collect();
+                let start: u64 = fields[1].parse().unwrap();
+                format!("{}\t{}\t{}\n", fields[0], start + 1, fields[2])
+            })
+            .collect();
+        std::fs::write(bed.path(), lines)?;
+        let bed = bed.path().to_str().unwrap();
+        let args = [
+            "--fix-leaky-mnv",
+            "--fill-gvcf-bed",
+            bed,
+            "--fill-gvcf-bed-one-based",
+        ];
+        let (output, _) = fill("tests/calls.fill-gvcf.var", &args)?;
+        assert_eq!(output, read_to_string("tests/calls.fill-gvcf.bed.vcf")?);
+
+        let (_, stderr) = fill("tests/calls.fill-gvcf.var", &args[..3])?;
+        assert!(
+            stderr.contains(&format!(
+                "VarDict's region chr1:1095-1112 is the region of no line of the BED file {bed:?} with --fill-gvcf-bed-extend 0: line 2 gives it with --fill-gvcf-bed-extend 0 --fill-gvcf-bed-one-based!"
+            )),
+            "{stderr}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn run_end_to_end_fills_overlapping_regions_alike_in_either_order()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let rows = read_to_string("tests/calls.fill-gvcf.overlap.var")?;
+        let (first, second): (Vec<&str>, Vec<&str>) =
+            rows.lines().partition(|row| row.contains("chr1:1108-1112"));
+        let swapped = NamedTempFile::new().expect("Cannot create temporary file!");
+        std::fs::write(
+            swapped.path(),
+            format!("{}\n{}\n", second.join("\n"), first.join("\n")),
+        )?;
+        let expected = read_to_string("tests/calls.fill-gvcf.overlap.vcf")?;
+        for input in [
+            "tests/calls.fill-gvcf.overlap.var",
+            swapped.path().to_str().unwrap(),
+        ] {
+            let (output, _) = fill(input, &[])?;
+            assert_eq!(output, expected, "{input}");
+        }
         Ok(())
     }
 

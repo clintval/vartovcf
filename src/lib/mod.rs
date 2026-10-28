@@ -14,7 +14,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::fai::{fasta_contigs_to_vcf_header, fasta_path_to_vcf_header};
-use crate::fill::{Fill, Filled, merge, read_bed, region_fills, segment_bounds, uncovered};
+use crate::fill::{
+    Bed, BedLayout, Fill, Filled, merge, parse_segment, read_bed, region_fills, uncovered,
+};
 use crate::filter::FilterThresholds;
 use crate::mnv::{Fold, LeakRate, LeakyMnvFix, Merged, Rule, fold_partials};
 use crate::normalize::{Normalized, normalize};
@@ -175,6 +177,8 @@ pub struct Options<'a> {
     pub fill_gvcf: bool,
     /// The BED file VarDict was given, whose regions VarDict wrote no row for are filled too.
     pub fill_gvcf_bed: Option<PathBuf>,
+    /// How VarDict turned the BED file's lines into its regions.
+    pub fill_gvcf_bed_layout: BedLayout,
     /// How to fold the partial rows of each MNV back into it, by their counts at a leak rate or
     /// by their reads, or `None` to not fold; see [`mnv`].
     pub fix_leaky_mnv: Option<LeakyMnvFix>,
@@ -237,11 +241,17 @@ fn convert<I: Read>(
     if options.fill_gvcf_bed.is_some() && !options.fill_gvcf {
         return Err("--fill-gvcf-bed requires --fill-gvcf!".into());
     }
+    if options.fill_gvcf && options.skip_non_variants {
+        return Err("--fill-gvcf cannot be used with --skip-non-variants!".into());
+    }
     let reference = Reference::from_path(&options.reference)?;
     let index = Index::for_longest_contig(reference.longest_contig_length());
     let bed = match &options.fill_gvcf_bed {
-        Some(path) => read_bed(path, |contig| reference.length(contig).ok())?,
-        None => Vec::new(),
+        Some(path) => {
+            let lines = read_bed(path, |contig| reference.length(contig).ok())?;
+            Some(Bed::new(path, options.fill_gvcf_bed_layout, lines))
+        }
+        None => None,
     };
 
     let mut reader = ReaderBuilder::new()
@@ -352,11 +362,18 @@ fn convert<I: Read>(
         if signal() != 0 {
             return Ok(None);
         }
-        if carry.get(5).is_none_or(|f| f.is_empty()) {
-            continue; // A row without a REF allele is one not to deserialize.
+        let field = |index: usize| carry.get(index).unwrap_or_default();
+        if field(column) != segment {
+            sink.add_region(&region, &segment, columns, ordinal)?;
+            region.clear();
+            ordinal += 1;
+            segment.clear();
+            segment.push_str(field(column));
         }
 
-        let field = |index: usize| carry.get(index).unwrap_or_default();
+        if field(5).is_empty() {
+            continue; // A row without a REF allele is one not to deserialize.
+        }
         if options.skip_non_variants && field(5).eq_ignore_ascii_case(field(6)) {
             continue;
         }
@@ -365,14 +382,6 @@ fn convert<I: Read>(
             let message = format!("Expected sample '{}' found '{}'!", row_sample, field(0));
             return Err(message.into());
         };
-
-        if field(column) != segment {
-            sink.add_region(&region, columns, ordinal)?;
-            region.clear();
-            ordinal += 1;
-            segment.clear();
-            segment.push_str(field(column));
-        }
         if options.fix_leaky_mnv.is_some() || options.fill_gvcf {
             region.push(compact(&carry, columns));
         } else {
@@ -381,7 +390,7 @@ fn convert<I: Read>(
             sink.add(&calls[..layout.samples()], status, None, ordinal)?;
         }
     }
-    sink.add_region(&region, columns, ordinal)?;
+    sink.add_region(&region, &segment, columns, ordinal)?;
     sink.fill_bed(ordinal + 1)?;
     if let Some(Folder::Reads(sources)) = &sink.folder {
         let summary = sources.summary;
@@ -465,13 +474,13 @@ struct Sink<'r> {
     progress: proglog::ProgLog,
 }
 
-/// The intervals of `--fill-gvcf-bed`, checked against the reference before any row is read, with
-/// the VarDict regions seen and the records written outside them, kept to fill the intervals'
-/// parts VarDict wrote no row for.
+/// The BED file of `--fill-gvcf-bed`, checked against the reference before any row is read, with
+/// the VarDict regions seen and the records written outside them, kept to fill the parts of its
+/// lines' regions VarDict wrote no row for.
 #[derive(Default)]
 struct Filler {
-    /// The BED file's intervals, as contig, 1-based start and inclusive end.
-    bed: Vec<(String, u64, u64)>,
+    /// The BED file of `--fill-gvcf-bed`, when given.
+    bed: Option<Bed>,
     /// Each contig's VarDict regions, as 1-based, inclusive ranges.
     segments: AHashMap<String, Vec<(u64, u64)>>,
     /// Each contig's positions of records written outside the VarDict region of their row.
@@ -605,6 +614,7 @@ impl Sink<'_> {
     fn add_region(
         &mut self,
         region: &[StringRecord],
+        segment: &str,
         columns: Columns,
         ordinal: u64,
     ) -> Result<(), Box<dyn error::Error>> {
@@ -683,31 +693,29 @@ impl Sink<'_> {
                 self.seen.insert(row[0].contig, call)?;
             }
         }
-        if self.filler.is_some() {
-            self.fill_region(&calls, &positions, ordinal)?;
+        if self.filler.is_some() && !segment.is_empty() {
+            self.fill_region(&calls, &positions, segment, ordinal)?;
         }
         Ok(())
     }
 
-    /// Fills each position of a region without a record from the region's rows, given the
-    /// positions of the records its rows were written as, here or in an earlier region; see
-    /// [`fill::region_fills`].
+    /// Fills each position of a VarDict region without a record from the region's rows, given the
+    /// positions of the records its rows were written as, here or in an earlier region, after
+    /// checking the region against the BED file of `--fill-gvcf-bed`; see [`fill::region_fills`].
     fn fill_region(
         &mut self,
         calls: &[&[TumorOnlyVariant]],
         positions: &[u64],
+        segment: &str,
         ordinal: u64,
     ) -> Result<(), Box<dyn error::Error>> {
-        let Some(first) = calls.first().map(|row| &row[0]) else {
-            return Ok(());
-        };
-        let contig = first.contig;
-        let (start, end) = segment_bounds(first.segment).ok_or_else(|| {
-            format!(
-                "Expected VarDict's region as chr:start-end, found '{}'!",
-                first.segment
-            )
+        let (contig, start, end) = parse_segment(segment).ok_or_else(|| {
+            format!("Expected VarDict's region as chr:start-end, found '{segment}'!")
         })?;
+        let filler = self.filler.as_mut().expect("Only called when filling!");
+        if let Some(bed) = &filler.bed {
+            bed.check(contig, start, end)?;
+        }
         let (start, end) = (start.max(1), end.min(self.reference.length(contig)?));
         let written: AHashSet<u64> = positions.iter().copied().collect();
         let tumor: Vec<&TumorOnlyVariant> = calls.iter().map(|row| &row[0]).collect();
@@ -746,10 +754,15 @@ impl Sink<'_> {
             .map(|(contig, ranges)| (contig.as_str(), merge(ranges.clone())))
             .collect();
         let none = AHashSet::new();
-        for (contig, start, end) in &filler.bed {
-            let ranges = covered.get(contig.as_str()).map_or(&[][..], Vec::as_slice);
+        for (contig, start, end) in filler.bed.iter().flat_map(Bed::regions) {
+            let length = self.reference.length(contig)? as i64;
+            let (start, end) = (start.max(1), end.min(length));
+            if start > end {
+                continue;
+            }
+            let ranges = covered.get(contig).map_or(&[][..], Vec::as_slice);
             let outside = filler.outside.get(contig).unwrap_or(&none);
-            for (from, to) in uncovered(*start, *end, ranges) {
+            for (from, to) in uncovered(start as u64, end as u64, ranges) {
                 for position in (from..=to).filter(|position| !outside.contains(position)) {
                     let filled = Filled {
                         position,
@@ -816,8 +829,11 @@ impl Sink<'_> {
         };
         self.line.clear();
         record.write(&mut self.line)?;
-        self.sorter
-            .push(key, Rank::new(region, calls, &call).filled(), &self.line)?;
+        self.sorter.push(
+            key,
+            Rank::new(region, calls, &call).filled(filled.fill),
+            &self.line,
+        )?;
         self.progress.record();
         match filled.fill {
             Fill::Rows => self.fills.rows += 1,
@@ -1307,6 +1323,26 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.to_string(), "--fill-gvcf-bed requires --fill-gvcf!");
+    }
+
+    #[test]
+    fn test_vartovcf_refuses_a_fill_that_skips_non_variant_rows() {
+        let input = BufReader::new(File::open("tests/calls.fill-gvcf.var").unwrap());
+        let error = vartovcf(
+            input,
+            &Options {
+                output: Some("/dev/null".into()),
+                reference: PathBuf::from("tests/reference.fa"),
+                fill_gvcf: true,
+                skip_non_variants: true,
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "--fill-gvcf cannot be used with --skip-non-variants!"
+        );
     }
 
     #[test]

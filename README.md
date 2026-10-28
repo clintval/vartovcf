@@ -204,9 +204,14 @@ In pileup mode (`-p`), VarDict writes no row for some positions of its regions. 
 | `SPANNED` | Inside a deletion or MNV, with no row VarDict counted there | REF 0, the spanning call's DP |
 | `NO_READS` | No row VarDict counted there, and no deletion or MNV spans it | 0 |
 
-Fills are decided in VarDict's coordinates, before normalization. A reference-only record with no REF reads has GT `./.`. `--fill-gvcf` holds each VarDict region's rows until it ends, and refuses tumor-normal input, as VarDict writes no reference-only rows for a pair.
+Fills are decided in VarDict's coordinates, before normalization, assuming VarDict ran without `-3`, which writes indels 3′ of where it counted them. A reference-only record with no REF reads has GT `./.`. `--fill-gvcf` holds each VarDict region's rows until it ends, and refuses tumor-normal input, as VarDict writes no reference-only rows for a pair.
 
-`--fill-gvcf-bed` takes the BED file VarDict was given (0-based, first three columns) and fills its intervals outside every VarDict region as `NO_READS`, for regions no read covers. Its contigs and ends are checked against `--reference` before any row is read.
+`--fill-gvcf-bed` takes the BED file VarDict was given, read from its first three columns, and fills each line's region outside every VarDict region as `NO_READS`, for regions no read covers. Its contig names must match `--reference` exactly, and its contigs and ends are checked before any row is read. Each line's region is built as VarDict builds it:
+
+- Widened on each side by `--fill-gvcf-bed-extend`, VarDict's `-x`.
+- Read with 0-based starts, or 1-based ones with `--fill-gvcf-bed-one-based`. VarDict reads 1-based starts unless it runs with `-z 1` or reads a 4-column BED without `-c`.
+
+A VarDict region that no line's region matches fails the run, naming the options that would match it.
 
 > [!NOTE]
 > A `NO_READS` position can have reads when:
