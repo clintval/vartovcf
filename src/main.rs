@@ -13,6 +13,7 @@ use log::*;
 use signal_hook::consts::{SIGINT, SIGTERM};
 use signal_hook::flag;
 
+use vartovcflib::fill::BedLayout;
 use vartovcflib::filter::FilterThresholds;
 use vartovcflib::mnv::{LeakRate, LeakyMnvFix};
 use vartovcflib::reads::{ReadOptions, parse_flags, split_bams};
@@ -48,6 +49,27 @@ struct Opt {
     /// Skip non-variant sites (where ref_allele == alt_allele)
     #[arg(long)]
     skip_non_variants: bool,
+
+    /// Write a reference-only record at each position of VarDict's regions (its chr:start-end column) that has none, so a gVCF of tumor-only -p output has a record at every position; INFO GVCF_FILL says how its depth was found. Holds each VarDict region's rows until it ends; see the README
+    #[arg(long, conflicts_with = "skip_non_variants")]
+    fill_gvcf: bool,
+
+    /// The BED file VarDict was given, read from its first three columns; with --fill-gvcf, each line's region outside every VarDict region is filled too, as positions without reads. Each VarDict region must be a line's region as VarDict builds it, or the run fails naming the options that give it; see the README
+    #[arg(long, value_name = "BED", requires = "fill_gvcf")]
+    fill_gvcf_bed: Option<PathBuf>,
+
+    /// The bases VarDict's -x widened each side of the BED file's regions by
+    #[arg(
+        long,
+        value_name = "N",
+        default_value_t = 0,
+        requires = "fill_gvcf_bed"
+    )]
+    fill_gvcf_bed_extend: u64,
+
+    /// Read the BED file's starts as 1-based, as VarDict does unless it runs with -z 1 or reads a 4-column BED without -c
+    #[arg(long, requires = "fill_gvcf_bed")]
+    fill_gvcf_bed_one_based: bool,
 
     /// Write INFO CONTEXT_3mer on every record: the reference bases at POS-1, POS and POS+1, uppercase, with N past either end of the contig
     #[arg(long)]
@@ -189,6 +211,12 @@ fn main() -> Result<(), Error> {
         normal_sample: opt.normal_sample.as_deref(),
         skip_non_variants: opt.skip_non_variants,
         context_3mer: opt.context_3mer,
+        fill_gvcf: opt.fill_gvcf,
+        fill_gvcf_bed: opt.fill_gvcf_bed,
+        fill_gvcf_bed_layout: BedLayout {
+            extend: opt.fill_gvcf_bed_extend,
+            one_based: opt.fill_gvcf_bed_one_based,
+        },
         fix_leaky_mnv: opt.fix_leaky_mnv.then(|| match &opt.reads {
             Some(bams) => LeakyMnvFix::Reads {
                 bams: split_bams(bams),
