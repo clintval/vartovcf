@@ -364,11 +364,13 @@ impl<'a> TumorOnlyVariant<'a> {
         }
     }
 
-    /// Return the "GT" formatted VCF field for this record: ./. without depth or ALT reads, 0/0 with
-    /// depth but no ALT reads, otherwise 1/1 at or above the minimum homozygous alternate allele
-    /// frequency and 0/1 below it.
+    /// Return the "GT" formatted VCF field for this record: ./. without depth or ALT reads, or for
+    /// a reference-only record without REF reads, 0/0 with depth but no ALT reads, otherwise 1/1 at
+    /// or above the minimum homozygous alternate allele frequency and 0/1 below it.
     pub fn gt_value(&self, min_hom_alt_af: f32) -> &[GenotypeAllele] {
-        if !self.has_alt_reads() && self.depth <= 0 {
+        let no_ref_reads = self.ref_allele == self.alt_allele
+            && self.ref_forward.saturating_add(self.ref_reverse) <= 0;
+        if !self.has_alt_reads() && (self.depth <= 0 || no_ref_reads) {
             &[
                 GenotypeAllele::UnphasedMissing,
                 GenotypeAllele::UnphasedMissing,
@@ -734,14 +736,16 @@ const MNV_MOVED_READS_DESCRIPTION: &str = r#"ALT reads moved from this partial r
 const MNV_PARTIAL_READS_DESCRIPTION: &str = r#"ALT reads the partial rows folded into this MNV (INFO MNV_PARTIALS) added to AD[1]; written only on records that absorbed partials."#;
 
 /// Create a VCF header for VarDict/VarDictJava in tumor-only mode, declaring the applied FILTER labels,
-/// the fields that describe the fold when MNV partials are folded, and the 3-mer context when asked.
+/// the fields that describe the fold when MNV partials are folded, and the 3-mer context and the
+/// filled positions when asked.
 pub fn tumor_only_header(
     sample: &str,
     filters: &FilterThresholds,
     fix: Option<&LeakyMnvFix>,
     context_3mer: bool,
+    fill_gvcf: bool,
 ) -> Header {
-    vcf_header(&[sample], filters, fix, context_3mer)
+    vcf_header(&[sample], filters, fix, context_3mer, fill_gvcf)
 }
 
 /// Create a VCF header for VarDict/VarDictJava run on a tumor and normal pair, declaring the applied
@@ -754,12 +758,12 @@ pub fn tumor_normal_header(
     fix: Option<&LeakyMnvFix>,
     context_3mer: bool,
 ) -> Header {
-    vcf_header(&[tumor, normal], filters, fix, context_3mer)
+    vcf_header(&[tumor, normal], filters, fix, context_3mer, false)
 }
 
 /// Create a VCF header for one tumor-only sample or a tumor and normal pair.
 #[rustfmt::skip]
-fn vcf_header(samples: &[&str], filters: &FilterThresholds, fix: Option<&LeakyMnvFix>, context_3mer: bool) -> Header {
+fn vcf_header(samples: &[&str], filters: &FilterThresholds, fix: Option<&LeakyMnvFix>, context_3mer: bool, fill_gvcf: bool) -> Header {
     let tumor_normal = samples.len() == 2;
     let source = [CARGO_PKG_NAME, CARGO_PKG_VERSION].join("-");
     let mut header = Header::builder()
@@ -785,11 +789,14 @@ fn vcf_header(samples: &[&str], filters: &FilterThresholds, fix: Option<&LeakyMn
     if context_3mer {
         add_info(&mut header, "CONTEXT_3mer", info::Number::Count(1), info::Type::String, r#"The reference bases at POS-1, POS and POS+1, uppercase even where the reference is soft-masked, with N for a base past either end of the contig. POS is the record's after normalization, so an insertion's or deletion's 3-mer is centered on its anchor base, the reference base before the inserted or deleted bases. Not reverse-complemented when the base at POS is a purine, and an IUPAC ambiguity code is kept as the reference spells it, even where REF writes the first base it stands for."#);
     }
+    if fill_gvcf {
+        add_info(&mut header, "GVCF_FILL", info::Number::Count(1), info::Type::String, r#"How --fill-gvcf found the depth of this reference-only record, written at a position of a VarDict region (its chr:start-end column) that had no record. ROWS: VarDict counted reads at the position in rows written elsewhere, as for a deletion it writes at the base before, or folded with --fix-leaky-mnv, and AD, ADF, ADR and DP are those of the one not labeled Complex, whose REF reads VarDict overcounts, with the most depth. SPANNED: the position lies inside a deletion or MNV with no read having a base VarDict counts there, so no read carries REF and DP is that of the spanning call with the most depth. NO_READS: no read covers the position, or it lies in a region of --fill-gvcf-bed that VarDict wrote no row for, and AD and DP are 0."#);
+    }
     add_filter(&mut header, "PASS", r#"The call failed none of the FILTER labels, which test the tumor (or only) sample; a call whose tumor sample has no reads of the ALT allele keeps no FILTER (.)."#);
     for (id, description) in filters.header_filters() {
         add_filter(&mut header, id, &description);
     }
-    add_format(&mut header, "GT", format::Number::Count(1), format::Type::String, &format!(r#"The genotype inferred from the allele frequency alone, since VarDict does not genotype: 1/1 when AF >= {MIN_HOM_ALT_AF}, 0/1 for any other call with ALT reads, 0/0 when no read carries the ALT allele or there is no ALT allele, and ./. when DP is 0 too."#));
+    add_format(&mut header, "GT", format::Number::Count(1), format::Type::String, &format!(r#"The genotype inferred from the allele frequency alone, since VarDict does not genotype: 1/1 when AF >= {MIN_HOM_ALT_AF}, 0/1 for any other call with ALT reads, 0/0 when no read carries the ALT allele or there is no ALT allele, and ./. when DP is 0 too, or when there is no ALT allele and no read carries REF."#));
     add_format(&mut header, "AD", format::Number::ReferenceAlternateBases, format::Type::Integer, r#"Read depth for REF then ALT as VarDict counts them: ALT is the reads carrying this allele and REF is the reads carrying the reference base at the variant's first internal base (the first deleted base for deletions, without insertion-carrying reads for insertions), or at the following base when an insertion at the same position raises DP. REF is missing for calls VarDict labels Complex, MNVs included, whatever their TYPE after trimming, as VarDict counts only their first base and can count a read as both, and REF is the only value when there is no ALT allele."#);
     add_format(&mut header, "ADF", format::Number::ReferenceAlternateBases, format::Type::Integer, r#"Reads on the forward strand (SAM flag 0x10 unset) supporting REF then ALT, the forward half of AD as VarDict counts it: REF is counted where AD's is (sometimes the following base), is missing where AD's is and is the only value when there is no ALT allele. When VarDict runs with -u, overlapping mates count only through the reverse read."#);
     add_format(&mut header, "ADR", format::Number::ReferenceAlternateBases, format::Type::Integer, r#"Reads on the reverse strand (SAM flag 0x10 set) supporting REF then ALT, the reverse half of AD as VarDict counts it: REF is counted where AD's is (sometimes the following base), is missing where AD's is and is the only value when there is no ALT allele. When VarDict runs with -u, overlapping mates count only through the reverse read."#);
@@ -1325,6 +1332,26 @@ mod tests {
     }
 
     #[rstest]
+    #[case("G", "G", (0, 0), [GenotypeAllele::UnphasedMissing, GenotypeAllele::UnphasedMissing])]
+    #[case("G", "G", (0, 1), [GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(0)])]
+    #[case("G", "A", (0, 0), [GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(0)])]
+    fn test_tumor_only_variant_gt_value_of_a_reference_only_record_without_ref_reads(
+        variants: Vec<TumorOnlyVariant<'static>>,
+        #[case] ref_allele: &'static str,
+        #[case] alt_allele: &'static str,
+        #[case] ref_reads: (i32, i32),
+        #[case] expected: [GenotypeAllele; 2],
+    ) {
+        let mut variant = variants.into_iter().nth(2).unwrap();
+        variant.ref_allele = ref_allele;
+        variant.alt_allele = alt_allele;
+        variant.alt_depth = 0;
+        variant.depth = 10;
+        (variant.ref_forward, variant.ref_reverse) = ref_reads;
+        assert_eq!(variant.gt_value(MIN_HOM_ALT_AF), &expected);
+    }
+
+    #[rstest]
     #[rustfmt::skip]
     fn test_tumor_only_variant_interval(variants: Vec<TumorOnlyVariant>) {
         let expected = [
@@ -1343,7 +1370,8 @@ mod tests {
 
     #[test]
     fn test_header_is_written_as_vcf_4_2_with_the_source_last() {
-        let header = tumor_only_header("dna00001", &FilterThresholds::default(), None, false);
+        let header =
+            tumor_only_header("dna00001", &FilterThresholds::default(), None, false, false);
         let text = String::from_utf8(crate::vcf::header_bytes(&header).unwrap()).unwrap();
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines[0], "##fileformat=VCFv4.2");
@@ -1355,7 +1383,8 @@ mod tests {
 
     #[test]
     fn test_tumor_only_header() {
-        let header = tumor_only_header("dna00001", &FilterThresholds::default(), None, false);
+        let header =
+            tumor_only_header("dna00001", &FilterThresholds::default(), None, false, false);
         let file = NamedTempFile::new().expect("Cannot create temporary file!");
         let (header, text) = read_back(&header, &file);
         let records: Vec<&str> = text.lines().filter(|line| line.starts_with("##")).collect();
@@ -1537,7 +1566,7 @@ mod tests {
     ) {
         let filters = FilterThresholds::default();
         for header in [
-            tumor_only_header("dna00001", &filters, None, context_3mer),
+            tumor_only_header("dna00001", &filters, None, context_3mer, false),
             tumor_normal_header("T", "N", &filters, None, context_3mer),
         ] {
             let declared = header
@@ -1546,5 +1575,26 @@ mod tests {
                 .map(|info| (info.ty(), info.number()));
             assert_eq!(declared, expected);
         }
+    }
+
+    #[rstest]
+    #[case(false, None)]
+    #[case(true, Some((info::Type::String, info::Number::Count(1))))]
+    fn test_header_declares_the_gvcf_fill_only_when_asked(
+        #[case] fill_gvcf: bool,
+        #[case] expected: Option<(info::Type, info::Number)>,
+    ) {
+        let header = tumor_only_header(
+            "dna00001",
+            &FilterThresholds::default(),
+            None,
+            false,
+            fill_gvcf,
+        );
+        let declared = header
+            .infos()
+            .get("GVCF_FILL")
+            .map(|info| (info.ty(), info.number()));
+        assert_eq!(declared, expected);
     }
 }

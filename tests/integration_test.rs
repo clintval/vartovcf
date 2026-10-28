@@ -73,6 +73,55 @@ mod tests {
         Ok(())
     }
 
+    #[rstest]
+    #[case(&[], "tests/calls.fill-gvcf.vcf")]
+    #[case(&["--fill-gvcf-bed", "tests/calls.fill-gvcf.bed"], "tests/calls.fill-gvcf.bed.vcf")]
+    #[rustfmt::skip]
+    fn run_end_to_end_fills_each_position_without_a_record(
+        #[case] bed: &[&str],
+        #[case] expected: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let output = NamedTempFile::new().expect("Cannot create temporary file!");
+        let output = output.path().to_str().unwrap();
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        cmd
+            .arg("--reference").arg("tests/reference.fa")
+            .arg("--sample").arg("dna00001")
+            .arg("--input").arg("tests/calls.fill-gvcf.var")
+            .arg("--output").arg(output)
+            .arg("--fix-leaky-mnv")
+            .arg("--fill-gvcf")
+            .args(bed)
+            .unwrap().assert().success();
+
+        assert!(diff(output, expected));
+        Ok(())
+    }
+
+    #[rstest]
+    #[case(&["--input", "tests/calls.tumor-normal.var", "--fill-gvcf"], "--fill-gvcf needs tumor-only input")]
+    #[case(&["--input", "tests/calls.g.var", "--fill-gvcf", "--skip-non-variants"], "cannot be used with")]
+    #[case(&["--input", "tests/calls.g.var", "--fill-gvcf-bed", "tests/calls.fill-gvcf.bed"], "--fill-gvcf")]
+    fn run_end_to_end_refuses_a_fill_it_cannot_make(
+        #[case] args: &[&str],
+        #[case] expected: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let reference = if args[1].contains("tumor-normal") {
+            "tests/tumor-normal.fa"
+        } else {
+            "tests/reference.fa"
+        };
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        let assert = cmd
+            .args(["--reference", reference, "--output", "/dev/null"])
+            .args(args)
+            .assert()
+            .code(1);
+        let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+        assert!(stderr.contains(expected), "{stderr}");
+        Ok(())
+    }
+
     #[test]
     #[rustfmt::skip]
     fn run_end_to_end_on_skippable_records() -> Result<(), Box<dyn std::error::Error>> {

@@ -49,6 +49,14 @@ struct Opt {
     #[arg(long)]
     skip_non_variants: bool,
 
+    /// Write a reference-only record at each position of VarDict's regions (its chr:start-end column) that has none, so a gVCF of tumor-only -p output has a record at every position; INFO GVCF_FILL says how its depth was found. Holds each VarDict region's rows until it ends; see the README
+    #[arg(long, conflicts_with = "skip_non_variants")]
+    fill_gvcf: bool,
+
+    /// The BED file VarDict was given, read as 0-based from its first three columns; with --fill-gvcf, the parts of its regions outside every VarDict region are filled too, as positions without reads
+    #[arg(long, value_name = "BED", requires = "fill_gvcf")]
+    fill_gvcf_bed: Option<PathBuf>,
+
     /// Write INFO CONTEXT_3mer on every record: the reference bases at POS-1, POS and POS+1, uppercase, with N past either end of the contig
     #[arg(long)]
     context_3mer: bool,
@@ -189,6 +197,8 @@ fn main() -> Result<(), Error> {
         normal_sample: opt.normal_sample.as_deref(),
         skip_non_variants: opt.skip_non_variants,
         context_3mer: opt.context_3mer,
+        fill_gvcf: opt.fill_gvcf,
+        fill_gvcf_bed: opt.fill_gvcf_bed,
         fix_leaky_mnv: opt.fix_leaky_mnv.then(|| match &opt.reads {
             Some(bams) => LeakyMnvFix::Reads {
                 bams: split_bams(bams),

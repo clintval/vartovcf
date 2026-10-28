@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::fai::{fasta_contigs_to_vcf_header, fasta_path_to_vcf_header};
+use crate::fill::{Fill, Filled, merge, read_bed, region_fills, segment_bounds, uncovered};
 use crate::filter::FilterThresholds;
 use crate::mnv::{Fold, LeakRate, LeakyMnvFix, Merged, Rule, fold_partials};
 use crate::normalize::{Normalized, normalize};
@@ -28,6 +29,7 @@ use crate::sort::{Rank, RecordSorter, SortKey, resolve_tmp_dir};
 use crate::vcf::{GenotypeAllele, Record, RecordWriter, header_bytes};
 
 pub mod fai;
+pub mod fill;
 pub mod filter;
 pub mod fisher;
 pub mod hicnt;
@@ -169,6 +171,10 @@ pub struct Options<'a> {
     pub skip_non_variants: bool,
     /// Write INFO CONTEXT_3mer, the reference bases at POS-1, POS and POS+1, on every record.
     pub context_3mer: bool,
+    /// Write a reference-only record at each position of VarDict's regions without one; see [`fill`].
+    pub fill_gvcf: bool,
+    /// The BED file VarDict was given, whose regions VarDict wrote no row for are filled too.
+    pub fill_gvcf_bed: Option<PathBuf>,
     /// How to fold the partial rows of each MNV back into it, by their counts at a leak rate or
     /// by their reads, or `None` to not fold; see [`mnv`].
     pub fix_leaky_mnv: Option<LeakyMnvFix>,
@@ -257,6 +263,9 @@ fn convert<I: Read>(
     )?;
     let columns = columns.unwrap_or(Columns::new(Layout::TumorOnly, false));
     let layout = columns.layout;
+    if options.fill_gvcf && layout == Layout::TumorNormal {
+        return Err("--fill-gvcf needs tumor-only input: VarDict writes no reference-only rows for a tumor-normal pair, so a position without a variant cannot be told from one without reads!".into());
+    }
 
     let filters = &options.filters;
     let mut header = match &normal_sample {
@@ -272,6 +281,7 @@ fn convert<I: Read>(
             filters,
             options.fix_leaky_mnv.as_ref(),
             options.context_3mer,
+            options.fill_gvcf,
         ),
     };
 
@@ -312,6 +322,8 @@ fn convert<I: Read>(
         context_3mer: options.context_3mer,
         folder,
         folds: FoldCounts::default(),
+        filler: options.fill_gvcf.then(Filler::default),
+        fills: FillCounts::default(),
         progress: ProgLogBuilder::new()
             .name("main")
             .verb("Processed")
@@ -351,7 +363,7 @@ fn convert<I: Read>(
             segment.clear();
             segment.push_str(field(column));
         }
-        if options.fix_leaky_mnv.is_some() {
+        if options.fix_leaky_mnv.is_some() || options.fill_gvcf {
             region.push(compact(&carry, columns));
         } else {
             columns.drop_fisher_columns(&mut carry, &mut scratch);
@@ -360,6 +372,9 @@ fn convert<I: Read>(
         }
     }
     sink.add_region(&region, columns, ordinal)?;
+    if let Some(bed) = &options.fill_gvcf_bed {
+        sink.fill_bed(bed, ordinal + 1)?;
+    }
     if let Some(Folder::Reads(sources)) = &sink.folder {
         let summary = sources.summary;
         info!(
@@ -387,6 +402,16 @@ fn convert<I: Read>(
         info!(
             "Folded {} partial row(s) whole and {} in part into {} MNV(s), moving {} ALT read(s).",
             folds.whole, folds.split, folds.mnvs, folds.reads
+        );
+    }
+    if sink.filler.is_some() {
+        let fills = sink.fills;
+        info!(
+            "Filled {} position(s) without a record: {} from VarDict's rows, {} inside a deletion or MNV and {} with no reads.",
+            fills.rows + fills.spanned + fills.no_reads,
+            fills.rows,
+            fills.spanned,
+            fills.no_reads
         );
     }
 
@@ -427,7 +452,27 @@ struct Sink<'r> {
     context_3mer: bool,
     folder: Option<Folder>,
     folds: FoldCounts,
+    filler: Option<Filler>,
+    fills: FillCounts,
     progress: proglog::ProgLog,
+}
+
+/// The VarDict regions seen and the records written outside them, kept to fill a BED file's
+/// regions VarDict wrote no row for.
+#[derive(Default)]
+struct Filler {
+    /// Each contig's VarDict regions, as 1-based, inclusive ranges.
+    segments: AHashMap<String, Vec<(u64, u64)>>,
+    /// Each contig's positions of records written outside the VarDict region of their row.
+    outside: AHashMap<String, AHashSet<u64>>,
+}
+
+/// How many positions were filled, by how their depth was found.
+#[derive(Clone, Copy, Debug, Default)]
+struct FillCounts {
+    rows: usize,
+    spanned: usize,
+    no_reads: usize,
 }
 
 /// How many rows the folds touched.
@@ -457,10 +502,12 @@ impl Sink<'_> {
         region: u64,
     ) -> Result<(), Box<dyn error::Error>> {
         let normalized = normalize(&mut self.reference, &calls[0])?;
-        self.add_normalized(calls, &normalized, status, merged, region, &calls[0])
+        self.add_normalized(calls, &normalized, status, merged, region, &calls[0])?;
+        Ok(())
     }
 
-    /// Adds a record already normalized, ranked by its calls and by the row it was written for.
+    /// Adds a record already normalized, ranked by its calls and by the row it was written for,
+    /// returning whether the writer kept it.
     fn add_normalized(
         &mut self,
         calls: &[TumorOnlyVariant],
@@ -469,7 +516,7 @@ impl Sink<'_> {
         merged: Option<&Merged>,
         region: u64,
         row: &TumorOnlyVariant,
-    ) -> Result<(), Box<dyn error::Error>> {
+    ) -> Result<bool, Box<dyn error::Error>> {
         let written: Vec<TumorOnlyVariant> =
             calls.iter().map(|call| normalized.apply(call)).collect();
         let context = self.context(&written[0])?;
@@ -483,7 +530,7 @@ impl Sink<'_> {
             context.as_deref(),
         )?
         else {
-            return Ok(());
+            return Ok(false);
         };
         let key = sort_key(record.rid(), normalized);
         self.line.clear();
@@ -491,10 +538,11 @@ impl Sink<'_> {
         let rank = Rank::new(region, calls, row);
         self.sorter.push(key, rank, &self.line)?;
         self.progress.record();
-        Ok(())
+        Ok(true)
     }
 
-    /// Adds a partial row that kept some reads while `moved` reads per sample went to its MNV.
+    /// Adds a partial row that kept some reads while `moved` reads per sample went to its MNV,
+    /// returning whether the writer kept it.
     fn add_split(
         &mut self,
         kept: &[TumorOnlyVariant],
@@ -502,7 +550,7 @@ impl Sink<'_> {
         normalized: &Normalized,
         status: Option<&str>,
         region: u64,
-    ) -> Result<(), Box<dyn error::Error>> {
+    ) -> Result<bool, Box<dyn error::Error>> {
         let written: Vec<TumorOnlyVariant> =
             kept.iter().map(|call| normalized.apply(call)).collect();
         let context = self.context(&written[0])?;
@@ -516,7 +564,7 @@ impl Sink<'_> {
             context.as_deref(),
         )?
         else {
-            return Ok(());
+            return Ok(false);
         };
         let key = sort_key(record.rid(), normalized);
         self.line.clear();
@@ -524,7 +572,7 @@ impl Sink<'_> {
         let rank = Rank::new(region, kept, &kept[0]);
         self.sorter.push(key, rank, &self.line)?;
         self.progress.record();
-        Ok(())
+        Ok(true)
     }
 
     /// The reference's 3-mer around a normalized call's POS, when asked for.
@@ -577,6 +625,7 @@ impl Sink<'_> {
                 fold_partials(&calls, &written, Rule::Reads(&fates))
             }
         };
+        let mut positions: Vec<u64> = Vec::with_capacity(calls.len());
         for (row, fold) in folds.into_iter().enumerate() {
             match &fold {
                 Fold::Keep => {}
@@ -591,8 +640,8 @@ impl Sink<'_> {
                         .sum::<i64>();
                 }
             }
-            match fold {
-                _ if written[row] => {}
+            let added = match fold {
+                _ if written[row] => true,
                 Fold::Keep => self.add_normalized(
                     calls[row],
                     &normalized[row],
@@ -612,13 +661,168 @@ impl Sink<'_> {
                 Fold::Split {
                     calls: kept, moved, ..
                 } => self.add_split(&kept, &moved, &normalized[row], statuses[row], ordinal)?,
-                Fold::Into(_) => {}
+                Fold::Into(_) => false,
+            };
+            if added {
+                positions.push(normalized[row].start);
             }
         }
         for (row, call) in calls.iter().zip(&normalized) {
             if is_substitution(call) {
                 self.seen.insert(row[0].contig, call)?;
             }
+        }
+        if self.filler.is_some() {
+            self.fill_region(&calls, &positions, ordinal)?;
+        }
+        Ok(())
+    }
+
+    /// Fills each position of a region without a record from the region's rows, given the
+    /// positions of the records its rows were written as, here or in an earlier region; see
+    /// [`fill::region_fills`].
+    fn fill_region(
+        &mut self,
+        calls: &[&[TumorOnlyVariant]],
+        positions: &[u64],
+        ordinal: u64,
+    ) -> Result<(), Box<dyn error::Error>> {
+        let Some(first) = calls.first().map(|row| &row[0]) else {
+            return Ok(());
+        };
+        let contig = first.contig;
+        let (start, end) = segment_bounds(first.segment).ok_or_else(|| {
+            format!(
+                "Expected VarDict's region as chr:start-end, found '{}'!",
+                first.segment
+            )
+        })?;
+        let (start, end) = (start.max(1), end.min(self.reference.length(contig)?));
+        let written: AHashSet<u64> = positions.iter().copied().collect();
+        let tumor: Vec<&TumorOnlyVariant> = calls.iter().map(|row| &row[0]).collect();
+        let fills = region_fills(&tumor, &written, start, end);
+        let filler = self.filler.as_mut().expect("Only called when filling!");
+        filler
+            .segments
+            .entry(contig.to_string())
+            .or_default()
+            .push((start, end));
+        let outside = written
+            .iter()
+            .filter(|&&position| position < start || position > end);
+        for &position in outside {
+            filler
+                .outside
+                .entry(contig.to_string())
+                .or_default()
+                .insert(position);
+        }
+        for filled in fills {
+            self.add_fill(contig, filled, ordinal)?;
+        }
+        Ok(())
+    }
+
+    /// Fills each position of a BED file's regions outside every VarDict region and every record as
+    /// a position without reads, ranked as from the region with this ordinal.
+    fn fill_bed(&mut self, bed: &Path, ordinal: u64) -> Result<(), Box<dyn error::Error>> {
+        let intervals = read_bed(bed)?;
+        let filler = self
+            .filler
+            .take()
+            .expect("--fill-gvcf-bed requires --fill-gvcf!");
+        let covered: AHashMap<&str, Vec<(u64, u64)>> = filler
+            .segments
+            .iter()
+            .map(|(contig, ranges)| (contig.as_str(), merge(ranges.clone())))
+            .collect();
+        let none = AHashSet::new();
+        for (contig, start, end) in intervals {
+            let length = self.reference.length(&contig).map_err(|_| {
+                format!("Contig '{contig}' of the BED file {bed:?} is not in the reference!")
+            })?;
+            if end > length {
+                return Err(format!(
+                    "The BED region {contig}:{start}-{end} ends past {contig}, which has {length} bases in the reference!"
+                )
+                .into());
+            }
+            let ranges = covered.get(contig.as_str()).map_or(&[][..], Vec::as_slice);
+            let outside = filler.outside.get(&contig).unwrap_or(&none);
+            for (from, to) in uncovered(start, end, ranges) {
+                for position in (from..=to).filter(|position| !outside.contains(position)) {
+                    let filled = Filled {
+                        position,
+                        fill: Fill::NoReads,
+                        ref_forward: 0,
+                        ref_reverse: 0,
+                        depth: 0,
+                    };
+                    self.add_fill(&contig, filled, ordinal)?;
+                }
+            }
+        }
+        self.filler = Some(filler);
+        Ok(())
+    }
+
+    /// Adds a reference-only record filled in at a position without one, ranked below one VarDict
+    /// wrote there.
+    fn add_fill(
+        &mut self,
+        contig: &str,
+        filled: Filled,
+        region: u64,
+    ) -> Result<(), Box<dyn error::Error>> {
+        let base = [self.reference.base(contig, filled.position - 1)?];
+        let base = std::str::from_utf8(&base).map_err(|_| {
+            format!(
+                "Expected a reference base at {contig}:{}, found byte {}!",
+                filled.position, base[0]
+            )
+        })?;
+        let call = TumorOnlyVariant {
+            contig,
+            start: filled.position,
+            end: filled.position,
+            ref_allele: base,
+            alt_allele: base,
+            depth: filled.depth,
+            ref_forward: filled.ref_forward,
+            ref_reverse: filled.ref_reverse,
+            ..TumorOnlyVariant::default()
+        };
+        let calls = std::slice::from_ref(&call);
+        let context = self.context(&call)?;
+        let Some(mut record) = build_record(
+            &mut self.records,
+            calls,
+            None,
+            self.filters,
+            None,
+            None,
+            context.as_deref(),
+        )?
+        else {
+            return Ok(());
+        };
+        record.push_info_string("GVCF_FILL", filled.fill.as_str())?;
+        let key = SortKey {
+            rid: record.rid(),
+            pos: filled.position - 1,
+            ref_allele: base.as_bytes(),
+            alt_allele: &[],
+            end: filled.position,
+        };
+        self.line.clear();
+        record.write(&mut self.line)?;
+        self.sorter
+            .push(key, Rank::new(region, calls, &call).filled(), &self.line)?;
+        self.progress.record();
+        match filled.fill {
+            Fill::Rows => self.fills.rows += 1,
+            Fill::Spanned => self.fills.spanned += 1,
+            Fill::NoReads => self.fills.no_reads += 1,
         }
         Ok(())
     }
