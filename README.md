@@ -18,16 +18,11 @@ mamba install vartovcf
 
 ## Features
 
-- Writes VCF compliant with the v4.2 and v4.3 specifications
-- Output is always coordinate sorted and normalized
-- Writes each call once, even where VarDict writes it twice
-- Bgzips and indexes its output as `tabix -p vcf` does
-- Reads tumor-only and tumor-normal output
-- Runs the strand-bias Fisher test itself, so VarDictJava's `-fisher` is optional
+- Output is always coordinate sorted and normalized, and indexed when bgzipped
+- Reads tumor-only and tumor-normal output, see [Tumor-Normal](#tumor-normal)
 - Applies FILTER labels only when asked, see [Filters](#filters)
-- Writes each position's depth on every record, see [Site Depth](#site-depth)
 - Optionally folds an MNV's partial rows back into it, see [Leaky MNVs](#leaky-mnvs)
-- Optionally writes a record at every position of a gVCF, see [gVCFs](#gvcfs)
+- Writes gVCFs with a record and depth at every position, see [gVCFs](#gvcfs)
 
 ## Quick Start
 
