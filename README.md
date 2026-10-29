@@ -147,16 +147,13 @@ Here reads 3 and 4 leave the partial alleles `G>C` and `G>A` beside the MNV `GG>
 
 With `--fix-leaky-mnv`, each partial allele folds back into its MNV, whose record sums the ALT reads, recomputes `AF`, `GT`, FILTER and the Fisher p-values, and counts what it took in INFO `MNV_PARTIALS` and FORMAT `MNV_PARTIAL_READS`.
 
-> [!IMPORTANT]
-> Give `--fix-leaky-mnv` the BAM VarDict read with `--reads` whenever you can.
-> Without the BAM, partial alleles are judged by their read count alone, so a real allele with few reads beside a deep MNV folds too.
-
 > [!WARNING]
 > VarDictJava folds a partial allele starting after the MNV's first base whenever the partial has fewer reads than the MNV, even an SNV of another haplotype, and writes no row for the SNV, so `--fix-leaky-mnv` cannot undo it.
 
 #### Deciding Partials by Their Reads
 
-With `--reads`, each read template of a partial allele is examined at the MNV's changed positions outside the partial allele:
+Give `--fix-leaky-mnv` the BAM VarDict read with `--reads` whenever you can.
+Each read template of a partial allele is then examined at the MNV's changed positions outside the partial allele:
 
 ![Deciding a partial allele by its reads: each template of the partial allele G>C is examined at the MNV's other changed base. Template 1's mate reads the MNV's A, so read 1 moves to the MNV; template 2's mate reads the reference G, so template 2 is another allele and stays; template 3 has no read of the base, so it is unknown and stays, since template 2 is another allele.](.github/img/reads-decision.svg)
 
@@ -182,6 +179,7 @@ Give tumor-normal BAMs as VarDict takes them, `"tumor.bam|normal.bam"`, and set 
 #### Deciding Partials by Their Count
 
 Without `--reads`, a partial allele folds when it carries the MNV's ALT bases and has few enough reads to be the MNV's leakage at `--leaky-mnv-rate`, 0.05 by default.
+Judged by its count alone, a real allele with few reads beside a deep MNV folds too.
 At that rate, an MNV folds a 1-read partial allele once the MNV has 2 reads, a 2-read partial allele at 6, and a 10-read partial allele at 101.
 On this repository's test data, `GG>CA` has a 6-read and a 4-read partial allele beside `G>T`, another allele:
 
