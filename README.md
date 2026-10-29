@@ -12,295 +12,286 @@ Convert variants from VarDict/VarDictJava into VCF v4.2 format.
 
 Install with the Conda or Mamba package manager after setting your [Bioconda channels](https://bioconda.github.io/#usage):
 
-```bash
-❯ mamba install vartovcf
+```console
+mamba install vartovcf
 ```
 
 Or build from source with Rust 1.89 or newer:
 
-```bash
-❯ cargo install --locked --git https://github.com/clintval/vartovcf
+```console
+cargo install --locked --git https://github.com/clintval/vartovcf
 ```
 
-### Features
+## Features
 
-- Sorts in bounded memory, where VarDict's Perl script holds every record, see [Sorting](#sorting)
-- Indexes a bgzipped output file as `tabix -p vcf` does, see [Output](#output)
-- Stays lean on purpose: converts formats and applies FILTER labels only when asked
 - Writes VCF compliant with the v4.2 and v4.3 specifications
-- Normalizes like `bcftools norm -f` and writes uppercase alleles, see [Normalization](#normalization)
-- Reads tumor-only and tumor-normal output, detecting which from the first row
-- Optionally folds an MNV's partial rows back into it, see [Leaky MNVs](#leaky-mnvs)
+- Output is always coordinate sorted and normalized
+- Writes each call once, even where VarDict writes it twice
+- Bgzips and indexes its output as `tabix -p vcf` does
+- Reads tumor-only and tumor-normal output
 - Runs the strand-bias Fisher test itself, so VarDictJava's `-fisher` is optional
-- Optionally writes each record's reference 3-mer, see [Sequence context](#sequence-context)
-- Optionally fills every position of VarDict's regions in a gVCF, see [Filling a gVCF](#filling-a-gvcf)
-- Writes each position's depth on every record there, see [Site depth](#site-depth)
+- Applies FILTER labels only when asked, see [Filters](#filters)
+- Writes each position's depth on every record, see [Site Depth](#site-depth)
+- Optionally folds an MNV's partial rows back into it, see [Leaky MNVs](#leaky-mnvs)
+- Optionally writes a record at every position of a gVCF, see [gVCFs](#gvcfs)
 
-### Example Usage
+## Quick Start
 
-Replace the call to `var2vcf_valid.pl` with `vartovcf` in a typical VarDictJava stream like the one below. The `--filter-*` values are the thresholds `var2vcf_valid.pl` applies by default, though its rules around them are not all reproduced; leave out any you don't want, and the label is not applied.
+Replace the call to `var2vcf_valid.pl` with `vartovcf`:
 
-```bash
-❯ vardict-java \
+```console
+vardict-java \
     -b input.bam \
     -G hg38.fa \
     -N dna00001 \
     -c1 -S2 -E3 -g4 -f0.05 \
     calling-intervals.bed \
-  | vartovcf --reference hg38.fa --sample dna00001 \
-      --filter-near-read-end 8 \
-      --filter-low-mean-mapq 10 \
-      --filter-homopolymer-indel 13 --filter-homopolymer-indel-max-af 0.275 \
-      --filter-tandem-repeat-indel 13 --filter-tandem-repeat-indel-max-af 0.2 \
-      --filter-high-mean-mismatches 5.25 \
-      --filter-same-read-position 0.35 \
-      --filter-strand-bias 0.01 --filter-strand-bias-min-odds-ratio 5 --filter-strand-bias-max-af 0.25 \
+  | vartovcf \
+      --reference hg38.fa \
+      --sample dna00001 \
       --output variants.vcf.gz
 ```
 
-In pileup mode (`-p`) VarDict keeps every candidate and switches off its own call rules. Add `LOW_AF`, `LOW_QMEAN` and `LOW_HICNT` to mark the candidates its `-f`, `-q` and `-r` rules would have dropped, and `LOW_DP` for the ones below the depth `var2vcf_valid.pl`'s `-d` would drop, here with their defaults (`-f` as given, `-q 22.5`, `-r 2`, `-d 3`):
+The reference must be the one VarDict ran with.
+An output ending in `.gz` is bgzipped and indexed; without `--output`, plain VCF goes to standard output.
 
-```bash
-❯ vardict-java -p ... calling-intervals.bed \
-  | vartovcf --reference hg38.fa --sample dna00001 --skip-non-variants \
-      --filter-near-read-end 8 \
-      --filter-low-mean-mapq 10 \
-      --filter-homopolymer-indel 13 --filter-homopolymer-indel-max-af 0.275 \
-      --filter-tandem-repeat-indel 13 --filter-tandem-repeat-indel-max-af 0.2 \
-      --filter-high-mean-mismatches 5.25 \
-      --filter-same-read-position 0.35 \
-      --filter-strand-bias 0.01 --filter-strand-bias-min-odds-ratio 5 --filter-strand-bias-max-af 0.25 \
-      --filter-low-af 0.05 \
-      --filter-low-qmean 22.5 \
-      --filter-low-hicnt 2 \
-      --filter-low-dp 3 \
-      --output candidates.vcf.gz
+## Filters
+
+No FILTER label is applied unless its option is given.
+These are the thresholds `var2vcf_valid.pl` applies by default, though not every rule around them is reproduced:
+
+```console
+vartovcf \
+    --reference hg38.fa \
+    --sample dna00001 \
+    --filter-near-read-end 8 \
+    --filter-low-mean-mapq 10 \
+    --filter-homopolymer-indel 13 --filter-homopolymer-indel-max-af 0.275 \
+    --filter-tandem-repeat-indel 13 --filter-tandem-repeat-indel-max-af 0.2 \
+    --filter-high-mean-mismatches 5.25 \
+    --filter-same-read-position 0.35 \
+    --filter-strand-bias 0.01 --filter-strand-bias-min-odds-ratio 5 --filter-strand-bias-max-af 0.25 \
+    --output variants.vcf.gz
 ```
 
-### Tumor-normal
+In pileup mode (`-p`), VarDict keeps every candidate, so add these to label the ones its `-f`, `-q` and `-r`, and `var2vcf_valid.pl`'s `-d`, would drop:
 
-Replace `var2vcf_paired.pl` the same way. VarDictJava writes the sample names into its output: both as `tumor|normal` when given `-N "tumor|normal"` with a BED file of regions, only the tumor's with `-R`, and without `-N` a name derived from the BAM paths, such as `T.bam|N` from relative paths or just `T` from absolute ones. `vartovcf` reads them from there, but names given with `--sample` and `--normal-sample`, or `--sample "tumor|normal"`, take their place with a warning when they differ; give them so empty input still gets a header for both samples. The `--filter-*` options are the same and test the tumor sample.
+```console
+    --filter-low-af 0.05 \
+    --filter-low-qmean 22.5 \
+    --filter-low-hicnt 2 \
+    --filter-low-dp 3
+```
 
-```bash
-❯ vardict-java \
+| Label | Applied when |
+|---|---|
+| `NEAR_READ_END` | `MEAN_DIST_TO_READ_END` is below the threshold |
+| `LOW_MEAN_MAPQ` | `MEAN_MAPQ` is below the threshold |
+| `HOMOPOLYMER_INDEL` | An indel or Complex call one base longer or shorter than REF sits in a homopolymer of at least the threshold's copies |
+| `TANDEM_REPEAT_INDEL` | An indel or Complex call one unit longer or shorter than REF sits in a 2-6 bp tandem repeat of at least the threshold's copies |
+| `HIGH_MEAN_MISMATCHES` | `MEAN_MISMATCHES` is above the threshold |
+| `SAME_READ_POSITION` | 2 or more ALT reads all place the variant at one read position, at an `AF` below the threshold |
+| `STRAND_BIAS` | `STRAND_BIAS_FISHER_P` is below the threshold |
+| `LOW_AF` | `AF` is below the threshold |
+| `LOW_QMEAN` | `QMEAN` is below the threshold |
+| `LOW_HICNT` | `HICNT` is below the threshold |
+| `LOW_DP` | `DP` is below the threshold |
+
+The `-max-af` and `-min-odds-ratio` options narrow a label to calls below that `AF` or above that odds ratio.
+Once any label is applied, a call that fails none is `PASS`.
+
+## Tumor-Normal
+
+Replace `var2vcf_paired.pl` the same way, naming the normal sample:
+
+```console
+vardict-java \
     -b "tumor.bam|normal.bam" \
     -G hg38.fa \
     -N "dna00001|dna00002" \
     -c1 -S2 -E3 -g4 -f0.05 \
     calling-intervals.bed \
-  | vartovcf --reference hg38.fa --sample dna00001 --normal-sample dna00002 \
-      --filter-near-read-end 8 \
-      --filter-low-mean-mapq 10 \
-      --filter-homopolymer-indel 13 --filter-homopolymer-indel-max-af 0.275 \
-      --filter-tandem-repeat-indel 13 --filter-tandem-repeat-indel-max-af 0.2 \
-      --filter-high-mean-mismatches 5.25 \
-      --filter-same-read-position 0.35 \
-      --filter-strand-bias 0.01 --filter-strand-bias-min-odds-ratio 5 --filter-strand-bias-max-af 0.25 \
+  | vartovcf \
+      --reference hg38.fa \
+      --sample dna00001 \
+      --normal-sample dna00002 \
       --output somatic.vcf.gz
 ```
 
-Each record has a tumor and a normal sample column with the tumor-only FORMAT fields. VarDict does not write `HICNT` for a pair, so `vartovcf` recovers each sample's count exactly from its `AD` and the ratio of high- to low-quality ALT reads that VarDict does write, and leaves it `.` in the rare cases that ratio cannot settle, which the header describes. Because `AD` counts ALT reads at any base quality, `HICNT` is the ALT count to compare with a depth filtered by base quality. A sample with no reads of the allele has `.` for its ALT-read statistics and a `0/0` genotype, or `./.` when it has no depth either. Two INFO fields describe the pair:
+Each record gets INFO `VARDICT_STATUS`, VarDict's label such as `StrongSomatic` or `Germline`, and `TUMOR_NORMAL_FISHER_P`, the one-sided Fisher p-value that the allele is more of the tumor's reads than the normal's.
+FILTER labels test the tumor only, so select somatic calls with these:
 
-- `VARDICT_STATUS`: VarDict's label for the allele, such as `StrongSomatic` or `Germline`, from where the allele is found, its AF and VarDict's own call rules rather than a statistical test; its header description gives each label's rule.
-- `TUMOR_NORMAL_FISHER_P`: the one-sided Fisher exact p-value that the allele makes up more of the tumor's reads than of the normal's.
-
-FILTER describes the tumor's evidence, not whether a call is somatic, so select somatic calls with these, for example `bcftools view -f PASS -i 'INFO/VARDICT_STATUS ~ "Somatic" && INFO/TUMOR_NORMAL_FISHER_P < 0.05'`.
-
-With `-p`, VarDictJava writes no reference-only rows for a pair.
-
-> [!WARNING]
-> **Known VarDictJava issue:** in tumor-normal mode VarDict walks the tumor's alleles at a position from the best-supported down and stops at the first one that fails its call rules, so it never writes the alleles ranked below that one, even ones that pass them and that tumor-only mode would write; and it looks at alleles only the normal carries only when the top-ranked tumor allele fails. VarDictJava 1.6.0 fixed the same stop-at-the-first-failure bug in its other branches but not in this loop (`SomaticPostProcessModule.java:157-160` and `:221` in 1.8.4 of the joachimwolff/VarDictJava fork, and `vardict.pl` before it), so these calls never reach `vartovcf`. In practice it drops about 0.4% of rows, most of them low-level alleles only the normal carries. A fix is proposed in [joachimwolff/VarDictJava#4](https://github.com/joachimwolff/VarDictJava/pull/4).
-
-### Filters
-
-No FILTER label is applied unless its option is given; with none given, the FILTER column is `.`. Once any label is applied, a call that fails none of them is `PASS`, and a record stays `.` when it has no ALT allele or its tumor (or only) sample has no reads of it. A label is not applied when the value it tests is missing, and for tumor-normal input every label tests the tumor sample. Each label's threshold is written into its `##FILTER` description.
-
-| Label | Option | Applied when |
-|---|---|---|
-| `NEAR_READ_END` | `--filter-near-read-end <MIN_MEAN_DIST>` | `MEAN_DIST_TO_READ_END` is below the threshold |
-| `LOW_MEAN_MAPQ` | `--filter-low-mean-mapq <MIN_MEAN_MAPQ>` | `MEAN_MAPQ` is below the threshold |
-| `HOMOPOLYMER_INDEL` | `--filter-homopolymer-indel <MIN_COPIES>` and optionally `--filter-homopolymer-indel-max-af <MAX_AF>` | a call one base longer or shorter than REF, an insertion, a deletion or a Complex call, in a homopolymer of at least `MIN_COPIES` copies, at an `AF` below `MAX_AF` if given |
-| `TANDEM_REPEAT_INDEL` | `--filter-tandem-repeat-indel <MIN_COPIES>` and optionally `--filter-tandem-repeat-indel-max-af <MAX_AF>` | a call one repeat unit longer or shorter than REF, an insertion, a deletion or a Complex call, in a 2-6 bp tandem repeat of at least `MIN_COPIES` copies, at an `AF` below `MAX_AF` if given |
-| `HIGH_MEAN_MISMATCHES` | `--filter-high-mean-mismatches <MAX_MEAN_MISMATCHES>` | `MEAN_MISMATCHES` is above the threshold |
-| `SAME_READ_POSITION` | `--filter-same-read-position <MAX_AF>` | 2 or more ALT reads all place the variant at the same read position (`ALT_READ_POS_VARIES` 0) and `AF` is below the threshold |
-| `STRAND_BIAS` | `--filter-strand-bias <MAX_P>`, optionally `--filter-strand-bias-min-odds-ratio <MIN_ODDS_RATIO>` and `--filter-strand-bias-max-af <MAX_AF>` | `STRAND_BIAS_FISHER_P` is below `MAX_P`, the folded odds ratio of the REF and ALT strand counts is above `MIN_ODDS_RATIO` or the table has an empty cell (if given), and `AF` is below `MAX_AF` (if given) |
-| `LOW_AF` | `--filter-low-af <MIN_AF>` | `AF` is below the threshold, useful when VarDict runs with `-p`, which ignores its own `-f` |
-| `LOW_QMEAN` | `--filter-low-qmean <MIN_QMEAN>` | `QMEAN` is below the threshold, useful when VarDict runs with `-p`, which keeps calls failing its own `-q` |
-| `LOW_DP` | `--filter-low-dp <MIN_DP>` | `DP` is below the threshold |
-| `LOW_HICNT` | `--filter-low-hicnt <MIN_HICNT>` | `HICNT` is below the threshold, the count VarDict's own `-r` tests, useful when VarDict runs with `-p`, which keeps calls failing its `-r`, and with `--reads`, which can leave a partial row fewer reads than VarDict's `-r` |
-
-### Leaky MNVs
-
-VarDict builds a multi-nucleotide variant (MNV) from a read's mismatches up to `-X` (default 2) matching bases apart. A read that ends inside the MNV, or has a no-call (N) or a low-quality base there, counts toward a shorter allele instead: an SNV or a shorter MNV carrying the MNV's ALT bases. Here the fourth read's N leaves `TG>AA` beside `TGG>AAA`:
-
-```text
-Reference  CGTGGTT
-Read 1     CGAAATT
-Read 2     CGAAATT
-Read 3     CGAAATT
-Read 4     CGAANTT
+```console
+bcftools view -f PASS -i 'INFO/VARDICT_STATUS ~ "Somatic" && INFO/TUMOR_NORMAL_FISHER_P < 0.05' somatic.vcf.gz
 ```
 
-VarDict folds some of these partials back itself and writes the rest as calls of their own. `--fix-leaky-mnv` folds a row into its MNV when its reads are plausible leakage from it:
+> [!WARNING]
+> VarDictJava's tumor-normal mode stops at the first allele at a position that fails its call rules, so it never writes the alleles ranked below it, about 0.4% of rows.
+> A fix is proposed in [joachimwolff/VarDictJava#4](https://github.com/joachimwolff/VarDictJava/pull/4).
 
-- A row is a partial of an MNV when it lies within the MNV's span and carries the MNV's ALT bases over its own span.
-- Each read of an MNV molecule lands in any one partial row with a small probability, the leak rate, so a partial's reads are a binomial draw over the reads both rows hold. An MNV with `n` ALT reads claims a partial with `c` when `c` is below `n` and a binomial over `n + c` reads at the rate gives `c` or more with probability 0.05 or more, in every sample with reads of the partial. At the default rate of 0.05, an MNV folds a partial of 1 read from 2 reads up, of 2 reads from 6, of 5 reads from 36 and of 10 reads from 101; `--leaky-mnv-rate` sets the rate, and the header's `MNV_PARTIALS` line records it with these bounds, so `bcftools merge` or `concat` over VCFs made at different rates warns that the line differs and keeps the first.
-- Rows are visited from the most supported down. When two MNVs can claim the same partial, it goes to the one where fewer of the partial's ends fall inside the MNV, since each such end needs a read end or a no-call to explain it; a tie goes to the MNV with more reads, then to the longer one, then to the one whose ALT allele sorts first, so nothing depends on the order VarDict wrote the rows in. The leak test uses only the MNV's own reads, not those of partials it already took. A partial at the MNV's first base goes to the next MNV that can claim it when it does not fit in the first one's DP.
+## Leaky MNVs
 
-In the example, `TGG>AAA` is written with `AD` 4 and `DP` 4. A folded record gains INFO `MNV_PARTIALS` (rows folded in) and FORMAT `MNV_PARTIAL_READS` (ALT reads added), and its other fields are combined as VarDict merges an allele's reads:
+VarDict builds a multi-nucleotide variant (MNV) from a read's nearby mismatches.
+A read that ends inside the MNV, or has a no-call or low-quality base there, counts toward a shorter allele instead.
+Here reads 3 and 4 leave `G>C` and `G>A` beside the MNV `GG>CA`:
 
-| Field | On a folded record |
-|---|---|
-| `AD[1]`, `ADF[1]`, `ADR[1]`, `HICNT` | The sums over the MNV and its partials |
-| `DP` | The MNV's, plus the reads of partials starting after the MNV's first base as VarDict wrote it, which can be `POS` once normalization trims a shared base |
-| `AF`, `GT`, `FILTER`, `STRAND_BIAS_FISHER_P`, `TUMOR_NORMAL_FISHER_P` | Recomputed from the sums |
-| `QMEAN`, `MEAN_MAPQ`, `MEAN_MISMATCHES`, `MEAN_DIST_TO_READ_END` | Means over all the ALT reads, each partial's reads measured at its own bases |
-| `ALT_READ_POS_VARIES` | 1 when any row's is, or the rows' `MEAN_DIST_TO_READ_END` differ |
-| `REALIGNED_FRAC_OF_DP` | Counts the partials' reads as reassigned to the MNV |
-| `REF`, `AD[0]`, `TYPE`, `REPEAT_UNIT_*`, `VARDICT_STATUS` | The MNV's own |
+```text
+Reference  GTCGGGT
+Read 1     GTCCAGT
+Read 2     GTCCAGT
+Read 3     GTCCNGT
+Read 4     GTCNAGT
+```
 
-Folding never pushes `AD[1]` above `DP`, though a VarDict row already above it stays so. Only substitutions within one VarDict region are folded. When regions overlap, a partial folded in one is not written again from another, and a partial another region already wrote is not folded, so no read is counted twice. A partial only a later region writes, beside an MNV an earlier region already wrote, is dropped, so its reads are counted nowhere. An MNV with few reads is expected to leak less than one read, so it folds only a 1-read partial until it has 6 reads: a 2-read SNV under a 4-read MNV is not folded, and a 1-read SNV under it is.
+The examples run from a clone of this repository on its test data:
+
+```console
+vartovcf --reference tests/reference.fa --input tests/calls.leaky-mnv.var --output calls.vcf.gz
+bcftools query -r chr1:1100-1101 -f '%POS\t%REF\t%ALT[\t%AD]\n' calls.vcf.gz
+```
+
+```text
+1100	G	C	196,6
+1100	G	T	196,30
+1100	GG	CA	.,200
+1101	G	A	196,4
+```
+
+With `--fix-leaky-mnv`, the 6-read and 4-read partials fold back into the MNV, and `G>T`, another allele, stays:
+
+```console
+vartovcf --reference tests/reference.fa --input tests/calls.leaky-mnv.var --fix-leaky-mnv --output folded.vcf.gz
+bcftools query -r chr1:1100-1101 -f '%POS\t%REF\t%ALT\t%MNV_PARTIALS[\t%AD\t%MNV_PARTIAL_READS]\n' folded.vcf.gz
+```
+
+```text
+1100	G	T	.	196,30	.
+1100	GG	CA	2	.,210	10
+```
+
+A partial folds when it carries the MNV's ALT bases and has few enough reads to be leakage at `--leaky-mnv-rate`, 0.05 by default.
+At that rate, an MNV folds a 1-read partial from 2 reads up, a 2-read one from 6, and a 10-read one from 101.
+A folded record sums the ALT reads, recomputes `AF`, `GT`, FILTER and the Fisher p-values, and counts what it took in INFO `MNV_PARTIALS` and FORMAT `MNV_PARTIAL_READS`.
 
 > [!TIP]
-> The rate varies with the library and the MNV's sequence context. Set it at or above the leak fraction of nearly every MNV in your library, so their leakage folds while SNVs on another haplotype, which carry far more reads, stay apart. The default of 0.05 is meant to sit at about the 99th percentile of per-MNV leak fractions, and was checked at read level: a read carrying a partial's ALT bases is the MNV's own molecule when its mate or itself carries the MNV's ALT base at another changed position, and another allele's when it carries the reference there at high quality. Some partials are `PASS` SNVs, often pieces of germline MNVs, that would otherwise read as mutations of their own. To estimate a library's rate, run without `--fix-leaky-mnv`. For each partial of an MNV with a few hundred reads, take its `AD[1]` over the sum of its `AD[1]` and the MNV's, then take a high quantile, such as the 99th, of those fractions.
+> To estimate your library's rate, run without `--fix-leaky-mnv` and, for MNVs with a few hundred reads, take each partial's `AD[1]` over the sum of its and the MNV's.
+> Set the rate at a high quantile of those, such as the 99th.
 
 > [!WARNING]
-> **Known VarDictJava issue:** VarDict's own fold takes a partial starting after the MNV's first base whenever it has fewer reads than the MNV (`VariationRealigner.java:335` in 1.8.4 of the joachimwolff/VarDictJava fork). An SNV on another haplotype with slightly fewer reads is folded in too, which can nearly double the MNV's `AF`, and no row is written for the SNV, so `--fix-leaky-mnv` cannot undo it.
+> VarDictJava folds a partial starting after the MNV's first base whenever it has fewer reads, even an SNV of another haplotype, and writes no row for it, so `--fix-leaky-mnv` cannot undo it.
 
-#### Deciding partials by their reads
+### Deciding Partials by Their Reads
 
-The count rule sees two numbers per sample. What actually tells an MNV's molecule from another allele's is in the read: its base at the MNV's other changed position(s). `--reads` names the indexed BAM VarDict read for the tumor (or only) sample, or `tumor.bam|normal.bam` for both as VarDict's `-b` takes them, and then each partial row is decided by its reads instead of its count; `--leaky-mnv-rate` has no role with it.
+With `--reads`, a partial is decided by its reads in the BAM VarDict read, instead of by their count:
 
-For each MNV row with a partial in its region, the reads over the MNV's span are piled up with [streampile](https://github.com/clintval/streampile) and each read's walk through them replays VarDict's own: an allele starts at a mismatch and grows through the next base while it is contiguous in the read, not a no-call, at least `-q` plus 5, and a mismatch or a match bridged within `-X` bases to one. A read therefore feeds exactly the row VarDict counted it toward. The reads of a partial are then grouped by template, with the mates' bases called into one as fgbio's `CallOverlappingConsensusBases` calls them, and each template is read at the MNV's changed positions outside the partial:
+```console
+vardict-java ... \
+  | vartovcf \
+      --reference hg38.fa \
+      --sample dna00001 \
+      --fix-leaky-mnv \
+      --reads input.bam \
+      --output variants.vcf.gz
+```
 
-| At every other changed position | The template is | Its reads |
+Each template of a partial is read at the MNV's other changed positions:
+
+| There, the template has | It is | Its reads |
 |---|---|---|
-| The MNV's ALT, at `-q` or more | The MNV's own molecule, which VarDict could not grow through in this read | Move to the MNV |
-| A base other than the ALT at `-q` or more, at any of them | Another allele's | Stay |
-| Otherwise: a no-call, a base below `-q`, or no coverage | Consistent with leakage, no proof | Move together or stay together, see below |
+| The MNV's ALT | The MNV's molecule | Move to the MNV |
+| Another base | Another allele | Stay |
+| A no-call, a low-quality base, or no read | Unknown | Follow the row's other reads |
 
-The reads that prove nothing follow the row's other reads. They move only where the MNV has reads in that sample, since nothing can leak from an MNV with none; only when no template of the row in any sample is another allele's, since a row with no read shown to be its own is leakage far more often than an allele that lost the base in every read, while an allele shown real in one sample is real in the individual; and, in the normal, only when the tumor keeps no read of the row, so a normal never gives up the reads that say it carries an allele the tumor keeps. The fraction of all templates at those positions that prove nothing there is reported in the log, not applied: it bounds how often an allele's `k` reads all prove nothing, as that fraction to the power `k`.
+A partial with reads left keeps only them, and FORMAT `MNV_MOVED_READS` counts the reads that left.
+Give tumor-normal BAMs as VarDict takes them, `tumor.bam|normal.bam`, and set these to the run's VarDict options:
 
-A sample's reads are split between the MNV and the row only when the reads found are exactly the reads VarDict counted, so every count and mean written comes from a read seen. When the pileup feeds the row more reads than VarDict counted, the row moves whole, with VarDict's own values, only if every read found would move; otherwise, and whenever it feeds fewer, the sample keeps VarDict's row whole, since which of its reads VarDict counted is not known. A partial whose every read moves in every sample is folded as the count rule folds it; one with reads left is written with only them, with FORMAT `MNV_MOVED_READS` saying how many left per sample, and can keep fewer high-quality reads than VarDict's `-r`, which `--filter-low-hicnt` labels. The run's log says how many rows reconciled with VarDict's counts, and warns when no read fed most of the rows VarDict counted, when most of the rows whose reads would have moved (two or more) did not reconcile, or when the BAMs look swapped: one names another sample's name in its read groups while the BAM for that sample does not.
+| Option | VarDict's | Default |
+|---|---|---|
+| `--reads-base-quality` | `-q` | 22.5 |
+| `--reads-min-mapq` | `-Q` | 0 |
+| `--reads-exclude-flags` | `-F` | `0x504` |
+| `--reads-max-mismatches` | `-m` | 8 |
+| `--reads-mnv-gap` | `-X` | 2 |
 
-In the example above, the fourth read's template is read at the MNV's last base: `A` on its mate means the MNV's molecule, `T` at `-q` or more means another allele, and `N` means leakage unless a read of the row is shown to be another allele's. Reads are taken as VarDict takes them; set the options to the run's: `--reads-base-quality` (`-q`, default 22.5), `--reads-min-mapq` (`-Q`, no floor by default), `--reads-exclude-flags` (`-F`, default `0x504`), `--reads-max-mismatches` (`-m`, default 8, the NM tag minus inserted and deleted bases) and `--reads-mnv-gap` (`-X`, default 2). An overlap-clipped BAM and an unclipped one both work, but give the one VarDict read, so the reads found are as close as possible to the reads it counted. Supplementary records are left out whenever a flag filter is set, as VarDict leaves them out. Reads VarDict added to a row by realignment or by its own MNV adjustment are not reproduced, nor is the soft-clip boundary VarDict moves over adjacent bases, and an allele with an insertion or deletion within `-X` bases of either end feeds no row, as VarDict folds it into a complex allele; such rows do not reconcile and keep every read. A template whose only read of the other changed base is a no-call or ends before it is as ambiguous here as it was to VarDict; the reported rate bounds how often such a template is another allele's.
+## gVCFs
 
-### Normalization
+In pileup mode (`-p`), VarDict leaves some positions of its regions without a record.
+`--fill-gvcf` writes a reference-only record at each one, so every position has a record, and `--context-3mer` adds each record's reference 3-mer:
 
-Every record is normalized against `--reference`, which must be the FASTA VarDict was run with: an indel moves to its left-most position and shared leading and trailing bases are trimmed, leaving an indel one shared base and a substitution the span from its first to its last changed base, so a gapped MNV keeps its inner unchanged bases, as `bcftools norm -f` does, so `bcftools norm` is not needed. A REF allele that differs from the reference is an error. Alleles are written uppercase even where the reference is soft-masked, unlike `bcftools norm` ([samtools/bcftools#2606](https://github.com/samtools/bcftools/issues/2606)). Reference-only rows and symbolic structural variants are not moved.
+```console
+vardict-java -p ... calling-intervals.bed \
+  | vartovcf \
+      --reference hg38.fa \
+      --sample dna00001 \
+      --fill-gvcf \
+      --fill-gvcf-bed calling-intervals.bed \
+      --context-3mer \
+      --output dna00001.g.vcf.gz
+```
 
-Each call is written once. Rows of one VarDict region that normalize to one call, such as one indel VarDict placed at two positions in a repeat, hold different reads of it, and the row with the most ALT reads in the tumor (or only) sample is written, then the most in all samples, then the most depth in the tumor (or only) sample, so the choice never depends on row order. Overlapping BED regions repeat calls, and the first region's record is written. With `--fix-leaky-mnv`, the rows first go through a sort of their own, region by region in input order and by position within each, and are folded a cluster at a time: the rows starting inside an earlier row's REF, so every MNV meets every row it can fold and no region is held whole. A key for each substitution row of a region, folded rows included, is kept so none is written or folded again, so memory grows with the number of substitution rows.
+A filled record's INFO `GVCF_FILL` says where its depth came from:
 
-### Sequence context
+| `GVCF_FILL` | The position |
+|---|---|
+| `ROWS` | Has reads VarDict counted in rows written elsewhere, such as a deletion it writes at the base before |
+| `SPANNED` | Lies inside a deletion, MNV or Complex call, whose reads are its depth |
+| `NO_READS` | Has no reads |
 
-With `--context-3mer`, every record carries INFO `CONTEXT_3mer`, the reference bases at POS-1, POS and POS+1 after normalization, uppercase, with `N` for a base past either end of the contig, so an insertion's or deletion's 3-mer is centered on its anchor base. It is not reverse-complemented when the base at POS is a purine: an analysis collapses strands itself, and a 192-class spectrum needs them kept.
+On the test data, a 3-base deletion at 1106 leaves positions to fill inside it, and no reads reach past 1111:
 
-### Filling a gVCF
+```console
+vartovcf --reference tests/reference.fa --input tests/calls.fill-gvcf.var --fill-gvcf --context-3mer --output calls.g.vcf.gz
+bcftools query -r chr1:1106-1112 -f '%POS\t%REF\t%ALT\t%CONTEXT_3mer\t%GVCF_FILL[\t%AD\t%SITE_DP]\n' calls.g.vcf.gz
+```
 
-In pileup mode (`-p`), VarDict writes a reference-only row at a position without an allele, or whose only allele is a deletion it writes at the base before, and no row at all for some positions of its regions. With `--fill-gvcf`, each position of a VarDict region (its `chr:start-end` column) without a record gets a reference-only one, so every position has a record, with INFO `GVCF_FILL`:
+```text
+1106	C	.	GCG	.	280	280
+1106	CGGA	C	GCG	.	0,280	280
+1107	G	.	CGG	ROWS	0	280
+1108	G	.	GGA	SPANNED	0	280
+1109	A	.	GAC	SPANNED	0	280
+1110	C	.	ACC	.	250	250
+1111	C	.	CCT	.	240	240
+1112	T	.	CTC	NO_READS	0	0
+```
 
-| `GVCF_FILL` | The position | AD and DP |
-| --- | --- | --- |
-| `ROWS` | VarDict counted reads there in rows written elsewhere: deletions it writes at the base before, indels normalization moved, partials `--fix-leaky-mnv` folded | From those rows, an insertion's reads added to REF |
-| `SPANNED` | Inside a deletion, MNV or Complex call, or a `<DEL>` found in the reads' alignments, with no row VarDict counted there | REF 0, DP the spanning calls' reads, the only reads covering it |
-| `NO_READS` | No row VarDict counted there, and nothing spans it | 0 |
+`--fill-gvcf-bed` also fills the regions of VarDict's BED that no read covers.
+Set `--fill-gvcf-bed-extend` to VarDict's `-x`, and add `--fill-gvcf-bed-one-based` unless VarDict ran with `-z 1` or read a 4-column BED without `-c`; a mismatch fails the run, naming the options that fix it.
+VarDict must run without `-3`, which moves indels from where it counted them.
+Tumor-normal input is refused, as VarDict writes no reference-only rows for a pair.
 
-Fills are decided in VarDict's coordinates, before normalization, assuming VarDict ran without `-3`, which writes indels 3′ of where it counted them. A reference-only record with no REF reads has GT `./.`. `--fill-gvcf` refuses tumor-normal input, as VarDict writes no reference-only rows for a pair, and warns when it reads none, as without `-p` it would fill every position without an allele as having no reads.
+## Site Depth
 
-`--fill-gvcf-bed` takes the BED file VarDict was given, read from its first three columns, and fills each line's region outside every VarDict region, for regions no read covers: as `NO_READS`, or `SPANNED` where a deletion a VarDict region counted runs into it. Its contig names must match `--reference` exactly, and its contigs and ends are checked before any row is read. Each line's region is built as VarDict builds it:
+Every record carries FORMAT `SITE_DP`, the depth at its POS: the reads VarDict counted there as REF or any allele, plus those of deletions, MNVs and Complex calls spanning it.
+It is the same on every record at a position, so `uniq` leaves one line per position, and it is complete only for pileup (`-p`) output.
+Unlike `DP`, it never counts the `N` bases VarDict's `-K` adds.
 
-- Widened on each side by `--fill-gvcf-bed-extend`, VarDict's `-x`.
-- Read with 0-based starts, or 1-based ones with `--fill-gvcf-bed-one-based`. VarDict reads 1-based starts unless it runs with `-z 1` or reads a 4-column BED without `-c`.
+Take depths from the whole file, before leaving out any record:
 
-A VarDict region that no line's region matches fails the run, naming the options that would match it.
-
-> [!NOTE]
-> A `NO_READS` position can have reads when:
-> - VarDict trims a Complex call's leading bases after picking the position's rows, leaving the base it started at with none.
-> - A deletion or MNV starts before the region, and no region counted it.
-
-
-### Site depth
-
-Every record carries FORMAT `SITE_DP`, the depth at its POS, the same on every record there:
-
-- The reads VarDict counted at the position as REF or any allele, an insertion's once.
-- Plus the reads of each deletion, MNV or Complex call counted at an earlier base whose REF covers the position, so an MNV's inner bases keep their depth. That includes a `<DEL>` VarDict found in the reads' alignments, which it writes for a deletion of at least `-L` bases, but not one it found by split and discordant reads, nor any other symbolic allele, whose reads do not cover its bases.
-- Where VarDict counted a row labeled Complex there, no more than the most DP of its rows, as VarDict can count a Complex call's reads as REF too. Elsewhere the sum is kept even above DP, so the reads VarDict counted at a position never add up to more than its `SITE_DP`, and `vartovcf` warns of each such position, as VarDict's counts should not do that.
-
-`SITE_DP` is written after every other FORMAT field, as any field added later will be.
-
-It is counted in VarDict's coordinates, before normalization, so a moved indel takes the depth where it lands. Where VarDict regions overlap, the first region that counted a row at a position gives its depth. A record has none where VarDict counted no row at its POS, as outside every VarDict region. It is complete only for pileup (`-p`) output: otherwise VarDict leaves out the alleles failing its `-f`, `-q` and `-r`, and writes no row at a deletion's base before, so a deletion's record has none. With `--skip-non-variants`, the rows it leaves out are still counted. `N` bases are never counted, though VarDict's `-K` adds them to DP. AD[1] / `SITE_DP` is an allele's share of its position's reads, except for a deletion: VarDict counts its AD at its first deleted base, so its share is off by any change in depth from POS, and can top 1 when nearly every read carries it.
-
-A position's records come together and share CHROM, POS, `CONTEXT_3mer` and `SITE_DP`, so `uniq` leaves one line per position, with no grouping. Take depths from the whole file, before leaving out any ALT record; the context recipes need `--context-3mer`, and each sample of a pair gets its own column:
-
-```bash
+```console
 # Depth at each position
-bcftools query -f '%CHROM\t%POS[\t%SITE_DP]\n' out.vcf.gz | uniq
+bcftools query -f '%CHROM\t%POS[\t%SITE_DP]\n' calls.g.vcf.gz | uniq
 
 # Total depth
-bcftools query -f '%CHROM\t%POS[\t%SITE_DP]\n' out.vcf.gz | uniq | awk '{n += $3} END {print n}'
+bcftools query -f '%CHROM\t%POS[\t%SITE_DP]\n' calls.g.vcf.gz | uniq | awk '{n += $3} END {print n}'
 
 # Depth by reference 3-mer, a mutation spectrum's denominators
-bcftools query -f '%CHROM\t%POS\t%CONTEXT_3mer[\t%SITE_DP]\n' out.vcf.gz | uniq \
+bcftools query -f '%CHROM\t%POS\t%CONTEXT_3mer[\t%SITE_DP]\n' calls.g.vcf.gz | uniq \
   | awk '{n[$3] += $4} END {for (c in n) print c, n[c]}'
 
 # Mutations with their context and ALT reads
-bcftools query -i 'ALT!="."' -f '%CHROM\t%POS\t%REF\t%ALT\t%CONTEXT_3mer[\t%AD{1}]\n' out.vcf.gz
+bcftools query -i 'ALT!="."' -f '%CHROM\t%POS\t%REF\t%ALT\t%CONTEXT_3mer[\t%AD{1}]\n' calls.g.vcf.gz
 ```
 
-MF is the number of mutations (MF min) or their ALT reads (MF max) over the total depth, and a spectrum divides each context's mutations by that context's depth.
+MF is the number of mutations (MF min) or their ALT reads (MF max) over the total depth.
+A deletion's `AD` is counted at its first deleted base, not POS, so its `AD[1]` over `SITE_DP` can top 1.
 
-What VarDict counted in each row goes into the sort beside the records, under the position VarDict counted it at, and the writer walks both in position order, holding only one position's counts and the deletions and MNVs spanning it, so neither `SITE_DP` nor `--fill-gvcf` holds a region.
-
-### Sorting
-
-Records are sorted by contig, in the reference's order, then by POS, REF and ALT, as `bcftools sort` does, so `bcftools sort` is not needed, and they are written only once the input ends. Up to 64 MiB of records, with each row's counts and each region's bounds, are held in memory, plus up to 16 MiB of rows and a key per substitution row with `--fix-leaky-mnv`, and the rest spill to `spillsort-*` directories under `--tmp-dir`, `$TMPDIR` by default, which are removed when `vartovcf` exits or fails. With `--fix-leaky-mnv`, up to about the input's size can spill. A SIGINT or SIGTERM stops it at its next input row or the next record written and removes the output file, though output already sent to standard output may end in a partial record; a second signal exits at once and leaves its temporary files and an incomplete output file.
-
-### Output
-
-Records go to standard output unless `--output` names a file, which is bgzipped when its name ends in `.gz`.
-A bgzipped regular file is indexed once it is complete, as `tabix -p vcf` would index it, so `bcftools index` is not needed.
-The index is a tabix index beside it, `<output>.tbi`, or a CSI index, `<output>.csi`, when a reference contig is longer than the 2^29 bases (512 Mbp) a tabix index can address.
-Standard output, a plain `.vcf` file, a FIFO and a device such as `/dev/null` get no index.
-Any index an earlier run left beside a bgzipped output file is removed when the run starts, so none outlives the file it described.
-When the run fails, or a SIGINT or SIGTERM stops it, even while the index is being written, the output file and its index are both removed.
-
-### Benchmarks
-
-Measured on an Apple M3 Max running macOS 26.6.2, with `vartovcf` 3.0.0 (pre-release build of 5008e5e, before normalization, sorting and indexing were added), VarDictJava 1.8.4 of the joachimwolff/VarDictJava fork and the `var2vcf_valid.pl` it ships, run by Perl 5.34.1. The input is 60,501 rows of VarDictJava `-p -fisher` output for part of a targeted panel. `var2vcf_valid.pl` holds all of its input in memory to sort it, so its peak memory was 10 times that of `vartovcf` 3.0.0, which wrote its records unsorted (184 MB against 18 MB).
-
-```bash
-❯ vartovcf --reference hg19.fa --sample dna00001 < test.var > /dev/null
-[2026-10-05T01:04:45Z INFO  vartovcf] Input stream: STDIN
-[2026-10-05T01:04:45Z INFO  vartovcf] Output stream: STDOUT
-[2026-10-05T01:04:46Z INFO  proglog] [main] Processed 60498 variant records
-
-❯ hyperfine --warmup 5 'vartovcf -r hg19.fa -s dna00001 < test.var > /dev/null'
-Benchmark 1: vartovcf -r hg19.fa -s dna00001 < test.var > /dev/null
-  Time (mean ± σ):     153.6 ms ±   3.3 ms    [User: 147.6 ms, System: 4.7 ms]
-  Range (min … max):   148.5 ms … 160.8 ms    18 runs
-
-❯ hyperfine --warmup 5 'var2vcf_valid.pl -N dna00001 -f 0.0 -E < test.var > /dev/null'
-Benchmark 1: var2vcf_valid.pl -N dna00001 -f 0.0 -E < test.var > /dev/null
-  Time (mean ± σ):     386.8 ms ±   9.3 ms    [User: 361.7 ms, System: 18.1 ms]
-  Range (min … max):   376.7 ms … 404.1 ms    10 runs
-
-❯ /usr/bin/time -l vartovcf -r hg19.fa -s dna00001 < test.var > /dev/null
-...
-            18399232  maximum resident set size
-
-❯ /usr/bin/time -l var2vcf_valid.pl -N dna00001 -f 0.0 -E < test.var > /dev/null
-...
-           184303616  maximum resident set size
-```
-
-### Development
+## Development and Testing
 
 The checks CI runs are cargo aliases, so they can be run locally before pushing:
 
-```bash
-❯ cargo ci-fmt
-❯ cargo ci-lint
-❯ cargo ci-test
+```console
+cargo ci-fmt
+cargo ci-lint
+cargo ci-test
 ```
