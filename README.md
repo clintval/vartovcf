@@ -16,12 +16,6 @@ Install with the Conda or Mamba package manager after setting your [Bioconda cha
 mamba install vartovcf
 ```
 
-Or build from source with Rust 1.89 or newer:
-
-```console
-cargo install --locked --git https://github.com/clintval/vartovcf
-```
-
 ## Features
 
 - Writes VCF compliant with the v4.2 and v4.3 specifications
