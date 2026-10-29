@@ -33,7 +33,7 @@
 ##contig=<ID=chr1,length=4000>
 ##contig=<ID=chr12,length=6000>
 ##contig=<ID=chr13,length=5000>
-##source=vartovcf-5.1.0
+##source=vartovcf-6.0.0
 ##reference=tests/reference.fa
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	dna00001
 chr1	1091	.	C	.	.	.	GVCF_FILL=NO_READS	GT:AD:ADF:ADR:STRAND_BIAS_FISHER_P:DP:AF:HICNT:REALIGNED_FRAC_OF_DP:MEAN_DIST_TO_READ_END:ALT_READ_POS_VARIES:QMEAN:MEAN_MAPQ:MEAN_MISMATCHES:SITE_DP	./.:0:0:0:.:0:.:.:.:.:.:.:.:.:0
