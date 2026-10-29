@@ -1,4 +1,4 @@
-//! Convert variants from VarDict/VarDictJava into VCF v4.2 format.
+//! Convert variants from VarDict/VarDictJava into VCF v4.2/v4.3 format.
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::PathBuf;

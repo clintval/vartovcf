@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Language](https://img.shields.io/badge/language-rust-dea588.svg)](https://www.rust-lang.org/)
 
-Convert variants from VarDict/VarDictJava into VCF v4.2 format.
+Convert variants from VarDict/VarDictJava into VCF v4.2/v4.3 format.
 
 ![The Pacific Northwest - Fish Lake](.github/img/cover.jpg)
 
@@ -22,7 +22,7 @@ pixi exec \
 ## Features
 
 - Output is always coordinate sorted and normalized, and indexed when bgzipped
-- Reads tumor-only and tumor-normal output, see [Tumor-Only](#tumor-only) and [Tumor-Normal](#tumor-normal)
+- Accepts tumor-only and tumor-normal output, see [Tumor-Only](#tumor-only) and [Tumor-Normal](#tumor-normal)
 - Applies FILTER labels only when asked, see [Filters](#filters)
 - Folds leaked partial alleles back into their MNV, by their reads when given the BAM, see [Leaky MNVs](#leaky-mnvs)
 - Writes gVCFs with a record and depth at every position, see [gVCFs](#gvcfs)
@@ -90,7 +90,7 @@ FILTER stays missing (`.`) until a filter option is given.
 Then each call gets the labels it fails, or `PASS` when it fails none, while a record with no ALT allele, or whose tumor (or only) sample has no ALT reads, stays missing.
 
 These filter options use the thresholds `var2vcf_valid.pl` applies by default.
-`vartovcf` leaves out the script's extra conditions, such as applying its mapping-quality label `Q10` only below an `AF` of 0.8, and its strand-bias label `Bias` only when VarDict flags the ALT reads, but not the REF reads, as strand biased (`2;1`):
+These options leave out the script's extra conditions, such as applying its mapping-quality label `Q10` only below an `AF` of 0.8, and its strand-bias label `Bias` only when VarDict flags the ALT reads, but not the REF reads, as strand biased (`2;1`):
 
 ```bash
 vartovcf \
@@ -139,7 +139,7 @@ Here reads 3 and 4 leave the partial alleles `G>C` and `G>A` beside the MNV `GG>
 
 ![A leaky MNV: four reads carry the MNV GG>CA, reads 3 and 4 have a no-call inside it, so VarDict writes the partial alleles G>C and G>A as calls of their own, and --fix-leaky-mnv folds them back into the MNV.](.github/img/leaky-mnv.svg)
 
-`--fix-leaky-mnv` folds partial alleles back into their MNV, summing the ALT reads, recomputing `AF`, `GT`, FILTER and the Fisher p-values, and counting what it took in INFO `MNV_PARTIALS` and FORMAT `MNV_PARTIAL_READS`.
+With `--fix-leaky-mnv`, each partial allele folds back into its MNV, whose record sums the ALT reads, recomputes `AF`, `GT`, FILTER and the Fisher p-values, and counts what it took in INFO `MNV_PARTIALS` and FORMAT `MNV_PARTIAL_READS`.
 
 > [!IMPORTANT]
 > Give `--fix-leaky-mnv` the BAM VarDict read with `--reads` whenever you can.
@@ -206,7 +206,7 @@ bcftools query -r chr1:1100-1101 -f '%POS\t%REF\t%ALT\t%MNV_PARTIALS[\t%AD\t%MNV
 ## gVCFs
 
 In pileup mode (`-p`), VarDict leaves some positions of its regions without a record.
-`--fill-gvcf` writes a reference-only record at each such position, so every position has a record.
+With `--fill-gvcf`, each such position gets a reference-only record, so every position has a record.
 Here a homozygous deletion and reads that end at 1111 leave four positions to fill:
 
 ![Filling a gVCF: reads carry a homozygous 3-base deletion after position 1106 and end by 1111, so --fill-gvcf writes position 1107 as ROWS, where VarDict counted the deletion it wrote at 1106, 1108 and 1109 as SPANNED, inside the deletion, and 1112 as NO_READS, with each position's SITE_DP below.](.github/img/gvcf-fill.svg)
@@ -235,18 +235,19 @@ bcftools query -r chr1:1106-1112 -f '%POS\t%REF\t%ALT\t%CONTEXT_3mer\t%GVCF_FILL
 1112	T	.	CTC	NO_READS	0	0
 ```
 
-`--fill-gvcf-bed` also fills the regions of VarDict's BED that no read covers.
+With `--fill-gvcf-bed`, the regions of VarDict's BED that no read covers are filled too.
 Run VarDict with `-z1` so it reads the BED's starts as 0-based, and set `--fill-gvcf-bed-extend` to VarDict's `-x`; a mismatched region fails the run, naming the options that would match it.
 VarDict must run without `-3`, which writes indels at their 3′-most position instead of where VarDict counted them.
-`--fill-gvcf` refuses tumor-normal input, as VarDict writes no reference-only rows for a pair.
+Tumor-normal input is refused with `--fill-gvcf`, as VarDict writes no reference-only rows for a pair.
 
 ## Site Depth
 
 Every record carries FORMAT `SITE_DP`, the depth at its POS: the reads VarDict counted there as REF or any allele, plus those of deletions, MNVs and Complex calls spanning it.
-`SITE_DP` is the same on every record at a position, so `uniq` leaves one line per position, and `SITE_DP` is complete only for pileup (`-p`) output.
+Every record at a position has the same `SITE_DP`, so `uniq` leaves one line per position.
+Site depth is complete only for pileup (`-p`) output.
 Unlike `DP`, `SITE_DP` never counts the `N` bases VarDict's `-K` adds.
 
-`--context-3mer` adds INFO `CONTEXT_3mer`, the reference bases at POS-1, POS and POS+1, which the 3-mer recipes need.
+With `--context-3mer`, every record gets INFO `CONTEXT_3mer`, the reference bases at POS-1, POS and POS+1, which the 3-mer recipes need.
 Take depths from the whole file, before leaving out any record:
 
 ```bash
