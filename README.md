@@ -115,6 +115,12 @@ In pileup mode (`-p`), VarDict keeps every candidate variant call, so add these 
     --filter-low-dp 3
 ```
 
+Three of the labels look like this in the reads:
+
+![What three FILTER labels look like in the reads: NEAR_READ_END, where the ALT base sits near each read's end; SAME_READ_POSITION, where every ALT read has it at one read position; and STRAND_BIAS, where only forward reads carry the ALT base while the REF reads come from both strands.](.github/img/filter-signatures.svg)
+
+Each label is applied when its test holds:
+
 | Label | Applied when |
 |---|---|
 | `NEAR_READ_END` | `MEAN_DIST_TO_READ_END` is below the threshold |
@@ -151,6 +157,10 @@ With `--fix-leaky-mnv`, each partial allele folds back into its MNV, whose recor
 #### Deciding Partials by Their Reads
 
 With `--reads`, each read template of a partial allele is examined at the MNV's changed positions outside the partial allele:
+
+![Deciding a partial allele by its reads: each template of the partial allele G>C is examined at the MNV's other changed base. Template 1's mate reads the MNV's A, so read 1 moves to the MNV; template 2's mate reads the reference G, so template 2 is another allele and stays; template 3 has no read of the base, so it is unknown and stays, since template 2 is another allele.](.github/img/reads-decision.svg)
+
+The template's bases there decide where its reads go:
 
 | At those positions, the template has | The template is | Its reads |
 |---|---|---|
