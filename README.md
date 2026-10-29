@@ -37,7 +37,7 @@ vardict-java \
     -G "hg38.fa" \
     -N dna00001 \
     -p \
-    -c1 -S2 -E3 -g4 -f0.05 \
+    -c1 -S2 -E3 -g4 -z1 -f0.05 \
     "calling-intervals.bed" \
   | vartovcf \
       --reference "hg38.fa" \
@@ -47,7 +47,6 @@ vardict-java \
       --context-3mer \
       --fill-gvcf \
       --fill-gvcf-bed "calling-intervals.bed" \
-      --fill-gvcf-bed-one-based \
       --output "dna00001.g.vcf.gz"
 ```
 
@@ -63,7 +62,7 @@ vardict-java \
     -b "tumor.bam|normal.bam" \
     -G "hg38.fa" \
     -N "dna00001|dna00002" \
-    -c1 -S2 -E3 -g4 -f0.05 \
+    -c1 -S2 -E3 -g4 -z1 -f0.05 \
     "calling-intervals.bed" \
   | vartovcf \
       --reference "hg38.fa" \
@@ -87,12 +86,11 @@ bcftools view -f PASS -i 'INFO/VARDICT_STATUS ~ "Somatic" && INFO/TUMOR_NORMAL_F
 
 ## Filters
 
-No FILTER label is applied unless its option is given, and with none given, FILTER is `.`.
-Once any FILTER option is given, a call gets the labels it fails, or `PASS` when it fails none.
-A record without an ALT allele, or without reads of it, stays `.`.
+FILTER stays missing (`.`) until a filter option is given.
+Then each call gets the labels it fails, or `PASS` when it fails none, while a record with no ALT allele, or whose tumor (or only) sample has no ALT reads, stays missing.
 
 These filter options use the thresholds `var2vcf_valid.pl` applies by default.
-The script's rules add conditions `vartovcf` leaves out, such as testing mapping quality only below an `AF` of 0.8 and strand bias only where VarDict flags it:
+`vartovcf` leaves out the script's extra conditions, such as applying its mapping-quality label `Q10` only below an `AF` of 0.8, and its strand-bias label `Bias` only when VarDict flags the ALT reads, but not the REF reads, as strand biased (`2;1`):
 
 ```bash
 vartovcf \
@@ -241,7 +239,7 @@ bcftools query -r chr1:1106-1112 -f '%POS\t%REF\t%ALT\t%CONTEXT_3mer\t%GVCF_FILL
 ```
 
 `--fill-gvcf-bed` also fills the regions of VarDict's BED that no read covers.
-Set `--fill-gvcf-bed-extend` to VarDict's `-x`, and add `--fill-gvcf-bed-one-based` unless VarDict ran with `-z 1` or read a 4-column BED without `-c`; a mismatched region fails the run, naming the options that would match it.
+Run VarDict with `-z1` so it reads the BED's starts as 0-based, and set `--fill-gvcf-bed-extend` to VarDict's `-x`; a mismatched region fails the run, naming the options that would match it.
 VarDict must run without `-3`, which moves indels from where VarDict counted them.
 Tumor-normal input is refused, as VarDict writes no reference-only rows for a pair.
 
