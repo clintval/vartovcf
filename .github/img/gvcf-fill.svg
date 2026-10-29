@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="262" viewBox="0 0 880 262" role="img" aria-labelledby="title">
+  <title id="title">Filling a gVCF: reads carry a homozygous 3-base deletion after position 1106 and end by 1111, so --fill-gvcf writes position 1107 as ROWS, where VarDict counted the deletion it wrote at 1106, 1108 and 1109 as SPANNED, inside the deletion, and 1112 as NO_READS, with each position's SITE_DP below.</title>
+  <style>
+    text { font-family: Helvetica, Arial, sans-serif; }
+    .head { fill: #57606a; font-size: 13px; font-weight: 700; }
+    .ink { fill: #57606a; font-size: 12.5px; }
+    .tag { fill: #57606a; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size: 12px; }
+    .base { fill: #8c8b86; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size: 15px; }
+    .alt { fill: #e34948; font-weight: 700; }
+    .nocall { fill: #2a78d6; font-weight: 700; }
+    .span { fill: #2a78d6; fill-opacity: 0.12; }
+    .arrow { stroke: #8c8b86; stroke-width: 1.5; fill: none; }
+    .gap { stroke: #8c8b86; stroke-width: 1.5; stroke-dasharray: 3 3; }
+    .read { fill: #8c8b86; fill-opacity: 0.11; }
+    .rows { fill: #2a78d6; font-size: 12px; font-weight: 700; }
+    .spanned { fill: #12875c; font-size: 12px; font-weight: 700; }
+    .none { fill: #e34948; font-size: 12px; font-weight: 700; }
+    .vardict { fill: #8c8b86; font-size: 12px; }
+    @media (prefers-color-scheme: dark) {
+      .head, .ink, .tag { fill: #9198a1; }
+      .spanned { fill: #1baf7a; }
+      .read { fill: #ffffff; fill-opacity: 0.12; }
+    }
+  </style>
+
+  <text class="head" x="20" y="24">Filling a gVCF</text>
+  <text class="ink" x="20" y="42">reads carry a homozygous deletion of GGA after 1106, and none reach past 1111</text>
+
+  <text class="ink" x="20" y="72">Position</text>
+  <text class="ink" x="170" y="72" text-anchor="middle">1105</text>
+  <text class="ink" x="260" y="72" text-anchor="middle">1106</text>
+  <text class="ink" x="350" y="72" text-anchor="middle">1107</text>
+  <text class="ink" x="440" y="72" text-anchor="middle">1108</text>
+  <text class="ink" x="530" y="72" text-anchor="middle">1109</text>
+  <text class="ink" x="620" y="72" text-anchor="middle">1110</text>
+  <text class="ink" x="710" y="72" text-anchor="middle">1111</text>
+  <text class="ink" x="800" y="72" text-anchor="middle">1112</text>
+  <text class="ink" x="20" y="101">Reference</text>
+  <text class="base" y="102" text-anchor="middle"><tspan x="170">G</tspan><tspan x="260">C</tspan><tspan class="alt" x="350">G</tspan><tspan class="alt" x="440">G</tspan><tspan class="alt" x="530">A</tspan><tspan x="620">C</tspan><tspan x="710">C</tspan><tspan x="800">T</tspan></text>
+
+  <text class="ink" x="20" y="150">Reads</text>
+  <rect class="read" x="130" y="109" width="170" height="23" rx="4"/>
+  <path class="gap" d="M300 120.5 H580"/>
+  <rect class="read" x="580" y="109" width="170" height="23" rx="4"/>
+  <rect class="read" x="130" y="135" width="170" height="23" rx="4"/>
+  <path class="gap" d="M300 146.5 H580"/>
+  <rect class="read" x="580" y="135" width="80" height="23" rx="4"/>
+  <rect class="read" x="120" y="161" width="90" height="23" rx="4"/>
+
+  <text class="ink" x="20" y="218">Record</text>
+  <text class="vardict" x="170" y="218" text-anchor="middle">VarDict</text>
+  <text class="vardict" x="260" y="218" text-anchor="middle">VarDict</text>
+  <text class="rows" x="350" y="218" text-anchor="middle">ROWS</text>
+  <text class="spanned" x="440" y="218" text-anchor="middle">SPANNED</text>
+  <text class="spanned" x="530" y="218" text-anchor="middle">SPANNED</text>
+  <text class="vardict" x="620" y="218" text-anchor="middle">VarDict</text>
+  <text class="vardict" x="710" y="218" text-anchor="middle">VarDict</text>
+  <text class="none" x="800" y="218" text-anchor="middle">NO_READS</text>
+  <text class="ink" x="20" y="244">SITE_DP</text>
+  <text class="tag" x="170" y="244" text-anchor="middle">300</text>
+  <text class="tag" x="260" y="244" text-anchor="middle">280</text>
+  <text class="tag" x="350" y="244" text-anchor="middle">280</text>
+  <text class="tag" x="440" y="244" text-anchor="middle">280</text>
+  <text class="tag" x="530" y="244" text-anchor="middle">280</text>
+  <text class="tag" x="620" y="244" text-anchor="middle">250</text>
+  <text class="tag" x="710" y="244" text-anchor="middle">240</text>
+  <text class="tag" x="800" y="244" text-anchor="middle">0</text>
+</svg>

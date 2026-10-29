@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="230" viewBox="0 0 900 230" role="img" aria-labelledby="title">
+  <title id="title">A leaky MNV: four reads carry the MNV GG&gt;CA, reads 3 and 4 have a no-call inside it, so VarDict writes the partial alleles G&gt;C and G&gt;A as calls of their own, and --fix-leaky-mnv folds them back into the MNV.</title>
+  <style>
+    text { font-family: Helvetica, Arial, sans-serif; }
+    .head { fill: #57606a; font-size: 13px; font-weight: 700; }
+    .ink { fill: #57606a; font-size: 12.5px; }
+    .tag { fill: #57606a; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size: 12px; }
+    .base { fill: #8c8b86; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size: 15px; }
+    .alt { fill: #e34948; font-weight: 700; }
+    .nocall { fill: #2a78d6; font-weight: 700; }
+    .span { fill: #2a78d6; fill-opacity: 0.12; }
+    .arrow { stroke: #8c8b86; stroke-width: 1.5; fill: none; }
+    .gap { stroke: #8c8b86; stroke-width: 1.5; stroke-dasharray: 3 3; }
+    .read { fill: #8c8b86; fill-opacity: 0.11; }
+    .rows { fill: #2a78d6; font-size: 12px; font-weight: 700; }
+    .spanned { fill: #12875c; font-size: 12px; font-weight: 700; }
+    .none { fill: #e34948; font-size: 12px; font-weight: 700; }
+    .vardict { fill: #8c8b86; font-size: 12px; }
+    @media (prefers-color-scheme: dark) {
+      .head, .ink, .tag { fill: #9198a1; }
+      .spanned { fill: #1baf7a; }
+      .read { fill: #ffffff; fill-opacity: 0.12; }
+    }
+  </style>
+
+  <text class="head" x="20" y="24">1. Reads Carry an MNV</text>
+  <text class="ink" x="20" y="42">reads 3 and 4 have a no-call (N) in the MNV</text>
+  <text class="ink" x="20" y="216">VarDict cannot grow an allele through an N</text>
+  <rect class="span" x="157" y="63" width="36" height="131" rx="4"/>
+  <text class="ink" x="20" y="81">Reference</text>
+  <text class="base" y="82" text-anchor="middle"><tspan x="112">G</tspan><tspan x="130">T</tspan><tspan x="148">C</tspan><tspan x="166">G</tspan><tspan x="184">G</tspan><tspan x="202">G</tspan><tspan x="220">T</tspan></text>
+  <rect class="read" x="103" y="91" width="126" height="23" rx="4"/>
+  <text class="ink" x="20" y="107">Read 1</text>
+  <text class="base" y="108" text-anchor="middle"><tspan x="112">G</tspan><tspan x="130">T</tspan><tspan x="148">C</tspan><tspan class="alt" x="166">C</tspan><tspan class="alt" x="184">A</tspan><tspan x="202">G</tspan><tspan x="220">T</tspan></text>
+  <rect class="read" x="103" y="117" width="126" height="23" rx="4"/>
+  <text class="ink" x="20" y="133">Read 2</text>
+  <text class="base" y="134" text-anchor="middle"><tspan x="112">G</tspan><tspan x="130">T</tspan><tspan x="148">C</tspan><tspan class="alt" x="166">C</tspan><tspan class="alt" x="184">A</tspan><tspan x="202">G</tspan><tspan x="220">T</tspan></text>
+  <rect class="read" x="103" y="143" width="126" height="23" rx="4"/>
+  <text class="ink" x="20" y="159">Read 3</text>
+  <text class="base" y="160" text-anchor="middle"><tspan x="112">G</tspan><tspan x="130">T</tspan><tspan x="148">C</tspan><tspan class="alt" x="166">C</tspan><tspan class="nocall" x="184">N</tspan><tspan x="202">G</tspan><tspan x="220">T</tspan></text>
+  <rect class="read" x="103" y="169" width="126" height="23" rx="4"/>
+  <text class="ink" x="20" y="185">Read 4</text>
+  <text class="base" y="186" text-anchor="middle"><tspan x="112">G</tspan><tspan x="130">T</tspan><tspan x="148">C</tspan><tspan class="nocall" x="166">N</tspan><tspan class="alt" x="184">A</tspan><tspan x="202">G</tspan><tspan x="220">T</tspan></text>
+  <path class="arrow" d="M292 134 h16 m-5 -4 l5 4 l-5 4"/>
+
+  <text class="head" x="320" y="24">2. VarDict Splits It</text>
+  <text class="ink" x="320" y="42">each no-call leaves a partial allele</text>
+  <text class="ink" x="320" y="216">and VarDict writes all three as calls</text>
+  <rect class="span" x="457" y="63" width="36" height="105" rx="4"/>
+  <text class="ink" x="320" y="81">Reference</text>
+  <text class="base" y="82" text-anchor="middle"><tspan x="412">G</tspan><tspan x="430">T</tspan><tspan x="448">C</tspan><tspan x="466">G</tspan><tspan x="484">G</tspan><tspan x="502">G</tspan><tspan x="520">T</tspan></text>
+  <rect class="read" x="457" y="91" width="36" height="23" rx="4"/>
+  <text class="ink" x="320" y="107">MNV</text>
+  <text class="base" y="108" text-anchor="middle"><tspan class="alt" x="466">C</tspan><tspan class="alt" x="484">A</tspan></text>
+  <text class="ink" x="534" y="107">2 reads</text>
+  <rect class="read" x="457" y="117" width="18" height="23" rx="4"/>
+  <text class="ink" x="320" y="133">Partial</text>
+  <text class="base" y="134" text-anchor="middle"><tspan class="alt" x="466">C</tspan></text>
+  <text class="ink" x="534" y="133">1 read</text>
+  <rect class="read" x="475" y="143" width="18" height="23" rx="4"/>
+  <text class="ink" x="320" y="159">Partial</text>
+  <text class="base" y="160" text-anchor="middle"><tspan class="alt" x="484">A</tspan></text>
+  <text class="ink" x="534" y="159">1 read</text>
+  <path class="arrow" d="M592 134 h16 m-5 -4 l5 4 l-5 4"/>
+
+  <text class="head" x="620" y="24">3. Folded Back</text>
+  <text class="ink" x="620" y="42">--fix-leaky-mnv returns the partials&#8217; reads</text>
+  <text class="ink" x="620" y="216">--reads checks each read's template first</text>
+  <rect class="span" x="757" y="63" width="36" height="53" rx="4"/>
+  <text class="ink" x="620" y="81">Reference</text>
+  <text class="base" y="82" text-anchor="middle"><tspan x="712">G</tspan><tspan x="730">T</tspan><tspan x="748">C</tspan><tspan x="766">G</tspan><tspan x="784">G</tspan><tspan x="802">G</tspan><tspan x="820">T</tspan></text>
+  <rect class="read" x="757" y="91" width="36" height="23" rx="4"/>
+  <text class="ink" x="620" y="107">MNV</text>
+  <text class="base" y="108" text-anchor="middle"><tspan class="alt" x="766">C</tspan><tspan class="alt" x="784">A</tspan></text>
+  <text class="ink" x="834" y="107">4 reads</text>
+  <text class="tag" x="620" y="140">MNV_PARTIALS=2</text>
+  <text class="tag" x="620" y="158">MNV_PARTIAL_READS=2</text>
+</svg>
