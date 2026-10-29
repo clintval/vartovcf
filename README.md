@@ -41,9 +41,6 @@ vardict-java \
       --output variants.vcf.gz
 ```
 
-The reference must be the one VarDict ran with.
-An output ending in `.gz` is bgzipped and indexed; without `--output`, plain VCF goes to standard output.
-
 ## Filters
 
 No FILTER label is applied unless its option is given.
