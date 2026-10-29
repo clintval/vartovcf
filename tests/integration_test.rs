@@ -715,6 +715,17 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn run_end_to_end_folds_a_partial_into_a_partial_too_deep_to_fold()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let rows = read_to_string("tests/calls.leaky-mnv.nested.var")?;
+        assert_eq!(
+            records(&rows, &["--fix-leaky-mnv"])?,
+            vec!["chr1 1100 GGG CAT .,208", "chr1 1101 GG AT .,43"]
+        );
+        Ok(())
+    }
+
     #[rstest]
     #[case::partial_written_by_an_earlier_region(
         "tests/calls.leaky-mnv.partial-first.var",

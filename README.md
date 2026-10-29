@@ -172,30 +172,30 @@ A partial allele with too many reads to fold becomes an MNV of its own, and take
 ![Deciding a partial allele by its count: the partial allele GGG>CAG with 8 reads folds into the MNV GGG>CAT with 200 reads, while GGG>GAT, with 40 reads, has too many reads to fold and becomes an MNV of its own, taking in GGG>GAG with 3 reads. A partial allele folds when its reads fall below a line that rises with the MNV's reads, shaded by the chance the MNV leaks that many reads or more at the rate 0.05.](.github/img/count-decision.svg)
 
 Judged by its count alone, a real allele with few reads beside a deep MNV folds too.
-On this repository's test data, `GG>CA` has a 6-read and a 4-read partial allele beside `G>T`, another allele:
+The figure's calls are in this repository's test data:
 
 ```bash
-vartovcf --reference "tests/reference.fa" --input "tests/calls.leaky-mnv.var" --output "calls.vcf.gz"
-bcftools query -r chr1:1100-1101 -f '%POS\t%REF\t%ALT[\t%AD]\n' "calls.vcf.gz"
+vartovcf --reference "tests/reference.fa" --input "tests/calls.leaky-mnv.nested.var" --output "calls.vcf.gz"
+bcftools query -f '%POS\t%REF\t%ALT[\t%AD]\n' "calls.vcf.gz"
 ```
 
 ```text
-1100	G	C	196,6
-1100	G	T	196,30
-1100	GG	CA	.,200
-1101	G	A	196,4
+1100	GG	CA	.,8
+1100	GGG	CAT	.,200
+1101	G	A	196,3
+1101	GG	AT	.,40
 ```
 
-With `--fix-leaky-mnv`, both partial alleles fold back into the MNV, and `G>T` stays:
+With `--fix-leaky-mnv`, `GG>CA` folds into `GGG>CAT`, and `G>A` into `GG>AT`:
 
 ```bash
-vartovcf --reference "tests/reference.fa" --input "tests/calls.leaky-mnv.var" --fix-leaky-mnv --output "folded.vcf.gz"
-bcftools query -r chr1:1100-1101 -f '%POS\t%REF\t%ALT\t%MNV_PARTIALS[\t%AD\t%MNV_PARTIAL_READS]\n' "folded.vcf.gz"
+vartovcf --reference "tests/reference.fa" --input "tests/calls.leaky-mnv.nested.var" --fix-leaky-mnv --output "folded.vcf.gz"
+bcftools query -f '%POS\t%REF\t%ALT\t%MNV_PARTIALS[\t%AD\t%MNV_PARTIAL_READS]\n' "folded.vcf.gz"
 ```
 
 ```text
-1100	G	T	.	196,30	.
-1100	GG	CA	2	.,210	10
+1100	GGG	CAT	1	.,208	8
+1101	GG	AT	1	.,43	3
 ```
 
 > [!TIP]
