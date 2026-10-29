@@ -264,9 +264,6 @@ bcftools query -f '%CHROM\t%POS\t%CONTEXT_3mer[\t%SITE_DP]\n' "calls.g.vcf.gz" |
 bcftools query -i 'ALT!="."' -f '%CHROM\t%POS\t%REF\t%ALT\t%CONTEXT_3mer[\t%AD{1}]\n' "calls.g.vcf.gz"
 ```
 
-MF is the number of mutations (MF min) or their ALT reads (MF max) over the total depth.
-A deletion's `AD` is counted at its first deleted base, not POS, so its `AD[1]` over `SITE_DP` can top 1.
-
 ## Development and Testing
 
 The checks CI runs are cargo aliases, so they can be run locally before pushing:
