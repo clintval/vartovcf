@@ -179,8 +179,8 @@ Give tumor-normal BAMs as VarDict takes them, `"tumor.bam|normal.bam"`, and set 
 #### Deciding Partials by Their Count
 
 Without `--reads`, a partial allele folds when it carries the MNV's ALT bases and has few enough reads to be the MNV's leakage at `--leaky-mnv-rate`, 0.05 by default.
-Judged by its count alone, a real allele with few reads beside a deep MNV folds too.
 At that rate, an MNV folds a 1-read partial allele once the MNV has 2 reads, a 2-read partial allele at 6, and a 10-read partial allele at 101.
+Judged by its count alone, a real allele with few reads beside a deep MNV folds too.
 On this repository's test data, `GG>CA` has a 6-read and a 4-read partial allele beside `G>T`, another allele:
 
 ```bash
