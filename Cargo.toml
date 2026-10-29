@@ -1,6 +1,6 @@
 [package]
 name = "vartovcf"
-version = "5.1.0"
+version = "6.0.0"
 authors = ["Clint Valentine <valentine.clint@gmail.com>"]
 edition = "2024"
 rust-version = "1.89"
