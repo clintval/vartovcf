@@ -81,15 +81,15 @@
   <text class="ink" x="652.0" y="278" text-anchor="middle">MNV ALT reads</text>
   <text class="ink" x="384" y="153.0" text-anchor="middle" transform="rotate(-90 384 153.0)">partial allele ALT reads</text>
   <path class="mark" d="M667.0 76 V244"/>
-  <text class="ink" x="667.0" y="70" text-anchor="middle">GGG&gt;GAT</text>
+  <text class="tag" x="667.0" y="70" text-anchor="middle">GGG&gt;G<tspan class="alt">A</tspan><tspan class="alt">T</tspan></text>
   <path class="mark" d="M769.5 76 V244"/>
-  <text class="ink" x="769.5" y="70" text-anchor="middle">GGG&gt;CAT</text>
+  <text class="tag" x="769.5" y="70" text-anchor="middle">GGG&gt;<tspan class="alt">C</tspan><tspan class="alt">A</tspan><tspan class="alt">T</tspan></text>
   <circle class="dot" cx="769.5" cy="154.6" r="3.5"/>
-  <text class="tag" x="777.5" y="158.6">GGG&gt;CAG</text>
+  <text class="tag" x="777.5" y="158.6">GGG&gt;<tspan class="alt">C</tspan><tspan class="alt">A</tspan>G</text>
   <path class="cross" d="M765.5 91.6 l8 8 m0 -8 l-8 8"/>
-  <text class="tag" x="760.5" y="99.6" text-anchor="end">GGG&gt;GAT</text>
+  <text class="tag" x="760.5" y="99.6" text-anchor="end">GGG&gt;G<tspan class="alt">A</tspan><tspan class="alt">T</tspan></text>
   <circle class="dot" cx="667.0" cy="190.6" r="3.5"/>
-  <text class="tag" x="675.0" y="194.6">GGG&gt;GAG</text>
+  <text class="tag" x="675.0" y="194.6">GGG&gt;G<tspan class="alt">A</tspan>G</text>
   <text class="ink" x="446" y="72">chance the MNV leaks</text>
   <text class="ink" x="446" y="87">this many reads or more</text>
   <rect class="band" x="446" y="98" width="22" height="12"/>
