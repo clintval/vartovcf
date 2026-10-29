@@ -1248,6 +1248,65 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn run_end_to_end_names_a_malformed_row_before_reading_later_regions_to_fold()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        let assert = cmd
+            .args(["--reference", "tests/reference.fa", "--sample", "dna00001"])
+            .arg("--fix-leaky-mnv")
+            .pipe_stdin("tests/calls.malformed.two-regions.var")?
+            .assert()
+            .code(1);
+        let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+        assert!(
+            stderr.contains("Could not parse column 8 on line 2"),
+            "{stderr}"
+        );
+        assert!(!stderr.contains("Expected sample"), "{stderr}");
+        Ok(())
+    }
+
+    #[rstest]
+    #[case(&[])]
+    #[case(&["--fix-leaky-mnv"])]
+    fn run_end_to_end_refuses_a_row_past_the_contigs_end(
+        #[case] args: &[&str],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        let assert = cmd
+            .args(["--reference", "tests/reference.fa"])
+            .args(args)
+            .pipe_stdin("tests/calls.huge-start.var")?
+            .assert()
+            .code(1);
+        let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+        assert!(
+            stderr.contains("chr1:18446744073709551615 is beyond the end of chr1"),
+            "{stderr}"
+        );
+        assert!(!stderr.contains("panicked"), "{stderr}");
+        Ok(())
+    }
+
+    #[test]
+    fn run_end_to_end_gives_rows_tied_on_depth_one_site_dp_whatever_their_order_or_folding()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let rows = read_to_string("tests/calls.site-dp.tie.var")?;
+        let swapped: String = rows.lines().rev().map(|row| format!("{row}\n")).collect();
+        for input in [&rows, &swapped] {
+            for args in [&[][..], &["--fix-leaky-mnv"][..]] {
+                let (records, _) = site_depths(input, args)?;
+                assert_eq!(
+                    at(&records, &["1101"]),
+                    vec!["chr1 1101 G A . 0/1 300,20 400 340"],
+                    "{args:?} on\n{input}"
+                );
+            }
+        }
+        Ok(())
+    }
+
     #[rstest]
     #[case(
         "tests/calls.leaky-mnv.var",

@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::fai::{fasta_contigs_to_vcf_header, fasta_path_to_vcf_header};
 use crate::fill::{Bed, BedLayout, Fill, parse_segment, read_bed};
 use crate::filter::FilterThresholds;
-use crate::mnv::{Fold, LeakRate, LeakyMnvFix, Merged, Rule, fold_partials};
+use crate::mnv::{Clusters, Fold, LeakRate, LeakyMnvFix, Merged, Rule, fold_partials};
 use crate::normalize::{Normalized, normalize};
 use crate::output::{Index, Output};
 use crate::reads::ReadSources;
@@ -388,14 +388,10 @@ fn convert<I: Read>(
             return Err(message.into());
         };
         columns.drop_fisher_columns(&mut carry, &mut scratch);
+        let (calls, status) = parse_row(&carry, columns)?;
         if let Some(rows) = &mut sink.rows {
-            let start = carry
-                .get(3)
-                .and_then(|start| start.parse().ok())
-                .unwrap_or(0);
-            rows.push(ordinal, start, &carry)?;
+            rows.push(ordinal, calls[0].start, &carry)?;
         } else {
-            let (calls, status) = parse_row(&carry, columns)?;
             sink.add(&calls[..layout.samples()], status, ordinal)?;
         }
     }
@@ -564,22 +560,22 @@ impl Sink<'_> {
         };
         let mut rows = sorter.rows()?;
         let mut cluster: Vec<StringRecord> = Vec::new();
-        let (mut region, mut end) = (0, 0);
+        let mut clusters = Clusters::default();
+        let mut region = 0;
         while let Some((ordinal, row)) = rows.next_row()? {
             if stop() {
                 return Ok(false);
             }
+            if ordinal != region {
+                clusters = Clusters::default();
+            }
             let start: u64 = row.get(3).and_then(|start| start.parse().ok()).unwrap_or(0);
-            let ref_length = row.get(5).map_or(0, str::len) as u64;
-            if !cluster.is_empty() && (ordinal != region || start > end) {
+            let ref_length = row.get(5).map_or(0, str::len);
+            if clusters.starts_cluster(start, ref_length) && !cluster.is_empty() {
                 self.add_cluster(&cluster, columns, region)?;
                 cluster.clear();
             }
-            if cluster.is_empty() {
-                region = ordinal;
-                end = start;
-            }
-            end = end.max((start + ref_length).saturating_sub(1));
+            region = ordinal;
             cluster.push(row.clone());
         }
         if !cluster.is_empty() {

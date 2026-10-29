@@ -395,6 +395,34 @@ pub(crate) fn is_sub_event(parent: &TumorOnlyVariant, child: &TumorOnlyVariant) 
         && parent.ref_allele.get(span) == Some(child.ref_allele)
 }
 
+/// Cuts a region's rows, sorted by start, into the clusters they fold within: a row starting past
+/// the REF of every earlier row of its cluster starts the next, so an MNV's cluster holds every row
+/// inside its REF.
+#[derive(Default)]
+pub(crate) struct Clusters {
+    end: Option<u64>,
+}
+
+impl Clusters {
+    /// Takes the next row by its start and REF length, returning whether it starts a cluster.
+    pub(crate) fn starts_cluster(&mut self, start: u64, ref_length: usize) -> bool {
+        let last = start
+            .saturating_add(ref_length as u64)
+            .saturating_sub(1)
+            .max(start);
+        match self.end {
+            Some(end) if start <= end => {
+                self.end = Some(end.max(last));
+                false
+            }
+            _ => {
+                self.end = Some(last);
+                true
+            }
+        }
+    }
+}
+
 /// Folds the partial rows' calls into the MNV's, one sample at a time.
 fn merge<'a>(parent: &[TumorOnlyVariant<'a>], children: &[&[TumorOnlyVariant<'a>]]) -> Merged<'a> {
     let calls: Vec<TumorOnlyVariant<'a>> = parent
@@ -1196,5 +1224,124 @@ mod tests {
         let fates = ReadFates::from([((0usize, 1usize), fate(&rows[1], 5, 0))]);
         let folds = fold_partials(&calls, &[false, true], Rule::Reads(&fates));
         assert_eq!(folds, vec![Fold::Keep, Fold::Keep]);
+    }
+
+    #[test]
+    fn test_a_cluster_holds_the_rows_starting_inside_an_earlier_rows_ref() {
+        let mut clusters = Clusters::default();
+        let rows = [
+            (10, 3),
+            (12, 1),
+            (13, 2),
+            (15, 1),
+            (16, 1),
+            (u64::MAX, 3),
+            (u64::MAX, 1),
+        ];
+        let starts: Vec<bool> = rows
+            .into_iter()
+            .map(|(start, length)| clusters.starts_cluster(start, length))
+            .collect();
+        assert_eq!(starts, vec![true, false, true, true, true, true, false]);
+    }
+
+    /// A stream of pseudo-random numbers, the same for the same seed.
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn below(&mut self, n: u64) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (self.0 >> 33) % n
+        }
+
+        /// A base other than `base`.
+        fn other_than(&mut self, base: u8) -> u8 {
+            let index = b"ACGT".iter().position(|&b| b == base).unwrap();
+            b"ACGT"[(index + 1 + self.below(3) as usize) % 4]
+        }
+    }
+
+    /// A region's rows over a short reference: MNVs, partials of them with a few of their reads, and
+    /// unrelated SNVs, sorted by start as they come from the sort.
+    fn random_rows(rng: &mut Lcg) -> Vec<TumorOnlyVariant<'static>> {
+        const REFERENCE: &[u8] = b"ACGTTGCAAGCTGACCTGATCGGATCCATGCAGTCAGTACGATCGATGCATGCTAGC";
+        let allele = |bases: &[u8]| -> &'static str {
+            Box::leak(String::from_utf8(bases.to_vec()).unwrap().into_boxed_str())
+        };
+        let mut rows = Vec::new();
+        for _ in 0..1 + rng.below(6) {
+            let length = 2 + rng.below(4) as usize;
+            let offset = rng.below((REFERENCE.len() - length) as u64) as usize;
+            let reference = &REFERENCE[offset..offset + length];
+            let alt: Vec<u8> = reference.iter().map(|&base| rng.other_than(base)).collect();
+            let reads = 20 + rng.below(200) as i32;
+            let start = 100 + offset as u64;
+            rows.push(call(start, allele(reference), allele(&alt), reads, 1000));
+            for _ in 0..rng.below(4) {
+                let from = rng.below(length as u64) as usize;
+                let to = from + 1 + rng.below((length - from) as u64) as usize;
+                let partial_reads = 1 + rng.below(reads as u64 / 3) as i32;
+                let (reference, alt) = (allele(&reference[from..to]), allele(&alt[from..to]));
+                rows.push(call(
+                    start + from as u64,
+                    reference,
+                    alt,
+                    partial_reads,
+                    1000,
+                ));
+            }
+        }
+        for _ in 0..rng.below(5) {
+            let offset = rng.below(REFERENCE.len() as u64) as usize;
+            let alt = rng.other_than(REFERENCE[offset]);
+            let (reference, alt) = (allele(&REFERENCE[offset..=offset]), allele(&[alt]));
+            rows.push(call(
+                100 + offset as u64,
+                reference,
+                alt,
+                1 + rng.below(50) as i32,
+                1000,
+            ));
+        }
+        rows.sort_by_key(|row| row.start);
+        rows
+    }
+
+    #[test]
+    fn test_folding_a_regions_clusters_one_at_a_time_folds_it_as_a_whole() {
+        let mut rng = Lcg(7);
+        let mut folded = 0;
+        for _ in 0..500 {
+            let rows = random_rows(&mut rng);
+            let written: Vec<bool> = rows.iter().map(|_| rng.below(10) == 0).collect();
+            let calls: Vec<&[TumorOnlyVariant]> = rows.iter().map(std::slice::from_ref).collect();
+            let rule = Rule::Counts(LeakRate::default());
+            let whole = fold_partials(&calls, &written, rule);
+            let mut clusters = Clusters::default();
+            let mut bounds: Vec<usize> = (0..rows.len())
+                .filter(|&row| clusters.starts_cluster(rows[row].start, rows[row].ref_allele.len()))
+                .collect();
+            bounds.push(rows.len());
+            let mut by_cluster = Vec::new();
+            for cluster in bounds.windows(2) {
+                let (first, last) = (cluster[0], cluster[1]);
+                let folds = fold_partials(&calls[first..last], &written[first..last], rule);
+                by_cluster.extend(folds.into_iter().map(|fold| match fold {
+                    Fold::Into(root) => Fold::Into(root + first),
+                    Fold::Split { into, calls, moved } => Fold::Split {
+                        into: into + first,
+                        calls,
+                        moved,
+                    },
+                    other => other,
+                }));
+            }
+            folded += whole.iter().filter(|fold| **fold != Fold::Keep).count();
+            assert_eq!(by_cluster, whole, "{rows:?}");
+        }
+        assert!(folded > 200, "only {folded} rows folded");
     }
 }

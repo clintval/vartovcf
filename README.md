@@ -255,7 +255,7 @@ What VarDict counted in each row goes into the sort beside the records, under th
 
 ### Sorting
 
-Records are sorted by contig, in the reference's order, then by POS, REF and ALT, as `bcftools sort` does, so `bcftools sort` is not needed, and they are written only once the input ends. Up to 64 MiB of records, with each row's counts and each region's bounds, are held in memory, plus up to 16 MiB of rows and a key per substitution row with `--fix-leaky-mnv`, and the rest spill to a `spillsort-*` directory under `--tmp-dir`, `$TMPDIR` by default, which is removed when `vartovcf` exits or fails. A SIGINT or SIGTERM stops it at its next input row or the next record written and removes the output file, though output already sent to standard output may end in a partial record; a second signal exits at once and leaves its temporary files and an incomplete output file.
+Records are sorted by contig, in the reference's order, then by POS, REF and ALT, as `bcftools sort` does, so `bcftools sort` is not needed, and they are written only once the input ends. Up to 64 MiB of records, with each row's counts and each region's bounds, are held in memory, plus up to 16 MiB of rows and a key per substitution row with `--fix-leaky-mnv`, and the rest spill to `spillsort-*` directories under `--tmp-dir`, `$TMPDIR` by default, which are removed when `vartovcf` exits or fails. With `--fix-leaky-mnv`, up to about the input's size can spill. A SIGINT or SIGTERM stops it at its next input row or the next record written and removes the output file, though output already sent to standard output may end in a partial record; a second signal exits at once and leaves its temporary files and an incomplete output file.
 
 ### Output
 

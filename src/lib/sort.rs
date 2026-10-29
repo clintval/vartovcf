@@ -585,6 +585,41 @@ mod tests {
     }
 
     #[test]
+    fn test_spills_rows_and_reads_them_back_in_order_with_their_places() {
+        let dir = TempDir::new().unwrap();
+        let mut sorter = RowSorter::new(dir.path()).unwrap();
+        let field = "x".repeat(1 << 16);
+        for line in 1..=512u64 {
+            let mut row = csv::StringRecord::from(vec![line.to_string(), field.clone()]);
+            let mut position = csv::Position::new();
+            position
+                .set_line(line)
+                .set_byte(line * 7)
+                .set_record(line - 1);
+            row.set_position(Some(position));
+            sorter.push(line % 2, 1000 - line, &row).unwrap();
+        }
+        assert!(sorter.sorter.runs() > 0);
+        let mut rows = sorter.rows().unwrap();
+        let mut read = Vec::new();
+        while let Some((region, row)) = rows.next_row().unwrap() {
+            let line: u64 = row[0].parse().unwrap();
+            let position = row.position().unwrap();
+            assert_eq!(&row[1], field);
+            assert_eq!(
+                (position.line(), position.byte(), position.record()),
+                (line, line * 7, line - 1)
+            );
+            read.push((region, line));
+        }
+        let mut expected: Vec<(u64, u64)> = (1..=512).map(|line| (line % 2, line)).collect();
+        expected.sort_by_key(|&(region, line)| (region, 1000 - line));
+        assert_eq!(read, expected);
+        drop(rows);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
     fn test_symbolic_alleles_with_different_ends_are_both_written() {
         let short = SortKey {
             end: 200,
