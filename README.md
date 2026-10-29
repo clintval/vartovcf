@@ -214,11 +214,9 @@ Here a homozygous deletion and reads that end at 1111 leave four positions to fi
 
 A filled record's INFO `GVCF_FILL` says where its depth came from:
 
-| `GVCF_FILL` | The position |
-|---|---|
-| `ROWS` | Has reads VarDict counted in rows written elsewhere, such as a deletion VarDict writes at the base before |
-| `SPANNED` | Lies inside a deletion, MNV or Complex call, whose reads are the position's depth |
-| `NO_READS` | Has no reads |
+- `ROWS`: reads VarDict counted there but wrote at another position, as for a deletion
+- `SPANNED`: the reads of a deletion, MNV or Complex call spanning the position
+- `NO_READS`: no reads
 
 The figure is drawn from this repository's test data:
 
