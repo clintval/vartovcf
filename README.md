@@ -19,12 +19,12 @@ mamba install vartovcf
 ## Features
 
 - Output is always coordinate sorted and normalized, and indexed when bgzipped
-- Reads tumor-only and tumor-normal output, see [Tumor-Normal](#tumor-normal)
+- Reads tumor-only and tumor-normal output, see [Tumor-Only](#tumor-only) and [Tumor-Normal](#tumor-normal)
 - Applies FILTER labels only when asked, see [Filters](#filters)
 - Optionally folds an MNV's partial rows back into it, see [Leaky MNVs](#leaky-mnvs)
 - Writes gVCFs with a record and depth at every position, see [gVCFs](#gvcfs)
 
-## Quick Start
+## Tumor-Only
 
 Replace the call to `var2vcf_valid.pl` with `vartovcf`:
 
@@ -40,51 +40,6 @@ vardict-java \
       --sample dna00001 \
       --output variants.vcf.gz
 ```
-
-## Filters
-
-No FILTER label is applied unless its option is given.
-These are the thresholds `var2vcf_valid.pl` applies by default, though not every rule around them is reproduced:
-
-```console
-vartovcf \
-    --reference hg38.fa \
-    --sample dna00001 \
-    --filter-near-read-end 8 \
-    --filter-low-mean-mapq 10 \
-    --filter-homopolymer-indel 13 --filter-homopolymer-indel-max-af 0.275 \
-    --filter-tandem-repeat-indel 13 --filter-tandem-repeat-indel-max-af 0.2 \
-    --filter-high-mean-mismatches 5.25 \
-    --filter-same-read-position 0.35 \
-    --filter-strand-bias 0.01 --filter-strand-bias-min-odds-ratio 5 --filter-strand-bias-max-af 0.25 \
-    --output variants.vcf.gz
-```
-
-In pileup mode (`-p`), VarDict keeps every candidate, so add these to label the ones its `-f`, `-q` and `-r`, and `var2vcf_valid.pl`'s `-d`, would drop:
-
-```console
-    --filter-low-af 0.05 \
-    --filter-low-qmean 22.5 \
-    --filter-low-hicnt 2 \
-    --filter-low-dp 3
-```
-
-| Label | Applied when |
-|---|---|
-| `NEAR_READ_END` | `MEAN_DIST_TO_READ_END` is below the threshold |
-| `LOW_MEAN_MAPQ` | `MEAN_MAPQ` is below the threshold |
-| `HOMOPOLYMER_INDEL` | An indel or Complex call one base longer or shorter than REF sits in a homopolymer of at least the threshold's copies |
-| `TANDEM_REPEAT_INDEL` | An indel or Complex call one unit longer or shorter than REF sits in a 2-6 bp tandem repeat of at least the threshold's copies |
-| `HIGH_MEAN_MISMATCHES` | `MEAN_MISMATCHES` is above the threshold |
-| `SAME_READ_POSITION` | 2 or more ALT reads all place the variant at one read position, at an `AF` below the threshold |
-| `STRAND_BIAS` | `STRAND_BIAS_FISHER_P` is below the threshold |
-| `LOW_AF` | `AF` is below the threshold |
-| `LOW_QMEAN` | `QMEAN` is below the threshold |
-| `LOW_HICNT` | `HICNT` is below the threshold |
-| `LOW_DP` | `DP` is below the threshold |
-
-The `-max-af` and `-min-odds-ratio` options narrow a label to calls below that `AF` or above that odds ratio.
-Once any label is applied, a call that fails none is `PASS`.
 
 ## Tumor-Normal
 
@@ -114,6 +69,52 @@ bcftools view -f PASS -i 'INFO/VARDICT_STATUS ~ "Somatic" && INFO/TUMOR_NORMAL_F
 > [!WARNING]
 > VarDictJava's tumor-normal mode stops at the first allele at a position that fails its call rules, so it never writes the alleles ranked below it, about 0.4% of rows.
 > A fix is proposed in [joachimwolff/VarDictJava#4](https://github.com/joachimwolff/VarDictJava/pull/4).
+
+## Filters
+
+No FILTER label is applied unless its option is given.
+These are the thresholds `var2vcf_valid.pl` applies by default.
+Its rules add conditions `vartovcf` leaves out, such as testing mapping quality only below an `AF` of 0.8 and strand bias only where VarDict flags it:
+
+```console
+vartovcf \
+    --reference hg38.fa \
+    --sample dna00001 \
+    --filter-near-read-end 8 \
+    --filter-low-mean-mapq 10 \
+    --filter-homopolymer-indel 13 --filter-homopolymer-indel-max-af 0.275 \
+    --filter-tandem-repeat-indel 13 --filter-tandem-repeat-indel-max-af 0.2 \
+    --filter-high-mean-mismatches 5.25 \
+    --filter-same-read-position 0.35 \
+    --filter-strand-bias 0.01 --filter-strand-bias-min-odds-ratio 5 --filter-strand-bias-max-af 0.25 \
+    --output variants.vcf.gz
+```
+
+In pileup mode (`-p`), VarDict keeps every candidate, so add these too:
+
+```console
+    --filter-low-af 0.05 \
+    --filter-low-qmean 22.5 \
+    --filter-low-hicnt 2 \
+    --filter-low-dp 3
+```
+
+| Label | Applied when |
+|---|---|
+| `NEAR_READ_END` | `MEAN_DIST_TO_READ_END` is below the threshold |
+| `LOW_MEAN_MAPQ` | `MEAN_MAPQ` is below the threshold |
+| `HOMOPOLYMER_INDEL` | An indel or Complex call one base longer or shorter than REF sits in a homopolymer of at least the threshold's copies |
+| `TANDEM_REPEAT_INDEL` | An indel or Complex call one unit longer or shorter than REF sits in a 2-6 bp tandem repeat of at least the threshold's copies |
+| `HIGH_MEAN_MISMATCHES` | `MEAN_MISMATCHES` is above the threshold |
+| `SAME_READ_POSITION` | 2 or more ALT reads all place the variant at one read position, at an `AF` below the threshold |
+| `STRAND_BIAS` | `STRAND_BIAS_FISHER_P` is below the threshold |
+| `LOW_AF` | `AF` is below the threshold |
+| `LOW_QMEAN` | `QMEAN` is below the threshold |
+| `LOW_HICNT` | `HICNT` is below the threshold |
+| `LOW_DP` | `DP` is below the threshold |
+
+The `-max-af` and `-min-odds-ratio` options narrow a label to calls below that `AF` or above that odds ratio.
+Once any label is applied, a call that fails none is `PASS`.
 
 ## Leaky MNVs
 
