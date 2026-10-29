@@ -50,11 +50,11 @@ struct Opt {
     #[arg(long)]
     skip_non_variants: bool,
 
-    /// Write a reference-only record at each position of VarDict's regions (its chr:start-end column) that has none, so a gVCF of tumor-only -p output has a record at every position; INFO GVCF_FILL says how its depth was found. Holds each VarDict region's rows until it ends; see the README
+    /// Write a reference-only record at each position of VarDict's regions (its chr:start-end column) that has none, so a gVCF of tumor-only -p output has exactly one at every position; INFO GVCF_FILL says how its depth was found. See the README
     #[arg(long, conflicts_with = "skip_non_variants")]
     fill_gvcf: bool,
 
-    /// The BED file VarDict was given, read from its first three columns; with --fill-gvcf, each line's region outside every VarDict region is filled too, as positions without reads. Each VarDict region must be a line's region as VarDict builds it, or the run fails naming the options that give it; see the README
+    /// The BED file VarDict was given, read from its first three columns; with --fill-gvcf, each line's region outside every VarDict region is filled too, as positions without reads unless a deletion a VarDict region counted runs into it. Each VarDict region must be a line's region as VarDict builds it, or the run fails naming the options that give it; see the README
     #[arg(long, value_name = "BED", requires = "fill_gvcf")]
     fill_gvcf_bed: Option<PathBuf>,
 

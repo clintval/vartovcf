@@ -1,27 +1,22 @@
-//! Fills the positions of VarDict's regions that have no record with reference-only records, so a
-//! gVCF of VarDict's pileup (`-p`) output has a record at every position it piled up.
+//! How the positions of VarDict's regions that have no reference-only record are filled with one,
+//! so a gVCF of VarDict's pileup (`-p`) output has exactly one at every position VarDict piled up,
+//! and the regions of a BED file VarDict wrote no row for.
 //!
-//! VarDict counts each row's reads at one position: the first deleted base of a deletion it writes
-//! with the base before, the anchor of an insertion it writes without it, and the first base of
-//! every other row. A position of a region has no record when VarDict wrote rows for it that were
-//! written elsewhere or folded, when no read has a base VarDict counts there inside a deletion or
-//! MNV, or when no read covers it.
+//! A position of a region has none when VarDict wrote only ALT rows for it, as it does at every
+//! position with an allele, when the rows it wrote for it were written elsewhere or folded, when no
+//! read has a base VarDict counts there inside a deletion or MNV, or when no read covers it; see
+//! [`crate::site`] for what VarDict counted at each position.
 
-use std::cmp::Reverse;
-use std::collections::BinaryHeap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use ahash::{AHashMap, AHashSet};
 
-use crate::record::{TumorOnlyVariant, variant_class};
-
-/// How a filled position's depth was found, the value of INFO `GVCF_FILL`, ordered from the fill
-/// that knows the most about the position to the one that knows the least.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+/// How a filled position's depth was found, the value of INFO `GVCF_FILL`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fill {
-    /// From a row VarDict counted at the position, none of which was written there.
+    /// From the rows VarDict counted at the position, none a reference-only record written there.
     Rows,
     /// Inside a deletion or MNV, with no row VarDict counted at the position.
     Spanned,
@@ -40,169 +35,11 @@ impl Fill {
     }
 }
 
-/// A reference-only record to write at a position without one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Filled {
-    /// The 1-based position.
-    pub position: u64,
-    /// How its depth was found.
-    pub fill: Fill,
-    /// The forward reads carrying the reference base.
-    pub ref_forward: i32,
-    /// The reverse reads carrying the reference base.
-    pub ref_reverse: i32,
-    /// The read depth.
-    pub depth: i32,
-}
-
 /// The contig and the 1-based start and end of a VarDict region from its `chr:start-end` column.
 pub fn parse_segment(segment: &str) -> Option<(&str, u64, u64)> {
     let (contig, range) = segment.rsplit_once(':')?;
     let (start, end) = range.split_once('-')?;
     Some((contig, start.parse().ok()?, end.parse().ok()?))
-}
-
-/// A row's insertion or deletion as VarDict's genotype column spells it after the slash: `-` and a
-/// deletion's length, `+` and the length of an insertion's description, or `None` for any other
-/// allele or a column not in VarDict's notation.
-fn vardict_indel<'a>(call: &TumorOnlyVariant<'a>) -> Option<&'a str> {
-    let (_, allele) = call.gt.split_once('/')?;
-    (allele.starts_with('-') || allele.starts_with('+')).then_some(allele)
-}
-
-/// The position VarDict counted a row's reads at. VarDict writes a plain deletion, spelled `-` and a
-/// length, from the base before its first deleted base, where it counted it, and an insertion
-/// followed by matched bases, spelled `+` and its description's length, which is ALT's plus one,
-/// from the base after its anchor; every other row starts where it was counted. A row whose genotype
-/// column is not in VarDict's notation is read by its alleles' shape.
-pub fn vardict_position(call: &TumorOnlyVariant) -> u64 {
-    let digits = |length: &str| length.parse::<usize>().ok();
-    match vardict_indel(call) {
-        Some(deletion) if deletion.starts_with('-') && digits(&deletion[1..]).is_some() => {
-            call.start + 1
-        }
-        Some(insertion)
-            if insertion.starts_with('+')
-                && !call.alt_allele.starts_with('<')
-                && digits(&insertion[1..]) == Some(call.alt_allele.len() + 1) =>
-        {
-            call.start - 1
-        }
-        Some(_) => call.start,
-        None => {
-            let (ref_allele, alt_allele) = (call.ref_allele.as_bytes(), call.alt_allele.as_bytes());
-            let anchored = ref_allele.len() > alt_allele.len()
-                && alt_allele.len() == 1
-                && ref_allele[0].eq_ignore_ascii_case(&alt_allele[0]);
-            if anchored { call.start + 1 } else { call.start }
-        }
-    }
-}
-
-/// Whether VarDict took a row's reads from the REF reads of the base it counted the row at, as it
-/// does for an insertion's.
-fn inserts(call: &TumorOnlyVariant) -> bool {
-    match vardict_indel(call) {
-        Some(allele) => allele.starts_with('+') && !call.alt_allele.starts_with('<'),
-        None => variant_class(call.ref_allele, call.alt_allele) == Some("Insertion"),
-    }
-}
-
-/// The REF reads and depth of the row chosen at a position VarDict counted reads at.
-#[derive(Clone, Copy)]
-struct Counted {
-    complex: bool,
-    ref_forward: i32,
-    ref_reverse: i32,
-    depth: i32,
-}
-
-/// The fills of the positions `start..=end` of a region missing from `written`, from the region's
-/// rows, made one at a time. A position with rows VarDict counted there takes its REF reads and DP
-/// from the one that is not Complex, whose REF reads VarDict overcounts, with the most depth, and
-/// the reads of each insertion there join its REF reads, as VarDict takes them from the anchor
-/// base's; a position inside a deletion, a symbolic `<DEL>` included, or an MNV takes no REF reads
-/// and the depth of the one spanning it with the most; any other position has no reads. The rows
-/// and spans are held, but no position is until it is made.
-pub fn region_fills<'w>(
-    calls: &[&TumorOnlyVariant],
-    written: &'w AHashSet<u64>,
-    start: u64,
-    end: u64,
-) -> impl Iterator<Item = Filled> + 'w {
-    let mut counted: AHashMap<u64, Counted> = AHashMap::new();
-    let mut inserted: AHashMap<u64, (i32, i32)> = AHashMap::new();
-    let mut spans: Vec<(u64, u64, i32)> = Vec::new();
-    for &call in calls {
-        let position = vardict_position(call);
-        let row = Counted {
-            complex: call.variant_type == "Complex",
-            ref_forward: call.ref_forward,
-            ref_reverse: call.ref_reverse,
-            depth: call.depth,
-        };
-        let better = |row: &Counted| (!row.complex, row.depth);
-        counted
-            .entry(position)
-            .and_modify(|best| {
-                if better(&row) > better(best) {
-                    *best = row;
-                }
-            })
-            .or_insert(row);
-        if inserts(call) {
-            let reads = inserted.entry(position).or_default();
-            reads.0 += call.alt_forward;
-            reads.1 += call.alt_reverse;
-        }
-        let last = match call.alt_allele {
-            "<DEL>" => Some(call.end),
-            alt if !alt.starts_with('<') => Some(call.start + call.ref_allele.len() as u64 - 1),
-            _ => None,
-        };
-        if let Some(last) = last.filter(|&last| last > position) {
-            spans.push((position + 1, last, call.depth));
-        }
-    }
-    spans.sort_unstable_by_key(|&(from, _, _)| Reverse(from));
-    let mut open: BinaryHeap<(i32, u64)> = BinaryHeap::new();
-    (start..=end)
-        .filter(|position| !written.contains(position))
-        .map(move |position| {
-            while spans.last().is_some_and(|&(from, _, _)| from <= position) {
-                let (_, to, depth) = spans.pop().expect("A span was just seen!");
-                open.push((depth, to));
-            }
-            while open.peek().is_some_and(|&(_, to)| to < position) {
-                open.pop();
-            }
-            match (counted.get(&position), open.peek()) {
-                (Some(row), _) => {
-                    let (forward, reverse) = inserted.get(&position).copied().unwrap_or_default();
-                    Filled {
-                        position,
-                        fill: Fill::Rows,
-                        ref_forward: row.ref_forward + forward,
-                        ref_reverse: row.ref_reverse + reverse,
-                        depth: row.depth,
-                    }
-                }
-                (None, Some(&(depth, _))) => Filled {
-                    position,
-                    fill: Fill::Spanned,
-                    ref_forward: 0,
-                    ref_reverse: 0,
-                    depth,
-                },
-                (None, None) => Filled {
-                    position,
-                    fill: Fill::NoReads,
-                    ref_forward: 0,
-                    ref_reverse: 0,
-                    depth: 0,
-                },
-            }
-        })
 }
 
 /// How VarDict turns a BED line into the region it piles up: widened by `extend` bases on each
@@ -325,42 +162,6 @@ impl Bed {
     }
 }
 
-/// Sorts 1-based, inclusive ranges and joins those that overlap or touch.
-pub fn merge(mut ranges: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
-    ranges.sort_unstable();
-    let mut merged: Vec<(u64, u64)> = Vec::with_capacity(ranges.len());
-    for (start, end) in ranges {
-        match merged.last_mut() {
-            Some(last) if start <= last.1 + 1 => last.1 = last.1.max(end),
-            _ => merged.push((start, end)),
-        }
-    }
-    merged
-}
-
-/// The parts of the 1-based, inclusive range `start..=end` outside every range of `covered`, which
-/// [`merge`] has sorted and joined.
-pub fn uncovered(start: u64, end: u64, covered: &[(u64, u64)]) -> Vec<(u64, u64)> {
-    let mut parts = Vec::new();
-    let mut next = start;
-    for &(from, to) in covered {
-        if to < next {
-            continue;
-        }
-        if from > end {
-            break;
-        }
-        if from > next {
-            parts.push((next, from - 1));
-        }
-        next = to + 1;
-    }
-    if next <= end {
-        parts.push((next, end));
-    }
-    parts
-}
-
 /// Reads a BED file's lines from the first three columns of each, split on whitespace, refusing a
 /// line without a start and an end no lower than it, a contig `contig_length` does not know and an
 /// end past the contig's; blank, `#`, `track` and `browser` lines are skipped.
@@ -411,45 +212,11 @@ pub fn read_bed(
 
 #[cfg(test)]
 mod tests {
-    use ahash::AHashSet;
     use pretty_assertions::assert_eq;
     use rstest::rstest;
     use std::io::Write;
 
     use super::*;
-    use crate::record::TumorOnlyVariant;
-
-    fn call(
-        start: u64,
-        ref_allele: &'static str,
-        alt_allele: &'static str,
-        depth: i32,
-        ref_reads: (i32, i32),
-        variant_type: &'static str,
-    ) -> TumorOnlyVariant<'static> {
-        TumorOnlyVariant {
-            contig: "chr1",
-            start,
-            end: start + ref_allele.len() as u64 - 1,
-            ref_allele,
-            alt_allele,
-            depth,
-            ref_forward: ref_reads.0,
-            ref_reverse: ref_reads.1,
-            variant_type,
-            ..TumorOnlyVariant::default()
-        }
-    }
-
-    fn filled(position: u64, fill: Fill, ref_reads: (i32, i32), depth: i32) -> Filled {
-        Filled {
-            position,
-            fill,
-            ref_forward: ref_reads.0,
-            ref_reverse: ref_reads.1,
-            depth,
-        }
-    }
 
     #[test]
     fn test_parse_segment_splits_the_contig_from_the_range_after_the_last_colon() {
@@ -461,195 +228,6 @@ mod tests {
         assert_eq!(parse_segment("chr1"), None);
         assert_eq!(parse_segment("chr1:9-x"), None);
         assert_eq!(parse_segment(""), None);
-    }
-
-    #[test]
-    fn test_vardict_position_is_the_first_deleted_base_of_an_anchored_deletion() {
-        assert_eq!(
-            vardict_position(&call(10, "CA", "C", 9, (0, 0), "Deletion")),
-            11
-        );
-        assert_eq!(
-            vardict_position(&call(10, "C", "CA", 9, (0, 0), "Insertion")),
-            10
-        );
-        assert_eq!(vardict_position(&call(10, "C", "T", 9, (0, 0), "SNV")), 10);
-        assert_eq!(
-            vardict_position(&call(10, "CA", "TG", 9, (0, 0), "Complex")),
-            10
-        );
-        assert_eq!(
-            vardict_position(&call(10, "CAG", "T", 9, (0, 0), "Complex")),
-            10
-        );
-        assert_eq!(vardict_position(&call(10, "C", "C", 9, (5, 4), "")), 10);
-        assert_eq!(
-            vardict_position(&call(10, "C", "<DEL>", 9, (0, 0), "DEL")),
-            10
-        );
-    }
-
-    #[rstest]
-    #[case("CA", "C", "A/-1", 11)]
-    #[case("C", "<DEL>", "C/-1000", 11)]
-    #[case("TCG", "T", "T/-2T", 10)]
-    #[case("TCG", "T", "T/-2mT", 10)]
-    #[case("TCG", "T", "-2T/-2T", 10)]
-    #[case("C", "CA", "C/+1", 10)]
-    #[case("G", "AT", "C/+3", 9)]
-    #[case("CC", "AATG", "C/+5", 9)]
-    #[case("C", "<DUP>", "C/+160", 10)]
-    fn test_vardict_position_reads_a_deletion_from_vardicts_allele_notation(
-        #[case] ref_allele: &'static str,
-        #[case] alt_allele: &'static str,
-        #[case] gt: &'static str,
-        #[case] expected: u64,
-    ) {
-        let row = TumorOnlyVariant {
-            gt,
-            ..call(10, ref_allele, alt_allele, 9, (0, 0), "Deletion")
-        };
-        assert_eq!(vardict_position(&row), expected);
-    }
-
-    #[test]
-    fn test_region_fills_each_position_without_a_record_by_what_explains_it() {
-        let rows = [
-            call(2, "G", "G", 50, (20, 25), ""),
-            call(3, "G", "A", 60, (30, 28), "SNV"),
-            call(4, "TC", "T", 70, (33, 30), "Deletion"),
-            call(4, "TCG", "T", 70, (33, 30), "Deletion"),
-            call(6, "CGGA", "C", 80, (0, 0), "Deletion"),
-            call(6, "CG", "AT", 90, (40, 40), "Complex"),
-            call(11, "A", "A", 40, (20, 20), ""),
-        ];
-        let calls: Vec<&TumorOnlyVariant> = rows.iter().collect();
-        let written: AHashSet<u64> = [2, 4, 6, 11].into_iter().collect();
-        assert_eq!(
-            region_fills(&calls, &written, 1, 12).collect::<Vec<_>>(),
-            vec![
-                filled(1, Fill::NoReads, (0, 0), 0),
-                filled(3, Fill::Rows, (30, 28), 60),
-                filled(5, Fill::Rows, (33, 30), 70),
-                filled(7, Fill::Rows, (0, 0), 80),
-                filled(8, Fill::Spanned, (0, 0), 80),
-                filled(9, Fill::Spanned, (0, 0), 80),
-                filled(10, Fill::NoReads, (0, 0), 0),
-                filled(12, Fill::NoReads, (0, 0), 0),
-            ]
-        );
-    }
-
-    #[test]
-    fn test_region_fills_prefer_a_row_that_is_not_complex_then_the_most_depth() {
-        let rows = [
-            call(5, "CG", "AT", 90, (70, 10), "Complex"),
-            call(5, "C", "A", 60, (30, 28), "SNV"),
-            call(5, "C", "T", 61, (31, 28), "SNV"),
-        ];
-        let calls: Vec<&TumorOnlyVariant> = rows.iter().collect();
-        assert_eq!(
-            region_fills(&calls, &AHashSet::new(), 5, 5).collect::<Vec<_>>(),
-            vec![filled(5, Fill::Rows, (31, 28), 61)]
-        );
-        let complex = [call(5, "CG", "AT", 90, (70, 10), "Complex")];
-        let calls: Vec<&TumorOnlyVariant> = complex.iter().collect();
-        assert_eq!(
-            region_fills(&calls, &AHashSet::new(), 5, 6).collect::<Vec<_>>(),
-            vec![
-                filled(5, Fill::Rows, (70, 10), 90),
-                filled(6, Fill::Spanned, (0, 0), 90),
-            ]
-        );
-    }
-
-    #[test]
-    fn test_region_fills_count_the_reads_of_an_insertion_as_ref_at_its_anchor() {
-        let rows = [
-            TumorOnlyVariant {
-                alt_forward: 12,
-                alt_reverse: 8,
-                ..call(5, "G", "GG", 100, (40, 40), "Insertion")
-            },
-            TumorOnlyVariant {
-                alt_forward: 3,
-                alt_reverse: 2,
-                ..call(5, "G", "GGG", 100, (40, 40), "Insertion")
-            },
-            call(5, "GA", "G", 100, (40, 40), "Deletion"),
-        ];
-        let calls: Vec<&TumorOnlyVariant> = rows.iter().collect();
-        assert_eq!(
-            region_fills(&calls, &AHashSet::new(), 5, 5).collect::<Vec<_>>(),
-            vec![filled(5, Fill::Rows, (55, 50), 100)]
-        );
-    }
-
-    #[test]
-    fn test_region_fills_span_a_symbolic_deletion_to_its_end() {
-        let rows = [TumorOnlyVariant {
-            gt: "C/-5",
-            end: 15,
-            ..call(10, "C", "<DEL>", 90, (0, 0), "DEL")
-        }];
-        let calls: Vec<&TumorOnlyVariant> = rows.iter().collect();
-        assert_eq!(
-            region_fills(&calls, &AHashSet::new(), 11, 16).collect::<Vec<_>>(),
-            vec![
-                filled(11, Fill::Rows, (0, 0), 90),
-                filled(12, Fill::Spanned, (0, 0), 90),
-                filled(13, Fill::Spanned, (0, 0), 90),
-                filled(14, Fill::Spanned, (0, 0), 90),
-                filled(15, Fill::Spanned, (0, 0), 90),
-                filled(16, Fill::NoReads, (0, 0), 0),
-            ]
-        );
-    }
-
-    #[test]
-    fn test_region_fills_take_the_most_depth_of_overlapping_spans() {
-        let rows = [
-            TumorOnlyVariant {
-                gt: "C/-4",
-                ..call(10, "CGGAT", "C", 50, (0, 0), "Deletion")
-            },
-            TumorOnlyVariant {
-                gt: "G/-1",
-                ..call(11, "GG", "G", 80, (0, 0), "Deletion")
-            },
-            TumorOnlyVariant {
-                gt: "A/-1",
-                ..call(13, "AT", "A", 60, (0, 0), "Deletion")
-            },
-        ];
-        let calls: Vec<&TumorOnlyVariant> = rows.iter().collect();
-        let written: AHashSet<u64> = [11, 12, 14].into_iter().collect();
-        assert_eq!(
-            region_fills(&calls, &written, 11, 15).collect::<Vec<_>>(),
-            vec![
-                filled(13, Fill::Spanned, (0, 0), 50),
-                filled(15, Fill::NoReads, (0, 0), 0),
-            ]
-        );
-    }
-
-    #[test]
-    fn test_region_fills_count_an_insertion_before_matched_bases_at_its_anchor() {
-        let rows = [TumorOnlyVariant {
-            gt: "C/+3",
-            alt_forward: 5,
-            alt_reverse: 5,
-            ..call(6, "G", "AT", 50, (20, 20), "Complex")
-        }];
-        let calls: Vec<&TumorOnlyVariant> = rows.iter().collect();
-        assert_eq!(
-            region_fills(&calls, &AHashSet::new(), 5, 7).collect::<Vec<_>>(),
-            vec![
-                filled(5, Fill::Rows, (25, 25), 50),
-                filled(6, Fill::Spanned, (0, 0), 50),
-                filled(7, Fill::NoReads, (0, 0), 0),
-            ]
-        );
     }
 
     #[rstest]
@@ -724,23 +302,6 @@ mod tests {
             format!(
                 "VarDict's region chr1:1095-1112 is the region of no line of the BED file \"x.bed\" with --fill-gvcf-bed-extend 0: {hint}"
             )
-        );
-    }
-
-    #[test]
-    fn test_uncovered_leaves_out_the_covered_ranges() {
-        let covered = [(3, 5), (8, 9), (12, 20)];
-        assert_eq!(uncovered(1, 14, &covered), vec![(1, 2), (6, 7), (10, 11)]);
-        assert_eq!(uncovered(4, 5, &covered), vec![]);
-        assert_eq!(uncovered(21, 22, &covered), vec![(21, 22)]);
-        assert_eq!(uncovered(1, 2, &[]), vec![(1, 2)]);
-    }
-
-    #[test]
-    fn test_merge_sorts_and_joins_overlapping_and_adjacent_ranges() {
-        assert_eq!(
-            merge(vec![(8, 9), (1, 3), (2, 5), (6, 6), (11, 12)]),
-            vec![(1, 6), (8, 9), (11, 12)]
         );
     }
 
