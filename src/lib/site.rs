@@ -224,9 +224,27 @@ impl Counted {
 
     /// Adds another row counted at the same position: its reads join the position's, and its REF
     /// reads stand for the position's when it is not Complex and the chosen row is, or when it has
-    /// more depth in the tumor (or only) sample with neither or both Complex.
+    /// more depth in the tumor (or only) sample with neither or both Complex, then more REF reads
+    /// there, then more depth, forward REF reads and reverse REF reads in sample order, so the
+    /// choice never depends on row order.
     fn add(&mut self, other: &Counts) {
-        if (!other.complex, other.depth[0]) > (!self.complex, self.depth[0]) {
+        let rank = |complex: bool, depth: PerSample, forward: PerSample, reverse: PerSample| {
+            (
+                !complex,
+                depth[0],
+                forward[0] + reverse[0],
+                depth,
+                forward,
+                reverse,
+            )
+        };
+        if rank(
+            other.complex,
+            other.depth,
+            other.ref_forward,
+            other.ref_reverse,
+        ) > rank(self.complex, self.depth, self.ref_forward, self.ref_reverse)
+        {
             self.complex = other.complex;
             self.ref_forward = other.ref_forward;
             self.ref_reverse = other.ref_reverse;
@@ -553,6 +571,21 @@ mod tests {
             }];
             assert_eq!(site_dps(&rows, 12..=13), vec![0, 0]);
         }
+    }
+
+    #[test]
+    fn test_rows_tied_on_depth_give_one_site_in_either_order() {
+        let rows = [
+            call(11, "G", "A", "G/A", 400, 300, 20),
+            call(10, "GG", "G", "G/-1", 400, 200, 20),
+        ];
+        let reversed = [rows[1].clone(), rows[0].clone()];
+        let site = |rows: &[TumorOnlyVariant]| {
+            let rows: Vec<&[TumorOnlyVariant]> = rows.iter().map(std::slice::from_ref).collect();
+            walk(&rows, 11..=11)[0]
+        };
+        assert_eq!(site(&rows).site_dp[0], 340);
+        assert_eq!(site(&rows), site(&reversed));
     }
 
     #[test]

@@ -3,6 +3,7 @@
 //! pass in position order.
 use std::path::{Path, PathBuf};
 
+use csv::{Position, StringRecord};
 use spillsort::{Config, Merged, Sorter, key};
 
 use crate::record::TumorOnlyVariant;
@@ -10,6 +11,10 @@ use crate::record::TumorOnlyVariant;
 /// The most memory the records being sorted are held in before they spill to the temporary
 /// directory; `spillsort` peaks at about a quarter more.
 pub const MAX_BYTES: usize = 64 << 20;
+
+/// The most memory the rows sorted to fold are held in before they spill, a quarter of the records'
+/// as their last rows are still held while the records fill.
+pub const MAX_ROW_BYTES: usize = MAX_BYTES / 4;
 
 /// The kinds of entries, in the order they come at one position.
 const REGION: u8 = 0;
@@ -257,6 +262,91 @@ impl Entries {
     }
 }
 
+/// VarDict's rows sorted region by region, in the order the regions were read, then by the start
+/// VarDict wrote each row at, then in the order they were read, spilling to disk, so a region's rows
+/// can be folded a cluster of overlapping rows at a time rather than held whole.
+pub struct RowSorter {
+    sorter: Sorter,
+    key: Vec<u8>,
+    value: Vec<u8>,
+    rows: u64,
+}
+
+impl RowSorter {
+    /// Makes a sorter that spills to a private directory inside `tmp_dir`.
+    pub fn new(tmp_dir: &Path) -> Result<Self, String> {
+        let config = Config::default().max_bytes(MAX_ROW_BYTES).tmp_dir(tmp_dir);
+        let sorter = Sorter::new(config).map_err(describe)?;
+        Ok(RowSorter {
+            sorter,
+            key: Vec::new(),
+            value: Vec::new(),
+            rows: 0,
+        })
+    }
+
+    /// Adds a row of the region with this ordinal that VarDict wrote at `start`, with its fields
+    /// and its place in the input.
+    pub fn push(&mut self, region: u64, start: u64, row: &StringRecord) -> Result<(), String> {
+        self.key.clear();
+        key::push_uint(&mut self.key, region);
+        key::push_uint(&mut self.key, start);
+        key::push_uint(&mut self.key, self.rows);
+        self.rows += 1;
+        let position = row.position().cloned().unwrap_or_else(Position::new);
+        self.value.clear();
+        self.value.extend_from_slice(&region.to_le_bytes());
+        for place in [position.byte(), position.line(), position.record()] {
+            self.value.extend_from_slice(&place.to_le_bytes());
+        }
+        for (index, field) in row.iter().enumerate() {
+            if index > 0 {
+                self.value.push(b'\t');
+            }
+            self.value.extend_from_slice(field.as_bytes());
+        }
+        self.sorter.push(&self.key, &self.value).map_err(describe)
+    }
+
+    /// Finishes the sort, returning its rows in order.
+    pub fn rows(self) -> Result<SortedRows, String> {
+        Ok(SortedRows {
+            merged: self.sorter.finish().map_err(describe)?,
+            row: StringRecord::new(),
+        })
+    }
+}
+
+/// The sorted rows, read back one at a time.
+pub struct SortedRows {
+    merged: Merged,
+    row: StringRecord,
+}
+
+impl SortedRows {
+    /// The next row and the ordinal of its region, or `None` after the last.
+    pub fn next_row(&mut self) -> Result<Option<(u64, &StringRecord)>, String> {
+        let Some((_, value)) = self.merged.next_record().map_err(describe)? else {
+            return Ok(None);
+        };
+        let word = |at: usize| u64::from_le_bytes(value[at..at + 8].try_into().unwrap());
+        let region = word(0);
+        let mut position = Position::new();
+        position
+            .set_byte(word(8))
+            .set_line(word(16))
+            .set_record(word(24));
+        let fields = std::str::from_utf8(&value[32..])
+            .map_err(|error| format!("Could not read back a sorted row: {error}!"))?;
+        self.row.clear();
+        for field in fields.split('\t') {
+            self.row.push_field(field);
+        }
+        self.row.set_position(Some(position));
+        Ok(Some((region, &self.row)))
+    }
+}
+
 /// Describes an error from sorting the output records.
 fn describe(error: spillsort::Error) -> String {
     format!("Could not sort the output records: {error}!")
@@ -449,6 +539,84 @@ mod tests {
                 region(101, 103),
             ]
         );
+    }
+
+    #[test]
+    fn test_reads_rows_back_by_region_then_start_then_as_added() {
+        let dir = TempDir::new().unwrap();
+        let mut sorter = RowSorter::new(dir.path()).unwrap();
+        let row = |fields: &[&str], line: u64| {
+            let mut row = csv::StringRecord::from(fields.to_vec());
+            let mut position = csv::Position::new();
+            position
+                .set_line(line)
+                .set_byte(line * 10)
+                .set_record(line - 1);
+            row.set_position(Some(position));
+            row
+        };
+        sorter.push(2, 5, &row(&["region 2"], 1)).unwrap();
+        sorter.push(1, 9, &row(&["region 1", "at 9"], 2)).unwrap();
+        sorter
+            .push(1, 3, &row(&["region 1", "at 3", ""], 3))
+            .unwrap();
+        sorter
+            .push(1, 9, &row(&["region 1", "at 9 again"], 4))
+            .unwrap();
+        let mut rows = sorter.rows().unwrap();
+        let mut read = Vec::new();
+        while let Some((region, row)) = rows.next_row().unwrap() {
+            let position = row.position().unwrap();
+            read.push((
+                region,
+                row.iter().collect::<Vec<_>>().join("|"),
+                (position.line(), position.byte(), position.record()),
+            ));
+        }
+        assert_eq!(
+            read,
+            vec![
+                (1, "region 1|at 3|".to_string(), (3, 30, 2)),
+                (1, "region 1|at 9".to_string(), (2, 20, 1)),
+                (1, "region 1|at 9 again".to_string(), (4, 40, 3)),
+                (2, "region 2".to_string(), (1, 10, 0)),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_spills_rows_and_reads_them_back_in_order_with_their_places() {
+        let dir = TempDir::new().unwrap();
+        let mut sorter = RowSorter::new(dir.path()).unwrap();
+        let field = "x".repeat(1 << 16);
+        for line in 1..=512u64 {
+            let mut row = csv::StringRecord::from(vec![line.to_string(), field.clone()]);
+            let mut position = csv::Position::new();
+            position
+                .set_line(line)
+                .set_byte(line * 7)
+                .set_record(line - 1);
+            row.set_position(Some(position));
+            sorter.push(line % 2, 1000 - line, &row).unwrap();
+        }
+        assert!(sorter.sorter.runs() > 0);
+        let mut rows = sorter.rows().unwrap();
+        let mut read = Vec::new();
+        while let Some((region, row)) = rows.next_row().unwrap() {
+            let line: u64 = row[0].parse().unwrap();
+            let position = row.position().unwrap();
+            assert_eq!(&row[1], field);
+            assert_eq!(
+                (position.line(), position.byte(), position.record()),
+                (line, line * 7, line - 1)
+            );
+            read.push((region, line));
+        }
+        let mut expected: Vec<(u64, u64)> = (1..=512).map(|line| (line % 2, line)).collect();
+        expected.sort_by_key(|&(region, line)| (region, 1000 - line));
+        assert_eq!(read, expected);
+        drop(rows);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 
     #[test]
