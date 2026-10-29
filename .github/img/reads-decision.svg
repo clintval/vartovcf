@@ -40,7 +40,7 @@
   <text class="base" y="116" text-anchor="middle"><tspan x="112">G</tspan><tspan x="130">T</tspan><tspan x="148">C</tspan><tspan class="alt" x="166">C</tspan><tspan class="nocall" x="184">N</tspan><tspan x="202">G</tspan><tspan x="220">T</tspan></text>
   <rect class="read" x="139" y="125" width="90" height="23" rx="4"/>
   <text class="ink" x="20" y="141">Mate 1</text>
-  <text class="base" y="142" text-anchor="middle"><tspan class="alt" x="148">C</tspan><tspan class="alt" x="166">C</tspan><tspan class="alt" x="184">A</tspan><tspan x="202">G</tspan><tspan x="220">T</tspan></text>
+  <text class="base" y="142" text-anchor="middle"><tspan x="148">C</tspan><tspan class="alt" x="166">C</tspan><tspan class="alt" x="184">A</tspan><tspan x="202">G</tspan><tspan x="220">T</tspan></text>
   <text class="ink" x="262" y="115">the mate reads the MNV&#8217;s A</text>
   <text class="moves" x="262" y="141">the MNV&#8217;s molecule: read 1 moves</text>
 
@@ -49,7 +49,7 @@
   <text class="base" y="184" text-anchor="middle"><tspan x="112">G</tspan><tspan x="130">T</tspan><tspan x="148">C</tspan><tspan class="alt" x="166">C</tspan><tspan class="nocall" x="184">N</tspan><tspan x="202">G</tspan><tspan x="220">T</tspan></text>
   <rect class="read" x="139" y="193" width="90" height="23" rx="4"/>
   <text class="ink" x="20" y="209">Mate 2</text>
-  <text class="base" y="210" text-anchor="middle"><tspan class="alt" x="148">C</tspan><tspan class="alt" x="166">C</tspan><tspan class="other" x="184">G</tspan><tspan x="202">G</tspan><tspan x="220">T</tspan></text>
+  <text class="base" y="210" text-anchor="middle"><tspan x="148">C</tspan><tspan class="alt" x="166">C</tspan><tspan class="other" x="184">G</tspan><tspan x="202">G</tspan><tspan x="220">T</tspan></text>
   <text class="ink" x="262" y="183">the mate reads the reference G</text>
   <text class="stays" x="262" y="209">another allele: template 2 stays</text>
 
