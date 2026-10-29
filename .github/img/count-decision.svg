@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="900" height="290" viewBox="0 0 900 290" role="img" aria-labelledby="title">
-  <title id="title">Deciding a partial allele by its count: on the test data, the partial alleles G&gt;C with 6 reads and G&gt;A with 4 reads fold into the MNV GG&gt;CA with 200 reads, while G&gt;T with 30 reads does not carry the MNV&#8217;s bases and stays. A partial allele folds when its reads fall below a line that rises with the MNV&#8217;s reads, shaded by the chance the MNV leaks that many reads or more at the rate 0.05.</title>
+  <title id="title">Deciding a partial allele by its count: on the test data, the partial alleles GG&gt;CG with 6 reads and GG&gt;GA with 4 reads fold into the MNV GG&gt;CA with 200 reads, while GG&gt;TG with 30 reads does not carry the MNV&#8217;s bases and stays. A partial allele folds when its reads fall below a line that rises with the MNV&#8217;s reads, shaded by the chance the MNV leaks that many reads or more at the rate 0.05.</title>
   <style>
     text { font-family: Helvetica, Arial, sans-serif; }
     .head { fill: #57606a; font-size: 13px; font-weight: 700; }
@@ -39,22 +39,22 @@
 
   <text class="head" x="20" y="24">1. Calls Beside an MNV</text>
   <text class="ink" x="20" y="42">each circle is a call, sized by its ALT reads</text>
-  <text class="ink" x="20" y="278">G&gt;T does not carry the MNV&#8217;s C or A, so it stays</text>
+  <text class="ink" x="20" y="278">GG&gt;TG does not carry the MNV&#8217;s C or A, so it stays</text>
   <circle class="node" cx="115" cy="160" r="50.9"/>
   <text class="base" x="115" y="158" text-anchor="middle">GG&gt;<tspan class="alt">CA</tspan></text>
   <text class="ink" x="115" y="176" text-anchor="middle">200 reads</text>
   <circle class="node" cx="255" cy="92" r="8.8"/>
-  <text class="base" x="271.8" y="91">G&gt;<tspan class="alt">C</tspan></text>
+  <text class="base" x="271.8" y="91">GG&gt;<tspan class="alt">C</tspan>G</text>
   <text class="ink" x="271.8" y="107">6 reads</text>
   <path class="fold" d="M242.6 98.0 L165.3 135.6" marker-end="url(#head)"/>
   <text class="moves" x="203.9" y="108.8" text-anchor="middle">folds</text>
   <circle class="node" cx="255" cy="160" r="7.2"/>
-  <text class="base" x="270.2" y="159">G&gt;<tspan class="alt">A</tspan></text>
+  <text class="base" x="270.2" y="159">GG&gt;G<tspan class="alt">A</tspan></text>
   <text class="ink" x="270.2" y="175">4 reads</text>
   <path class="fold" d="M242.8 160.0 L170.9 160.0" marker-end="url(#head)"/>
   <text class="moves" x="206.9" y="154.0" text-anchor="middle">folds</text>
   <circle class="gray" cx="255" cy="228" r="19.7"/>
-  <text class="base" x="282.7" y="227">G&gt;<tspan class="other">T</tspan></text>
+  <text class="base" x="282.7" y="227">GG&gt;<tspan class="other">T</tspan>G</text>
   <text class="ink" x="282.7" y="243">30 reads</text>
 
   <text class="head" x="370" y="24">2. Folding by Count</text>
@@ -77,9 +77,9 @@
   <path class="mark" d="M769.5 76 V228"/>
   <text class="ink" x="769.5" y="70" text-anchor="middle">GG&gt;CA</text>
   <circle class="dot" cx="769.5" cy="156.1" r="3.5"/>
-  <text class="tag" x="777.5" y="160.1">G&gt;C</text>
+  <text class="tag" x="777.5" y="160.1">GG&gt;CG</text>
   <circle class="dot" cx="769.5" cy="169.7" r="3.5"/>
-  <text class="tag" x="777.5" y="173.7">G&gt;A</text>
+  <text class="tag" x="777.5" y="173.7">GG&gt;GA</text>
   <text class="ink" x="446" y="72">chance the MNV leaks this many reads or more</text>
   <rect class="band" x="446" y="82" width="22" height="12"/>
   <text class="ink" x="476" y="92">at least 0.05</text>

@@ -170,7 +170,7 @@ At that rate, an MNV folds a 1-read partial allele once the MNV has 2 reads, a 2
 Judged by its count alone, a real allele with few reads beside a deep MNV folds too.
 On this repository's test data, `GG>CA` has a 6-read and a 4-read partial allele beside `G>T`, another allele:
 
-![Deciding a partial allele by its count: on the test data, the partial alleles G>C with 6 reads and G>A with 4 reads fold into the MNV GG>CA with 200 reads, while G>T with 30 reads does not carry the MNV's bases and stays. A partial allele folds when its reads fall below a line that rises with the MNV's reads, shaded by the chance the MNV leaks that many reads or more at the rate 0.05.](.github/img/count-decision.svg)
+![Deciding a partial allele by its count: on the test data, the partial alleles GG>CG with 6 reads and GG>GA with 4 reads fold into the MNV GG>CA with 200 reads, while GG>TG with 30 reads does not carry the MNV's bases and stays. A partial allele folds when its reads fall below a line that rises with the MNV's reads, shaded by the chance the MNV leaks that many reads or more at the rate 0.05.](.github/img/count-decision.svg)
 
 Without `--fix-leaky-mnv`, all four calls are written:
 
