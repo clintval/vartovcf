@@ -248,20 +248,29 @@ Site depth is complete only for pileup (`-p`) output.
 Unlike `DP`, `SITE_DP` never counts the `N` bases VarDict's `-K` adds.
 
 With `--context-3mer`, every record gets INFO `CONTEXT_3mer`, the reference bases at POS-1, POS and POS+1, which the 3-mer recipes need.
-Take depths from the whole file, before leaving out any record:
+Take depths from the whole file, before leaving out any record.
+
+Write the depth at each position:
 
 ```bash
-# Depth at each position
 bcftools query -f '%CHROM\t%POS[\t%SITE_DP]\n' "calls.g.vcf.gz" | uniq
+```
 
-# Total depth
+Sum the depth over every position:
+
+```bash
 bcftools query -f '%CHROM\t%POS[\t%SITE_DP]\n' "calls.g.vcf.gz" | uniq | awk '{n += $3} END {print n}'
+```
 
-# Depth by reference 3-mer, a mutation spectrum's denominators
-bcftools query -f '%CHROM\t%POS\t%CONTEXT_3mer[\t%SITE_DP]\n' "calls.g.vcf.gz" | uniq \
-  | awk '{n[$3] += $4} END {for (c in n) print c, n[c]}'
+Sum the depth by reference 3-mer, the denominators of a mutation spectrum:
 
-# Mutations with their context and ALT reads
+```bash
+bcftools query -f '%CHROM\t%POS\t%CONTEXT_3mer[\t%SITE_DP]\n' "calls.g.vcf.gz" | uniq | awk '{n[$3] += $4} END {for (c in n) print c, n[c]}'
+```
+
+List the mutations with their reference 3-mer and ALT reads:
+
+```bash
 bcftools query -i 'ALT!="."' -f '%CHROM\t%POS\t%REF\t%ALT\t%CONTEXT_3mer[\t%AD{1}]\n' "calls.g.vcf.gz"
 ```
 
