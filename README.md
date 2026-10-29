@@ -50,8 +50,7 @@ vardict-java \
       --output "dna00001.g.vcf.gz"
 ```
 
-With `-p`, VarDict writes the sites without a variant too, and `--fill-gvcf` fills the positions VarDict leaves out, so every position of the BED gets a record.
-Add [Filters](#filters) to label the candidate variant calls that VarDict's call rules would drop without `-p`.
+With `-p` and `--fill-gvcf`, every position of the BED gets a record.
 
 ## Tumor-Normal
 
@@ -81,7 +80,7 @@ bcftools view -f PASS -i 'INFO/VARDICT_STATUS ~ "Somatic" && INFO/TUMOR_NORMAL_F
 ```
 
 > [!WARNING]
-> VarDictJava's tumor-normal mode walks a position's alleles from the best supported down and stops at the first that fails its call rules, so it never writes the alleles below that one, about 0.4% of rows in practice.
+> VarDictJava's tumor-normal mode walks a position's alleles from the best supported down and stops at the first that fails its call rules, so it never writes the alleles below that one, about 0.4% of rows.
 > A fix is proposed in [joachimwolff/VarDictJava#4](https://github.com/joachimwolff/VarDictJava/pull/4).
 
 ## Filters
@@ -89,8 +88,7 @@ bcftools view -f PASS -i 'INFO/VARDICT_STATUS ~ "Somatic" && INFO/TUMOR_NORMAL_F
 FILTER stays missing (`.`) until a filter option is given.
 Then each call gets the labels it fails, or `PASS` when it fails none, while a record with no ALT allele, or whose tumor (or only) sample has no ALT reads, stays missing.
 
-These filter options use the thresholds `var2vcf_valid.pl` applies by default.
-These options leave out the script's extra conditions, such as applying its mapping-quality label `Q10` only below an `AF` of 0.8, and its strand-bias label `Bias` only when VarDict flags the ALT reads, but not the REF reads, as strand biased (`2;1`):
+These filter options use the thresholds `var2vcf_valid.pl` applies by default, without the script's extra conditions, such as applying its mapping-quality label `Q10` only below an `AF` of 0.8, and its strand-bias label `Bias` only when VarDict flags the ALT reads, but not the REF reads, as strand biased (`2;1`):
 
 ```bash
 vartovcf \
@@ -115,11 +113,9 @@ In pileup mode (`-p`), VarDict keeps every candidate variant call, so add these 
     --filter-low-dp 3
 ```
 
-Three of the labels look like this in the reads:
+Six of the labels are patterns in the reads:
 
-![What three FILTER labels look like in the reads: NEAR_READ_END, where the ALT base sits near each read's end; SAME_READ_POSITION, where every ALT read has it at one read position; and STRAND_BIAS, where only forward reads carry the ALT base while the REF reads come from both strands.](.github/img/filter-signatures.svg)
-
-Each label is applied when its test holds:
+![The six FILTER labels that are patterns in the reads: NEAR_READ_END, where the ALT base sits near each read's end; SAME_READ_POSITION, where every ALT read has it at one read position; STRAND_BIAS, where only forward reads carry the ALT base; HOMOPOLYMER_INDEL, a read one A short in a long run of A; TANDEM_REPEAT_INDEL, a read one CA unit short in a CA repeat; and HIGH_MEAN_MISMATCHES, where the ALT reads carry other mismatches.](.github/img/filter-signatures.svg)
 
 | Label | Applied when |
 |---|---|
@@ -143,7 +139,7 @@ Here reads 3 and 4 leave the partial alleles `G>C` and `G>A` beside the MNV `GG>
 
 ![A leaky MNV: four reads carry the MNV GG>CA, reads 3 and 4 have a no-call inside it, so VarDict writes the partial alleles G>C and G>A as calls of their own, and --fix-leaky-mnv folds them back into the MNV.](.github/img/leaky-mnv.svg)
 
-With `--fix-leaky-mnv`, each partial allele folds back into its MNV, whose record sums the ALT reads, recomputes `AF`, `GT`, FILTER and the Fisher p-values, and counts what it took in INFO `MNV_PARTIALS` and FORMAT `MNV_PARTIAL_READS`.
+With `--fix-leaky-mnv`, each partial allele folds back into its MNV, whose record counts what it took in INFO `MNV_PARTIALS` and FORMAT `MNV_PARTIAL_READS`.
 
 > [!WARNING]
 > VarDictJava folds a partial allele starting after the MNV's first base whenever the partial has fewer reads than the MNV, even an SNV of another haplotype, and writes no row for the SNV, so `--fix-leaky-mnv` cannot undo it.
@@ -156,7 +152,7 @@ Each read template of a partial allele is then examined at the MNV's changed pos
 ![Deciding a partial allele by its reads: each template of the partial allele G>C is examined at the MNV's other changed base. Template 1's mate reads the MNV's A, so read 1 moves to the MNV; template 2's mate reads the reference G, so template 2 is another allele and stays; template 3 has no read of the base, so it is unknown and stays, since template 2 is another allele.](.github/img/reads-decision.svg)
 
 A partial allele with reads left keeps only those reads, and FORMAT `MNV_MOVED_READS` counts the reads that moved.
-Give tumor-normal BAMs as VarDict takes them, `"tumor.bam|normal.bam"`, and set these options to the values VarDict ran with:
+Set these options to the values VarDict ran with:
 
 | Option | VarDict's | Default |
 |---|---|---|
@@ -204,7 +200,7 @@ bcftools query -r chr1:1100-1101 -f '%POS\t%REF\t%ALT\t%MNV_PARTIALS[\t%AD\t%MNV
 ## gVCFs
 
 In pileup mode (`-p`), VarDict leaves some positions of its regions without a record.
-With `--fill-gvcf`, each such position gets a reference-only record, so every position has a record.
+With `--fill-gvcf`, each such position gets a reference-only record.
 Here a homozygous deletion and reads that end at 1111 leave four positions to fill:
 
 ![Filling a gVCF: reads carry a homozygous 3-base deletion after position 1106 and end by 1111, so --fill-gvcf writes position 1107 as ROWS, where VarDict counted the deletion it wrote at 1106, 1108 and 1109 as SPANNED, inside the deletion, and 1112 as NO_READS, with each position's SITE_DP below.](.github/img/gvcf-fill.svg)
@@ -236,7 +232,6 @@ bcftools query -r chr1:1106-1112 -f '%POS\t%REF\t%ALT\t%CONTEXT_3mer\t%GVCF_FILL
 With `--fill-gvcf-bed`, the regions of VarDict's BED that no read covers are filled too.
 Run VarDict with `-z1` so it reads the BED's starts as 0-based, and set `--fill-gvcf-bed-extend` to VarDict's `-x`; a mismatched region fails the run, naming the options that would match it.
 VarDict must run without `-3`, which writes indels at their 3′-most position instead of where VarDict counted them.
-Tumor-normal input is refused with `--fill-gvcf`, as VarDict writes no reference-only rows for a pair.
 
 ## Site Depth
 
