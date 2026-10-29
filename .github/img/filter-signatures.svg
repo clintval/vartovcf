@@ -1,0 +1,122 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="514" viewBox="0 0 900 514" role="img" aria-labelledby="title">
+  <title id="title">The six FILTER labels that are patterns in the reads: NEAR_READ_END, where the ALT base sits near each read&#8217;s end; SAME_READ_POSITION, where every ALT read has it at one read position; STRAND_BIAS, where only forward reads carry the ALT base; HOMOPOLYMER_INDEL, a read one A short in a long run of A; TANDEM_REPEAT_INDEL, a read one CA unit short in a CA repeat; and HIGH_MEAN_MISMATCHES, where the ALT reads carry other mismatches.</title>
+  <style>
+    text { font-family: Helvetica, Arial, sans-serif; }
+    .head { fill: #57606a; font-size: 13px; font-weight: 700; }
+    .ink { fill: #57606a; font-size: 12.5px; }
+    .tag { fill: #57606a; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size: 12px; }
+    .base { fill: #8c8b86; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size: 15px; }
+    .alt { fill: #e34948; font-weight: 700; }
+    .nocall { fill: #2a78d6; font-weight: 700; }
+    .span { fill: #2a78d6; fill-opacity: 0.12; }
+    .arrow { stroke: #8c8b86; stroke-width: 1.5; fill: none; }
+    .gap { stroke: #8c8b86; stroke-width: 1.5; stroke-dasharray: 3 3; }
+    .read { fill: #8c8b86; fill-opacity: 0.11; }
+    .rows { fill: #2a78d6; font-size: 12px; font-weight: 700; }
+    .spanned { fill: #12875c; font-size: 12px; font-weight: 700; }
+    .none { fill: #e34948; font-size: 12px; font-weight: 700; }
+    .vardict { fill: #8c8b86; font-size: 12px; }
+    @media (prefers-color-scheme: dark) {
+      .head, .ink, .tag { fill: #9198a1; }
+      .spanned { fill: #1baf7a; }
+      .read { fill: #ffffff; fill-opacity: 0.12; }
+    }
+    .other { fill: #57606a; font-weight: 700; }
+    .moves { fill: #2a78d6; font-size: 12.5px; font-weight: 700; }
+    .stays { fill: #57606a; font-size: 12.5px; font-weight: 700; }
+    @media (prefers-color-scheme: dark) {
+      .other, .stays { fill: #9198a1; }
+    }
+  </style>
+
+  <text class="head" x="20" y="24">NEAR_READ_END</text>
+  <text class="ink" x="20" y="42">the ALT base sits near each read&#8217;s end</text>
+  <text class="ink" x="20" y="240">so MEAN_DIST_TO_READ_END is small</text>
+  <text class="ink" x="20" y="81">Reference</text>
+  <text class="base" y="82" text-anchor="middle"><tspan x="91">T</tspan><tspan x="109">G</tspan><tspan x="127">C</tspan><tspan x="145">A</tspan><tspan x="163">G</tspan><tspan x="181">T</tspan><tspan x="199">C</tspan><tspan x="217">A</tspan><tspan x="235">T</tspan></text>
+  <rect class="read" x="82" y="91" width="90" height="23" rx="4"/>
+  <text class="base" y="108" text-anchor="middle"><tspan x="91">T</tspan><tspan x="109">G</tspan><tspan x="127">C</tspan><tspan x="145">A</tspan><tspan class="alt" x="163">C</tspan></text>
+  <rect class="read" x="154" y="117" width="90" height="23" rx="4"/>
+  <text class="base" y="134" text-anchor="middle"><tspan class="alt" x="163">C</tspan><tspan x="181">T</tspan><tspan x="199">C</tspan><tspan x="217">A</tspan><tspan x="235">T</tspan></text>
+  <rect class="read" x="82" y="143" width="108" height="23" rx="4"/>
+  <text class="base" y="160" text-anchor="middle"><tspan x="91">T</tspan><tspan x="109">G</tspan><tspan x="127">C</tspan><tspan x="145">A</tspan><tspan class="alt" x="163">C</tspan><tspan x="181">T</tspan></text>
+  <rect class="read" x="136" y="169" width="108" height="23" rx="4"/>
+  <text class="base" y="186" text-anchor="middle"><tspan x="145">A</tspan><tspan class="alt" x="163">C</tspan><tspan x="181">T</tspan><tspan x="199">C</tspan><tspan x="217">A</tspan><tspan x="235">T</tspan></text>
+
+  <text class="head" x="320" y="24">SAME_READ_POSITION</text>
+  <text class="ink" x="320" y="42">every ALT read has it at one read position</text>
+  <text class="ink" x="320" y="240">one fragment counted again, or one cycle&#8217;s error</text>
+  <text class="ink" x="320" y="81">Reference</text>
+  <text class="base" y="82" text-anchor="middle"><tspan x="391">T</tspan><tspan x="409">G</tspan><tspan x="427">C</tspan><tspan x="445">A</tspan><tspan x="463">G</tspan><tspan x="481">T</tspan><tspan x="499">C</tspan><tspan x="517">A</tspan><tspan x="535">T</tspan></text>
+  <rect class="read" x="400" y="91" width="126" height="23" rx="4"/>
+  <text class="base" y="108" text-anchor="middle"><tspan x="409">G</tspan><tspan x="427">C</tspan><tspan x="445">A</tspan><tspan class="alt" x="463">C</tspan><tspan x="481">T</tspan><tspan x="499">C</tspan><tspan x="517">A</tspan></text>
+  <rect class="read" x="400" y="117" width="126" height="23" rx="4"/>
+  <text class="base" y="134" text-anchor="middle"><tspan x="409">G</tspan><tspan x="427">C</tspan><tspan x="445">A</tspan><tspan class="alt" x="463">C</tspan><tspan x="481">T</tspan><tspan x="499">C</tspan><tspan x="517">A</tspan></text>
+  <rect class="read" x="400" y="143" width="126" height="23" rx="4"/>
+  <text class="base" y="160" text-anchor="middle"><tspan x="409">G</tspan><tspan x="427">C</tspan><tspan x="445">A</tspan><tspan class="alt" x="463">C</tspan><tspan x="481">T</tspan><tspan x="499">C</tspan><tspan x="517">A</tspan></text>
+  <rect class="read" x="400" y="169" width="126" height="23" rx="4"/>
+  <text class="base" y="186" text-anchor="middle"><tspan x="409">G</tspan><tspan x="427">C</tspan><tspan x="445">A</tspan><tspan class="alt" x="463">C</tspan><tspan x="481">T</tspan><tspan x="499">C</tspan><tspan x="517">A</tspan></text>
+
+  <text class="head" x="620" y="24">STRAND_BIAS</text>
+  <text class="ink" x="620" y="42">only forward reads carry the ALT base</text>
+  <text class="ink" x="620" y="240">while the REF reads come from both strands</text>
+  <text class="ink" x="620" y="81">Reference</text>
+  <text class="base" y="82" text-anchor="middle"><tspan x="691">T</tspan><tspan x="709">G</tspan><tspan x="727">C</tspan><tspan x="745">A</tspan><tspan x="763">G</tspan><tspan x="781">T</tspan><tspan x="799">C</tspan><tspan x="817">A</tspan><tspan x="835">T</tspan></text>
+  <text class="ink" x="620" y="107">Forward</text>
+  <rect class="read" x="682" y="91" width="144" height="23" rx="4"/>
+  <text class="base" y="108" text-anchor="middle"><tspan x="691">T</tspan><tspan x="709">G</tspan><tspan x="727">C</tspan><tspan x="745">A</tspan><tspan class="alt" x="763">C</tspan><tspan x="781">T</tspan><tspan x="799">C</tspan><tspan x="817">A</tspan></text>
+  <text class="ink" x="620" y="133">Forward</text>
+  <rect class="read" x="700" y="117" width="144" height="23" rx="4"/>
+  <text class="base" y="134" text-anchor="middle"><tspan x="709">G</tspan><tspan x="727">C</tspan><tspan x="745">A</tspan><tspan class="alt" x="763">C</tspan><tspan x="781">T</tspan><tspan x="799">C</tspan><tspan x="817">A</tspan><tspan x="835">T</tspan></text>
+  <text class="ink" x="620" y="159">Reverse</text>
+  <rect class="read" x="682" y="143" width="126" height="23" rx="4"/>
+  <text class="base" y="160" text-anchor="middle"><tspan x="691">T</tspan><tspan x="709">G</tspan><tspan x="727">C</tspan><tspan x="745">A</tspan><tspan x="763">G</tspan><tspan x="781">T</tspan><tspan x="799">C</tspan></text>
+  <text class="ink" x="620" y="185">Forward</text>
+  <rect class="read" x="718" y="169" width="126" height="23" rx="4"/>
+  <text class="base" y="186" text-anchor="middle"><tspan x="727">C</tspan><tspan x="745">A</tspan><tspan x="763">G</tspan><tspan x="781">T</tspan><tspan x="799">C</tspan><tspan x="817">A</tspan><tspan x="835">T</tspan></text>
+  <text class="ink" x="620" y="211">Reverse</text>
+  <rect class="read" x="700" y="195" width="144" height="23" rx="4"/>
+  <text class="base" y="212" text-anchor="middle"><tspan x="709">G</tspan><tspan x="727">C</tspan><tspan x="745">A</tspan><tspan x="763">G</tspan><tspan x="781">T</tspan><tspan x="799">C</tspan><tspan x="817">A</tspan><tspan x="835">T</tspan></text>
+
+  <text class="head" x="20" y="284">HOMOPOLYMER_INDEL</text>
+  <text class="ink" x="20" y="302">one A fewer in a long run of A</text>
+  <text class="ink" x="20" y="500">the signature of polymerase slippage</text>
+  <text class="ink" x="20" y="341">Reference</text>
+  <text class="base" y="342" text-anchor="middle"><tspan x="91">C</tspan><tspan x="109">A</tspan><tspan x="127">A</tspan><tspan x="145">A</tspan><tspan x="163">A</tspan><tspan x="181">A</tspan><tspan x="199">A</tspan><tspan x="217">A</tspan><tspan x="235">G</tspan></text>
+  <rect class="read" x="82" y="351" width="162" height="23" rx="4"/>
+  <text class="base" y="368" text-anchor="middle"><tspan x="91">C</tspan><tspan class="alt" x="109">-</tspan><tspan x="127">A</tspan><tspan x="145">A</tspan><tspan x="163">A</tspan><tspan x="181">A</tspan><tspan x="199">A</tspan><tspan x="217">A</tspan><tspan x="235">G</tspan></text>
+  <rect class="read" x="82" y="377" width="162" height="23" rx="4"/>
+  <text class="base" y="394" text-anchor="middle"><tspan x="91">C</tspan><tspan x="109">A</tspan><tspan x="127">A</tspan><tspan x="145">A</tspan><tspan x="163">A</tspan><tspan x="181">A</tspan><tspan x="199">A</tspan><tspan x="217">A</tspan><tspan x="235">G</tspan></text>
+  <rect class="read" x="82" y="403" width="162" height="23" rx="4"/>
+  <text class="base" y="420" text-anchor="middle"><tspan x="91">C</tspan><tspan class="alt" x="109">-</tspan><tspan x="127">A</tspan><tspan x="145">A</tspan><tspan x="163">A</tspan><tspan x="181">A</tspan><tspan x="199">A</tspan><tspan x="217">A</tspan><tspan x="235">G</tspan></text>
+  <rect class="read" x="82" y="429" width="162" height="23" rx="4"/>
+  <text class="base" y="446" text-anchor="middle"><tspan x="91">C</tspan><tspan x="109">A</tspan><tspan x="127">A</tspan><tspan x="145">A</tspan><tspan x="163">A</tspan><tspan x="181">A</tspan><tspan x="199">A</tspan><tspan x="217">A</tspan><tspan x="235">G</tspan></text>
+
+  <text class="head" x="320" y="284">TANDEM_REPEAT_INDEL</text>
+  <text class="ink" x="320" y="302">one CA fewer in a CA repeat</text>
+  <text class="ink" x="320" y="500">slippage of one repeat unit</text>
+  <text class="ink" x="320" y="341">Reference</text>
+  <text class="base" y="342" text-anchor="middle"><tspan x="391">T</tspan><tspan x="409">C</tspan><tspan x="427">A</tspan><tspan x="445">C</tspan><tspan x="463">A</tspan><tspan x="481">C</tspan><tspan x="499">A</tspan><tspan x="517">C</tspan><tspan x="535">A</tspan></text>
+  <rect class="read" x="382" y="351" width="162" height="23" rx="4"/>
+  <text class="base" y="368" text-anchor="middle"><tspan x="391">T</tspan><tspan class="alt" x="409">-</tspan><tspan class="alt" x="427">-</tspan><tspan x="445">C</tspan><tspan x="463">A</tspan><tspan x="481">C</tspan><tspan x="499">A</tspan><tspan x="517">C</tspan><tspan x="535">A</tspan></text>
+  <rect class="read" x="382" y="377" width="162" height="23" rx="4"/>
+  <text class="base" y="394" text-anchor="middle"><tspan x="391">T</tspan><tspan x="409">C</tspan><tspan x="427">A</tspan><tspan x="445">C</tspan><tspan x="463">A</tspan><tspan x="481">C</tspan><tspan x="499">A</tspan><tspan x="517">C</tspan><tspan x="535">A</tspan></text>
+  <rect class="read" x="382" y="403" width="162" height="23" rx="4"/>
+  <text class="base" y="420" text-anchor="middle"><tspan x="391">T</tspan><tspan class="alt" x="409">-</tspan><tspan class="alt" x="427">-</tspan><tspan x="445">C</tspan><tspan x="463">A</tspan><tspan x="481">C</tspan><tspan x="499">A</tspan><tspan x="517">C</tspan><tspan x="535">A</tspan></text>
+  <rect class="read" x="382" y="429" width="162" height="23" rx="4"/>
+  <text class="base" y="446" text-anchor="middle"><tspan x="391">T</tspan><tspan x="409">C</tspan><tspan x="427">A</tspan><tspan x="445">C</tspan><tspan x="463">A</tspan><tspan x="481">C</tspan><tspan x="499">A</tspan><tspan x="517">C</tspan><tspan x="535">A</tspan></text>
+
+  <text class="head" x="620" y="284">HIGH_MEAN_MISMATCHES</text>
+  <text class="ink" x="620" y="302">the ALT reads carry other mismatches (blue)</text>
+  <text class="ink" x="620" y="500">suggesting misaligned or paralogous reads</text>
+  <text class="ink" x="620" y="341">Reference</text>
+  <text class="base" y="342" text-anchor="middle"><tspan x="691">T</tspan><tspan x="709">G</tspan><tspan x="727">C</tspan><tspan x="745">A</tspan><tspan x="763">G</tspan><tspan x="781">T</tspan><tspan x="799">C</tspan><tspan x="817">A</tspan><tspan x="835">T</tspan></text>
+  <rect class="read" x="682" y="351" width="162" height="23" rx="4"/>
+  <text class="base" y="368" text-anchor="middle"><tspan x="691">T</tspan><tspan class="nocall" x="709">A</tspan><tspan x="727">C</tspan><tspan x="745">A</tspan><tspan class="alt" x="763">C</tspan><tspan x="781">T</tspan><tspan x="799">C</tspan><tspan class="nocall" x="817">G</tspan><tspan x="835">T</tspan></text>
+  <rect class="read" x="682" y="377" width="162" height="23" rx="4"/>
+  <text class="base" y="394" text-anchor="middle"><tspan x="691">T</tspan><tspan x="709">G</tspan><tspan class="nocall" x="727">T</tspan><tspan x="745">A</tspan><tspan class="alt" x="763">C</tspan><tspan x="781">T</tspan><tspan class="nocall" x="799">A</tspan><tspan x="817">A</tspan><tspan x="835">T</tspan></text>
+  <rect class="read" x="682" y="403" width="162" height="23" rx="4"/>
+  <text class="base" y="420" text-anchor="middle"><tspan x="691">T</tspan><tspan x="709">G</tspan><tspan x="727">C</tspan><tspan x="745">A</tspan><tspan x="763">G</tspan><tspan x="781">T</tspan><tspan x="799">C</tspan><tspan x="817">A</tspan><tspan x="835">T</tspan></text>
+  <rect class="read" x="682" y="429" width="162" height="23" rx="4"/>
+  <text class="base" y="446" text-anchor="middle"><tspan x="691">T</tspan><tspan x="709">G</tspan><tspan x="727">C</tspan><tspan x="745">A</tspan><tspan x="763">G</tspan><tspan x="781">T</tspan><tspan x="799">C</tspan><tspan x="817">A</tspan><tspan x="835">T</tspan></text>
+</svg>

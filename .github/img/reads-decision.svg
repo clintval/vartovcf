@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="690" height="330" viewBox="0 0 690 330" role="img" aria-labelledby="title">
+  <title id="title">Deciding a partial allele by its reads: each template of the partial allele G&gt;C is examined at the MNV&#8217;s other changed base. Template 1&#8217;s mate reads the MNV&#8217;s A, so read 1 moves to the MNV; template 2&#8217;s mate reads the reference G, so template 2 is another allele and stays; template 3 has no read of the base, so it is unknown and stays, since template 2 is another allele.</title>
+  <style>
+    text { font-family: Helvetica, Arial, sans-serif; }
+    .head { fill: #57606a; font-size: 13px; font-weight: 700; }
+    .ink { fill: #57606a; font-size: 12.5px; }
+    .tag { fill: #57606a; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size: 12px; }
+    .base { fill: #8c8b86; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size: 15px; }
+    .alt { fill: #e34948; font-weight: 700; }
+    .nocall { fill: #2a78d6; font-weight: 700; }
+    .span { fill: #2a78d6; fill-opacity: 0.12; }
+    .arrow { stroke: #8c8b86; stroke-width: 1.5; fill: none; }
+    .gap { stroke: #8c8b86; stroke-width: 1.5; stroke-dasharray: 3 3; }
+    .read { fill: #8c8b86; fill-opacity: 0.11; }
+    .rows { fill: #2a78d6; font-size: 12px; font-weight: 700; }
+    .spanned { fill: #12875c; font-size: 12px; font-weight: 700; }
+    .none { fill: #e34948; font-size: 12px; font-weight: 700; }
+    .vardict { fill: #8c8b86; font-size: 12px; }
+    @media (prefers-color-scheme: dark) {
+      .head, .ink, .tag { fill: #9198a1; }
+      .spanned { fill: #1baf7a; }
+      .read { fill: #ffffff; fill-opacity: 0.12; }
+    }
+    .other { fill: #57606a; font-weight: 700; }
+    .moves { fill: #2a78d6; font-size: 12.5px; font-weight: 700; }
+    .stays { fill: #57606a; font-size: 12.5px; font-weight: 700; }
+    @media (prefers-color-scheme: dark) {
+      .other, .stays { fill: #9198a1; }
+    }
+  </style>
+
+  <text class="head" x="20" y="24">Deciding a Partial Allele by Its Reads</text>
+  <text class="ink" x="20" y="42">--reads examines each template of the partial allele G&gt;C at the MNV&#8217;s other changed base</text>
+  <rect class="span" x="157" y="63" width="36" height="223" rx="4"/>
+  <text class="ink" x="20" y="81">Reference</text>
+  <text class="base" y="82" text-anchor="middle"><tspan x="112">G</tspan><tspan x="130">T</tspan><tspan x="148">C</tspan><tspan x="166">G</tspan><tspan x="184">G</tspan><tspan x="202">G</tspan><tspan x="220">T</tspan></text>
+
+  <rect class="read" x="103" y="99" width="126" height="23" rx="4"/>
+  <text class="ink" x="20" y="115">Read 1</text>
+  <text class="base" y="116" text-anchor="middle"><tspan x="112">G</tspan><tspan x="130">T</tspan><tspan x="148">C</tspan><tspan class="alt" x="166">C</tspan><tspan class="nocall" x="184">N</tspan><tspan x="202">G</tspan><tspan x="220">T</tspan></text>
+  <rect class="read" x="139" y="125" width="90" height="23" rx="4"/>
+  <text class="ink" x="20" y="141">Mate 1</text>
+  <text class="base" y="142" text-anchor="middle"><tspan class="alt" x="148">C</tspan><tspan class="alt" x="166">C</tspan><tspan class="alt" x="184">A</tspan><tspan x="202">G</tspan><tspan x="220">T</tspan></text>
+  <text class="ink" x="262" y="115">the mate reads the MNV&#8217;s A</text>
+  <text class="moves" x="262" y="141">the MNV&#8217;s molecule: read 1 moves</text>
+
+  <rect class="read" x="103" y="167" width="126" height="23" rx="4"/>
+  <text class="ink" x="20" y="183">Read 2</text>
+  <text class="base" y="184" text-anchor="middle"><tspan x="112">G</tspan><tspan x="130">T</tspan><tspan x="148">C</tspan><tspan class="alt" x="166">C</tspan><tspan class="nocall" x="184">N</tspan><tspan x="202">G</tspan><tspan x="220">T</tspan></text>
+  <rect class="read" x="139" y="193" width="90" height="23" rx="4"/>
+  <text class="ink" x="20" y="209">Mate 2</text>
+  <text class="base" y="210" text-anchor="middle"><tspan class="alt" x="148">C</tspan><tspan class="alt" x="166">C</tspan><tspan class="other" x="184">G</tspan><tspan x="202">G</tspan><tspan x="220">T</tspan></text>
+  <text class="ink" x="262" y="183">the mate reads the reference G</text>
+  <text class="stays" x="262" y="209">another allele: template 2 stays</text>
+
+  <rect class="read" x="103" y="235" width="126" height="23" rx="4"/>
+  <text class="ink" x="20" y="251">Read 3</text>
+  <text class="base" y="252" text-anchor="middle"><tspan x="112">G</tspan><tspan x="130">T</tspan><tspan x="148">C</tspan><tspan class="alt" x="166">C</tspan><tspan class="nocall" x="184">N</tspan><tspan x="202">G</tspan><tspan x="220">T</tspan></text>
+  <rect class="read" x="103" y="261" width="54" height="23" rx="4"/>
+  <text class="ink" x="20" y="277">Mate 3</text>
+  <text class="base" y="278" text-anchor="middle"><tspan x="112">G</tspan><tspan x="130">T</tspan><tspan x="148">C</tspan></text>
+  <text class="ink" x="262" y="251">no read covers the base</text>
+  <text class="stays" x="262" y="277">unknown: template 3 stays, as template 2 is another allele</text>
+
+  <text class="ink" x="20" y="318">so G&gt;C keeps templates 2 and 3, and read 1 joins GG&gt;CA</text>
+</svg>
