@@ -149,7 +149,7 @@ A folded record sums the ALT reads, recomputes `AF`, `GT`, FILTER and the Fisher
 > [!WARNING]
 > VarDictJava folds a partial allele starting after the MNV's first base whenever the partial has fewer reads than the MNV, even an SNV of another haplotype, and writes no row for the SNV, so `--fix-leaky-mnv` cannot undo it.
 
-### Deciding Partials by Their Reads
+#### Deciding Partials by Their Reads
 
 With `--reads`, each read template of a partial allele is examined at the MNV's other changed positions:
 
@@ -170,7 +170,7 @@ Give tumor-normal BAMs as VarDict takes them, `"tumor.bam|normal.bam"`, and set 
 | `--reads-max-mismatches` | `-m` | 8 |
 | `--reads-mnv-gap` | `-X` | 2 |
 
-### Deciding Partials by Their Count
+#### Deciding Partials by Their Count
 
 Without `--reads`, a partial allele folds when it carries the MNV's ALT bases and has few enough reads to be the MNV's leakage at `--leaky-mnv-rate`, 0.05 by default.
 At that rate, an MNV folds a 1-read partial allele once the MNV has 2 reads, a 2-read partial allele at 6, and a 10-read partial allele at 101.
