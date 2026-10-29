@@ -135,8 +135,6 @@ Each label is applied when its test holds:
 | `LOW_HICNT` | `HICNT` is below the threshold |
 | `LOW_DP` | `DP` is below the threshold |
 
-Each `-max-af` option applies its label only below that `AF`, and `--filter-strand-bias-min-odds-ratio` only above that folded odds ratio or where any strand count is zero.
-
 ## Leaky MNVs
 
 VarDict builds a multi-nucleotide variant (MNV) from a read's mismatches that are at most `-X` matching bases apart.
