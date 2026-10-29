@@ -225,7 +225,8 @@ impl Counted {
     /// Adds another row counted at the same position: its reads join the position's, and its REF
     /// reads stand for the position's when it is not Complex and the chosen row is, or when it has
     /// more depth in the tumor (or only) sample with neither or both Complex, then more REF reads
-    /// there, then more depth and REF reads in each sample, so the choice never depends on row order.
+    /// there, then more depth, forward REF reads and reverse REF reads in sample order, so the
+    /// choice never depends on row order.
     fn add(&mut self, other: &Counts) {
         let rank = |complex: bool, depth: PerSample, forward: PerSample, reverse: PerSample| {
             (
