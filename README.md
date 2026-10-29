@@ -167,9 +167,9 @@ Set these options to the values VarDict ran with:
 
 Without `--reads`, a partial allele folds when it carries the MNV's ALT bases and has few enough reads to be the MNV's leakage at `--leaky-mnv-rate`, 0.05 by default.
 At that rate, an MNV folds a 1-read partial allele once the MNV has 2 reads, a 2-read partial allele at 6, and a 10-read partial allele at 101.
-Every partial allele is weighed against the MNV's own reads, even one that lies inside another partial allele:
+A partial allele with too many reads to fold becomes an MNV of its own, and takes in the partial alleles that fit it more closely:
 
-![Deciding a partial allele by its count: the partial alleles GGG>CAG with 8 reads, GGG>GAT with 5 reads and GGG>GAG with 3 reads each fold straight into the MNV GGG>CAT with 200 reads, while GGG>GGT, with 30 reads, has too many reads to be leakage and stays. A partial allele folds when its reads fall below a line that rises with the MNV's reads, shaded by the chance the MNV leaks that many reads or more at the rate 0.05.](.github/img/count-decision.svg)
+![Deciding a partial allele by its count: the partial allele GGG>CAG with 8 reads folds into the MNV GGG>CAT with 200 reads, while GGG>GAT, with 40 reads, has too many reads to fold and becomes an MNV of its own, taking in GGG>GAG with 3 reads. A partial allele folds when its reads fall below a line that rises with the MNV's reads, shaded by the chance the MNV leaks that many reads or more at the rate 0.05.](.github/img/count-decision.svg)
 
 Judged by its count alone, a real allele with few reads beside a deep MNV folds too.
 On this repository's test data, `GG>CA` has a 6-read and a 4-read partial allele beside `G>T`, another allele:

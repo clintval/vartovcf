@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="900" height="310" viewBox="0 0 900 310" role="img" aria-labelledby="title">
-  <title id="title">Deciding a partial allele by its count: the partial alleles GGG&gt;CAG with 8 reads, GGG&gt;GAT with 5 reads and GGG&gt;GAG with 3 reads each fold straight into the MNV GGG&gt;CAT with 200 reads, while GGG&gt;GGT, with 30 reads, has too many reads to be leakage and stays. A partial allele folds when its reads fall below a line that rises with the MNV&#8217;s reads, shaded by the chance the MNV leaks that many reads or more at the rate 0.05.</title>
+  <title id="title">Deciding a partial allele by its count: the partial allele GGG&gt;CAG with 8 reads folds into the MNV GGG&gt;CAT with 200 reads, while GGG&gt;GAT, with 40 reads, has too many reads to fold and becomes an MNV of its own, taking in GGG&gt;GAG with 3 reads. A partial allele folds when its reads fall below a line that rises with the MNV&#8217;s reads, shaded by the chance the MNV leaks that many reads or more at the rate 0.05.</title>
   <style>
     text { font-family: Helvetica, Arial, sans-serif; }
     .head { fill: #57606a; font-size: 13px; font-weight: 700; }
@@ -42,31 +42,26 @@
 
   <text class="head" x="20" y="24">1. Calls Beside an MNV</text>
   <text class="ink" x="20" y="42">each circle is a call, sized by its ALT reads</text>
-  <text class="ink" x="20" y="298">GGG&gt;GGT has too many reads to be leakage</text>
-  <circle class="node" cx="100" cy="169" r="50.9"/>
-  <text class="base" x="100" y="167" text-anchor="middle">GGG&gt;<tspan class="alt">CAT</tspan></text>
-  <text class="ink" x="100" y="185" text-anchor="middle">200 reads</text>
-  <circle class="node" cx="245" cy="82" r="10.2"/>
-  <text class="base" x="263.2" y="81">GGG&gt;<tspan class="alt">C</tspan><tspan class="alt">A</tspan>G</text>
-  <text class="ink" x="263.2" y="97">8 reads</text>
-  <path class="fold" d="M232.0 89.8 L147.9 140.2" marker-end="url(#head)"/>
-  <text class="moves" x="190.0" y="107.0" text-anchor="middle">folds</text>
-  <circle class="node" cx="245" cy="140" r="8.0"/>
-  <text class="base" x="261.0" y="139">GGG&gt;G<tspan class="alt">A</tspan><tspan class="alt">T</tspan></text>
-  <text class="ink" x="261.0" y="155">5 reads</text>
-  <path class="fold" d="M232.2 142.6 L154.8 158.0" marker-end="url(#head)"/>
-  <text class="moves" x="193.5" y="142.3" text-anchor="middle">folds</text>
-  <circle class="node" cx="245" cy="198" r="6.2"/>
-  <text class="base" x="259.2" y="197">GGG&gt;G<tspan class="alt">A</tspan>G</text>
-  <text class="ink" x="259.2" y="213">3 reads</text>
-  <path class="fold" d="M234.0 195.8 L154.8 180.0" marker-end="url(#head)"/>
-  <text class="moves" x="194.4" y="181.9" text-anchor="middle">folds</text>
-  <circle class="node" cx="245" cy="256" r="19.7"/>
-  <text class="base" x="272.7" y="255">GGG&gt;GG<tspan class="alt">T</tspan></text>
-  <text class="ink" x="272.7" y="271">30 reads</text>
-  <path class="block" d="M223.8 243.3 L147.9 197.8"/>
-  <path class="cross" d="M179.9 214.5 l12 12 m0 -12 l-12 12"/>
-  <text class="halt" x="189.9" y="244.5" text-anchor="middle">stays</text>
+  <text class="ink" x="20" y="298">GGG&gt;GAT is too deep to fold and takes in GGG&gt;GAG</text>
+  <circle class="node" cx="80" cy="140" r="50.9"/>
+  <text class="base" x="80" y="138" text-anchor="middle">GGG&gt;<tspan class="alt">C</tspan><tspan class="alt">A</tspan><tspan class="alt">T</tspan></text>
+  <text class="ink" x="80" y="156" text-anchor="middle">200 reads</text>
+  <circle class="node" cx="232" cy="76" r="10.2"/>
+  <text class="base" x="250.2" y="75">GGG&gt;<tspan class="alt">C</tspan><tspan class="alt">A</tspan>G</text>
+  <text class="ink" x="250.2" y="91">8 reads</text>
+  <circle class="node" cx="215" cy="214" r="22.8"/>
+  <text class="base" x="215" y="256.8" text-anchor="middle">GGG&gt;G<tspan class="alt">A</tspan><tspan class="alt">T</tspan></text>
+  <text class="ink" x="215" y="272.8" text-anchor="middle">40 reads</text>
+  <circle class="node" cx="325" cy="214" r="6.2"/>
+  <text class="base" x="325" y="240.2" text-anchor="middle">GGG&gt;G<tspan class="alt">A</tspan>G</text>
+  <text class="ink" x="325" y="256.2" text-anchor="middle">3 reads</text>
+  <path class="fold" d="M218.0 81.9 L131.5 118.3" marker-end="url(#head)"/>
+  <text class="moves" x="174.8" y="92.1" text-anchor="middle">folds</text>
+  <path class="block" d="M190.6 200.7 L129.0 166.9"/>
+  <path class="cross" d="M153.8 177.8 l12 12 m0 -12 l-12 12"/>
+  <text class="halt" x="153.8" y="207.8" text-anchor="middle">stays</text>
+  <path class="fold" d="M313.8 214.0 L242.8 214.0" marker-end="url(#head)"/>
+  <text class="moves" x="278.3" y="206.0" text-anchor="middle">folds</text>
 
   <text class="head" x="370" y="24">2. Folding by Count</text>
   <text class="ink" x="370" y="42">a partial allele folds below the line, at the default rate of 0.05</text>
@@ -85,24 +80,25 @@
   <text class="ink" x="424" y="66.0" text-anchor="end">100</text>
   <text class="ink" x="652.0" y="278" text-anchor="middle">MNV ALT reads</text>
   <text class="ink" x="384" y="153.0" text-anchor="middle" transform="rotate(-90 384 153.0)">partial allele ALT reads</text>
+  <path class="mark" d="M667.0 76 V244"/>
+  <text class="ink" x="667.0" y="70" text-anchor="middle">GGG&gt;GAT</text>
   <path class="mark" d="M769.5 76 V244"/>
   <text class="ink" x="769.5" y="70" text-anchor="middle">GGG&gt;CAT</text>
   <circle class="dot" cx="769.5" cy="154.6" r="3.5"/>
   <text class="tag" x="777.5" y="158.6">GGG&gt;CAG</text>
-  <circle class="dot" cx="769.5" cy="171.9" r="3.5"/>
-  <text class="tag" x="777.5" y="175.9">GGG&gt;GAT</text>
-  <circle class="dot" cx="769.5" cy="190.6" r="3.5"/>
-  <text class="tag" x="777.5" y="194.6">GGG&gt;GAG</text>
-  <path class="cross" d="M765.5 102.2 l8 8 m0 -8 l-8 8"/>
-  <text class="tag" x="760.5" y="110.2" text-anchor="end">GGG&gt;GGT</text>
-  <text class="ink" x="446" y="72">chance the MNV leaks this many reads or more</text>
-  <rect class="band" x="446" y="82" width="22" height="12"/>
-  <text class="ink" x="476" y="92">at least 0.05</text>
-  <rect class="band" x="446" y="100" width="22" height="12"/>
-  <rect class="band" x="446" y="100" width="22" height="12"/>
-  <text class="ink" x="476" y="110">at least 0.2</text>
-  <rect class="band" x="446" y="118" width="22" height="12"/>
-  <rect class="band" x="446" y="118" width="22" height="12"/>
-  <rect class="band" x="446" y="118" width="22" height="12"/>
-  <text class="ink" x="476" y="128">at least 0.5</text>
+  <path class="cross" d="M765.5 91.6 l8 8 m0 -8 l-8 8"/>
+  <text class="tag" x="760.5" y="99.6" text-anchor="end">GGG&gt;GAT</text>
+  <circle class="dot" cx="667.0" cy="190.6" r="3.5"/>
+  <text class="tag" x="675.0" y="194.6">GGG&gt;GAG</text>
+  <text class="ink" x="446" y="72">chance the MNV leaks</text>
+  <text class="ink" x="446" y="87">this many reads or more</text>
+  <rect class="band" x="446" y="98" width="22" height="12"/>
+  <text class="ink" x="476" y="108">at least 0.05</text>
+  <rect class="band" x="446" y="116" width="22" height="12"/>
+  <rect class="band" x="446" y="116" width="22" height="12"/>
+  <text class="ink" x="476" y="126">at least 0.2</text>
+  <rect class="band" x="446" y="134" width="22" height="12"/>
+  <rect class="band" x="446" y="134" width="22" height="12"/>
+  <rect class="band" x="446" y="134" width="22" height="12"/>
+  <text class="ink" x="476" y="144">at least 0.5</text>
 </svg>
