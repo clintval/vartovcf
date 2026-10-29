@@ -50,7 +50,8 @@ vardict-java \
       --output "dna00001.g.vcf.gz"
 ```
 
-With `-p` and `--fill-gvcf`, every position of the BED gets a record.
+With VarDict's pileup mode (`-p`) and `--fill-gvcf`, every position of the BED gets a record, so the output is a gVCF.
+Leave out `-p`, `--fill-gvcf` and `--fill-gvcf-bed` for a VCF of VarDict's calls only.
 
 ## Tumor-Normal
 
@@ -139,7 +140,7 @@ Here reads 3 and 4 leave the partial alleles `G>C` and `G>A` beside the MNV `GG>
 
 ![A leaky MNV: four reads carry the MNV GG>CA, reads 3 and 4 have a no-call inside it, so VarDict writes the partial alleles G>C and G>A as calls of their own, and --fix-leaky-mnv folds them back into the MNV.](.github/img/leaky-mnv.svg)
 
-With `--fix-leaky-mnv`, each partial allele folds back into its MNV, whose record counts what it took in INFO `MNV_PARTIALS` and FORMAT `MNV_PARTIAL_READS`.
+With `--fix-leaky-mnv`, each partial allele folds back into its MNV, whose record counts the partial alleles folded in INFO `MNV_PARTIALS` and their reads in FORMAT `MNV_PARTIAL_READS`.
 
 > [!WARNING]
 > VarDictJava folds a partial allele starting after the MNV's first base whenever the partial has fewer reads than the MNV, even an SNV of another haplotype, and writes no row for the SNV, so `--fix-leaky-mnv` cannot undo it.
@@ -147,7 +148,7 @@ With `--fix-leaky-mnv`, each partial allele folds back into its MNV, whose recor
 #### Deciding Partials by Their Reads
 
 Give `--fix-leaky-mnv` the BAM VarDict read with `--reads` whenever you can.
-Each read template of a partial allele is then examined at the MNV's changed positions outside the partial allele:
+Each template of a partial allele, a read and its mate, is then examined at the MNV's changed positions outside the partial allele:
 
 ![Deciding a partial allele by its reads: each template of the partial allele G>C is examined at the MNV's other changed base. Template 1's mate reads the MNV's A, so read 1 moves to the MNV; template 2's mate reads the reference G, so template 2 is another allele and stays; template 3 has no read of the base, so it is unknown and stays, since template 2 is another allele.](.github/img/reads-decision.svg)
 
@@ -231,7 +232,7 @@ bcftools query -r chr1:1106-1112 -f '%POS\t%REF\t%ALT\t%CONTEXT_3mer\t%GVCF_FILL
 
 With `--fill-gvcf-bed`, the regions of VarDict's BED that no read covers are filled too.
 Run VarDict with `-z1` so it reads the BED's starts as 0-based, and set `--fill-gvcf-bed-extend` to VarDict's `-x`; a mismatched region fails the run, naming the options that would match it.
-VarDict must run without `-3`, which writes indels at their 3′-most position instead of where VarDict counted them.
+Each fill is placed where VarDict counted its rows' reads, so VarDict must run without `-3`, which writes indels at their 3′-most position instead.
 
 ## Site Depth
 
@@ -240,7 +241,7 @@ Every record at a position has the same `SITE_DP`, so `uniq` leaves one line per
 Site depth is complete only for pileup (`-p`) output.
 Unlike `DP`, `SITE_DP` never counts the `N` bases VarDict's `-K` adds.
 
-With `--context-3mer`, every record gets INFO `CONTEXT_3mer`, the reference bases at POS-1, POS and POS+1, which the 3-mer recipes need.
+With `--context-3mer`, every record gets INFO `CONTEXT_3mer`, the reference bases at POS-1, POS and POS+1, which the two 3-mer recipes below need.
 Take depths from the whole file, before leaving out any record.
 
 Write the depth at each position:

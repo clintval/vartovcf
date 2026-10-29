@@ -65,7 +65,7 @@
 
   <text class="head" x="620" y="24">3. Folded Back</text>
   <text class="ink" x="620" y="42">--fix-leaky-mnv returns the partials&#8217; reads</text>
-  <text class="ink" x="620" y="216">--reads checks each read's template first</text>
+  <text class="ink" x="620" y="216">--reads checks each read&#8217;s template first</text>
   <rect class="span" x="757" y="63" width="36" height="53" rx="4"/>
   <text class="ink" x="620" y="81">Reference</text>
   <text class="base" y="82" text-anchor="middle"><tspan x="712">G</tspan><tspan x="730">T</tspan><tspan x="748">C</tspan><tspan x="766">G</tspan><tspan x="784">G</tspan><tspan x="802">G</tspan><tspan x="820">T</tspan></text>
