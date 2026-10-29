@@ -157,14 +157,6 @@ Each read template of a partial allele is then examined at the MNV's changed pos
 
 ![Deciding a partial allele by its reads: each template of the partial allele G>C is examined at the MNV's other changed base. Template 1's mate reads the MNV's A, so read 1 moves to the MNV; template 2's mate reads the reference G, so template 2 is another allele and stays; template 3 has no read of the base, so it is unknown and stays, since template 2 is another allele.](.github/img/reads-decision.svg)
 
-The template's bases there decide where its reads go:
-
-| At those positions, the template has | The template is | Its reads |
-|---|---|---|
-| The MNV's ALT | The MNV's molecule | Move to the MNV |
-| Another base | Another allele | Stay |
-| A no-call, a low-quality base, or no read | Unknown | Move unless a template of the partial allele is another allele's |
-
 A partial allele with reads left keeps only those reads, and FORMAT `MNV_MOVED_READS` counts the reads that moved.
 Give tumor-normal BAMs as VarDict takes them, `"tumor.bam|normal.bam"`, and set these options to the values VarDict ran with:
 
