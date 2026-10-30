@@ -2119,6 +2119,91 @@ mod tests {
         Ok(())
     }
 
+    /// The tumor-only reads of `tests/calls.reads.clipped.var`, which is VarDictJava 1.8.4's output
+    /// for them with `-q 30 -Q 20 -F 0x504 -z 1 -P 0 -K`: 10 reads of the MNV GG>CA at 1100-1101;
+    /// three reads the aligner soft-clipped from 1100 over the MNV; G>C at 1100 on two reads that
+    /// end at 1100, which VarDict soft-clips there and adds to the MNV with the aligner's soft clips,
+    /// on two reads hard-clipped after 1100 whose mates read the MNV's A at 1101, on one read with
+    /// the reference at 1101 and on one with a no-call there; and five reference reads. VarDict
+    /// counts the four G>C reads it did not clip.
+    fn clipped_reads() -> SamBuilder {
+        let mut builder = SamBuilder::new().read_length(40);
+        for index in 0..10 {
+            builder.add_frag(frag(
+                &format!("m{index}"),
+                &[(1100, b'C'), (1101, b'A')],
+                &[],
+            ));
+        }
+        for index in 0..3 {
+            builder.add_frag(
+                Frag::at(1081)
+                    .name(format!("s{index}"))
+                    .bases(&read(&[(1100, b'C'), (1101, b'A')])[..27])
+                    .quals(vec![40u8; 27])
+                    .cigar("19M8S")
+                    .attr(Tag::EDIT_DISTANCE, 0),
+            );
+        }
+        for index in 0..2 {
+            builder.add_frag(
+                Frag::at(1081)
+                    .name(format!("e{index}"))
+                    .bases(&read(&[(1100, b'C')])[..20])
+                    .quals(vec![40u8; 20])
+                    .cigar("20M")
+                    .attr(Tag::EDIT_DISTANCE, 1),
+            );
+        }
+        for index in 0..2 {
+            builder.add_pair(
+                Pair::at(1081, 1101)
+                    .name(format!("h{index}"))
+                    .bases1(&read(&[(1100, b'C')])[..20])
+                    .quals1(vec![40u8; 20])
+                    .cigar1("20M20H")
+                    .bases2(&read(&[(1101, b'A')])[20..])
+                    .quals2(vec![40u8; 20])
+                    .cigar2("20H20M")
+                    .strand2(Strand::Minus)
+                    .attr(Tag::EDIT_DISTANCE, 1),
+            );
+        }
+        builder.add_frag(frag("p3", &[(1100, b'C')], &[]));
+        builder.add_frag(frag("p2", &[(1100, b'C'), (1101, b'N')], &[]));
+        for index in 0..5 {
+            builder.add_frag(frag(&format!("r{index}"), &[], &[]));
+        }
+        builder
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn run_end_to_end_splits_a_partial_once_vardicts_end_clipping_is_replayed() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = TempDir::new()?;
+        let bam = write_bam(dir.path(), "tumor", &clipped_reads());
+        let output = NamedTempFile::new().expect("Cannot create temporary file!");
+        let output = output.path().to_str().unwrap();
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        cmd
+            .arg("--reference").arg("tests/reference.fa")
+            .arg("--sample").arg("dna00001")
+            .arg("--input").arg("tests/calls.reads.clipped.var")
+            .arg("--output").arg(output)
+            .arg("--fix-leaky-mnv")
+            .arg("--reads").arg(&bam)
+            .arg("--reads-base-quality").arg("30");
+        let assert = cmd.assert().success();
+        let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+        // Six reads feed G>C as aligned, four once the two ending at 1100 are clipped as VarDict
+        // clips them: the two whose mates prove the MNV molecule move, the other two stay.
+        assert!(stderr.contains("1 reconciled with VarDict's ALT reads, 1 of them only once VarDict's end clipping was replayed"), "{stderr}");
+        assert!(!stderr.contains("WARN"), "{stderr}");
+
+        assert!(diff(output, "tests/calls.reads.clipped.vcf"));
+        Ok(())
+    }
+
     /// The tumor and normal reads of `tests/calls.tumor-normal.reads.var`, which is VarDictJava
     /// 1.8.4's output for them with `-q 30 -Q 20 -F 0x504 -z 1 -P 0 -K`, over the three-base MNV
     /// GGG>CAC at 1100-1102: both samples carry it on 10 reads. The tumor has G>C at 1100 on a read

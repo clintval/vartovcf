@@ -15,6 +15,14 @@
 //! MNV. Each template with a read feeding a partial is then classified by its called bases, the
 //! bases of its reads called into one as fgbio's `CallOverlappingConsensusBases` calls them, at the
 //! MNV's changed positions outside the partial.
+//!
+//! Before it walks a read, VarDict's `CigarModifier` soft-clips a mismatch within three bases of
+//! either end of the alignment, when the alignment starts or ends with a match operation: so a read
+//! ending inside an MNV loses its partial allele, and VarDict adds the clipped reads to the MNV, or
+//! back to the partial, or to nothing, by the consensus of all the soft clips at that position.
+//! Which of those happened is not known from VarDict's output, so each read is walked twice, as
+//! aligned and as VarDict clips it, and a partial's reads are split only when one of the two walks
+//! feeds it exactly the reads VarDict counted.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -103,6 +111,8 @@ pub struct Summary {
     pub decisions: usize,
     /// Decisions where the reads feeding the row number exactly VarDict's ALT reads.
     pub reconciled: usize,
+    /// Reconciled decisions whose reads numbered VarDict's only once its end clipping was replayed.
+    pub reconciled_clipped: usize,
     /// Decisions the reads could change: the row has fewer reads than the MNV in the sample and
     /// some read found would move.
     pub decisive: usize,
@@ -274,15 +284,17 @@ impl ReadSources {
                         continue;
                     }
                     self.summary.decisions += 1;
-                    let reconciled = classified.decision.unmatched == 0;
+                    let reconciled = classified.decision.reconciled();
                     self.summary.reconciled += usize::from(reconciled);
+                    self.summary.reconciled_clipped +=
+                        usize::from(reconciled && classified.decision.unmatched != 0);
                     self.summary.empty += usize::from(classified.feeding.is_empty());
                     if partial.alt_depth < rows[mnv][sample].alt_depth && outcome.would_move > 0 {
                         self.summary.decisive += 1;
                         self.summary.decisive_unreconciled += usize::from(!reconciled);
                     }
                     debug!(
-                        "{contig}:{} {}>{} under {contig}:{} {}>{} in sample {}: VarDict counted {} reads; {} are the MNV's molecules, {} another allele's, {} prove nothing, {} unmatched; the reads would move {} and keep {}; {:.3} of the templates prove nothing there.",
+                        "{contig}:{} {}>{} under {contig}:{} {}>{} in sample {}: VarDict counted {} reads; {} are the MNV's molecules, {} another allele's, {} prove nothing, {} unmatched; the reads would move {} and keep {}; {:.3} of the templates prove nothing there; {} unmatched once VarDict's end clipping is replayed.",
                         partial.start,
                         partial.ref_allele,
                         partial.alt_allele,
@@ -298,6 +310,7 @@ impl ReadSources {
                         outcome.moved,
                         outcome.kept,
                         classified.decision.ambiguity,
+                        classified.decision.unmatched_clipped,
                         contig = partial.contig,
                     );
                 }
@@ -408,7 +421,26 @@ struct ReadView {
     mismatches: f64,
     aligned_length: usize,
     leading_clip: usize,
+    /// The columns of the alignment's first and last base, which may lie outside the window.
+    first_column: i64,
+    last_column: i64,
+    /// Whether the CIGAR starts and ends with a match operation, the only ends VarDict's
+    /// `CigarModifier` clips mismatches from; a hard or soft clip there leaves the end alone.
+    starts_with_match: bool,
+    ends_with_match: bool,
 }
+
+/// The bases VarDict's `CigarModifier` soft-clips from a read's ends before walking it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Clips {
+    head: usize,
+    tail: usize,
+}
+
+/// The matches in a row that stop VarDict's scan for a mismatch near a read's end.
+const CLIP_SCAN_MATCHES: usize = 3;
+/// The most bases from a read's end VarDict soft-clips a mismatch at.
+const CLIP_MAX: usize = 3;
 
 /// What one template's reads, called into one, hold over the window: `None` where no read of the
 /// template holds a base that votes, with the called base and quality otherwise, and whether any
@@ -480,7 +512,9 @@ fn survey<S: RecordSource<Record = bam::Record>>(
             let next = survey.reads.len();
             let read = *reads.entry(key).or_insert(next);
             if read == survey.reads.len() {
-                survey.reads.push(ReadView::new(record, template, columns));
+                survey
+                    .reads
+                    .push(ReadView::new(record, template, window.start, columns));
             }
             let view = &mut survey.reads[read];
             match entry.kind() {
@@ -533,22 +567,45 @@ fn substitution_mismatches(record: &bam::Record) -> Option<i64> {
 }
 
 impl ReadView {
-    /// A read with no bases recorded yet, with what VarDict's per-read measures need from it.
-    fn new(record: &bam::Record, template: usize, columns: usize) -> Self {
+    /// A read with no bases recorded yet, with what VarDict's per-read measures need from it, over
+    /// a window starting at a 0-based position.
+    fn new(record: &bam::Record, template: usize, window_start: usize, columns: usize) -> Self {
         let mut leading_clip = 0;
         let mut aligned_length = 0;
+        let mut reference_span = 0;
         let mut before_alignment = true;
+        let mut first_op = None;
+        let mut last_op = None;
         for op in record.cigar().iter().filter_map(|op| op.ok()) {
+            first_op.get_or_insert(op.kind());
+            last_op = Some(op.kind());
             match op.kind() {
                 Kind::SoftClip if before_alignment => leading_clip += op.len(),
                 Kind::HardClip | Kind::Pad | Kind::SoftClip => {}
                 Kind::Match | Kind::SequenceMatch | Kind::SequenceMismatch | Kind::Insertion => {
                     before_alignment = false;
                     aligned_length += op.len();
+                    if op.kind() != Kind::Insertion {
+                        reference_span += op.len();
+                    }
                 }
-                Kind::Deletion | Kind::Skip => before_alignment = false,
+                Kind::Deletion | Kind::Skip => {
+                    before_alignment = false;
+                    reference_span += op.len();
+                }
             }
         }
+        let first_column = record
+            .alignment_start()
+            .and_then(Result::ok)
+            .map_or(i64::MIN, |start| {
+                usize::from(start) as i64 - 1 - window_start as i64
+            });
+        let last_column = if first_column == i64::MIN || reference_span == 0 {
+            i64::MIN
+        } else {
+            first_column + reference_span as i64 - 1
+        };
         ReadView {
             template,
             bases: vec![None; columns],
@@ -558,7 +615,73 @@ impl ReadView {
             mismatches: substitution_mismatches(record).unwrap_or(0) as f64,
             aligned_length,
             leading_clip,
+            first_column,
+            last_column,
+            starts_with_match: first_op == Some(Kind::Match),
+            ends_with_match: last_op == Some(Kind::Match),
         }
+    }
+
+    /// The bases VarDict's `CigarModifier` soft-clips from this read's ends, replaying its
+    /// `captureMisSoftly3Mismatches` and `combineBeginDigM`: from an end that is a match operation,
+    /// the bases are scanned inward until three in a row match the reference, and if the last
+    /// mismatch met is within three bases of the end, the end is clipped from that mismatch. Bases
+    /// compare whatever their quality, and a no-call is a mismatch. An end outside the window is
+    /// never clipped at a base in it, since the scan would stop on the flank before reaching it. A
+    /// read with an indel in the window, or a scan that runs out of window, finds no clip, so such a
+    /// read is walked as aligned.
+    fn clips(&self, window: &Window) -> Clips {
+        let columns = self.bases.len() as i64;
+        let scan = |iter: &mut dyn Iterator<Item = usize>, ran_out: bool| -> usize {
+            let mut clip = 0;
+            let mut matches = 0;
+            let mut scanned = 0;
+            for column in iter {
+                scanned += 1;
+                let Some(base) = self.bases[column] else {
+                    return 0;
+                };
+                if base.base != window.reference[column] {
+                    clip = scanned;
+                    matches = 0;
+                } else {
+                    matches += 1;
+                    if matches == CLIP_SCAN_MATCHES {
+                        return if clip <= CLIP_MAX { clip } else { 0 };
+                    }
+                }
+            }
+            if ran_out || clip > CLIP_MAX { 0 } else { clip }
+        };
+        if !self.indels.is_empty() || self.first_column == i64::MIN || self.last_column == i64::MIN
+        {
+            return Clips::default();
+        }
+        let first = self.first_column.max(0) as usize;
+        let last = self.last_column.min(columns - 1) as usize;
+        let tail = if self.ends_with_match && (0..columns).contains(&self.last_column) {
+            scan(&mut (first..=last).rev(), self.first_column < 0)
+        } else {
+            0
+        };
+        let head = if self.starts_with_match && (0..columns).contains(&self.first_column) {
+            scan(&mut (first..=last), self.last_column >= columns)
+        } else {
+            0
+        };
+        Clips { head, tail }
+    }
+
+    /// The alleles VarDict counts this read toward over the window when it walks the read as
+    /// aligned: see [`ReadView::walk`].
+    fn alleles(&self, window: &Window, options: ReadOptions) -> Vec<Found> {
+        self.walk(window, options, Clips::default())
+    }
+
+    /// The alleles VarDict counts this read toward over the window when it walks the read after
+    /// its `CigarModifier` has clipped the ends, so an allele under a clipped end feeds no row.
+    fn alleles_clipped(&self, window: &Window, options: ReadOptions) -> Vec<Found> {
+        self.walk(window, options, self.clips(window))
     }
 
     /// The alleles VarDict counts this read toward over the window, by replaying its walk: an
@@ -566,11 +689,27 @@ impl ReadView {
     /// are contiguous in the read, not no-calls, at least `-q` plus 5, and either mismatches or
     /// matches bridged within the gap to a mismatch. An allele with an insertion, deletion or skip
     /// within the gap of either end feeds no substitution row, as VarDict folds it into a complex
-    /// allele with the indel.
-    fn alleles(&self, window: &Window, options: ReadOptions) -> Vec<Found> {
+    /// allele with the indel. The bases under the clips are left out of the walk, as soft-clipped
+    /// bases are, and the read's length and the allele's distance from its end shrink with them.
+    fn walk(&self, window: &Window, options: ReadOptions, clips: Clips) -> Vec<Found> {
         let mut found = Vec::new();
         let reference = &window.reference;
-        let bases = &self.bases;
+        let mut masked;
+        let bases: &[Option<Base>] = if clips == Clips::default() {
+            &self.bases
+        } else {
+            masked = self.bases.clone();
+            let first = self.first_column.max(0) as usize;
+            let last = self.last_column.min(masked.len() as i64 - 1) as usize;
+            for column in (first..=last).take(clips.head) {
+                masked[column] = None;
+            }
+            for column in (first..=last).rev().take(clips.tail) {
+                masked[column] = None;
+            }
+            &masked
+        };
+        let aligned_length = self.aligned_length - clips.head - clips.tail;
         let mut column = 0;
         while column < bases.len() {
             let Some(first) = bases[column] else {
@@ -639,9 +778,10 @@ impl ReadView {
                     || (indel >= last && indel <= last + options.mnv_gap)
             });
             if !dropped && !near_indel {
-                let in_read =
-                    bases[last].expect("the last base is held").query_position - self.leading_clip;
-                let from_end = self.aligned_length.saturating_sub(in_read);
+                let in_read = bases[last].expect("the last base is held").query_position
+                    - self.leading_clip
+                    - clips.head;
+                let from_end = aligned_length.saturating_sub(in_read);
                 found.push(Found {
                     start: window.start as u64 + column as u64 + 1,
                     quality: quality / alt.len() as f64,
@@ -783,13 +923,27 @@ struct Decision {
     /// Reads VarDict counted that no read in the pileup feeds, or, below zero, reads in the
     /// pileup feeding the row beyond VarDict's count.
     unmatched: i32,
+    /// The same, for the reads that still feed the row once VarDict's end clipping is replayed.
+    unmatched_clipped: i32,
     /// The fraction of the templates at the MNV's other changed positions that prove nothing there.
     ambiguity: f64,
 }
 
-/// One sample's reads feeding a partial, each with whose molecule its template is.
+impl Decision {
+    /// Whether the reads found number VarDict's, as aligned or as VarDict clips them.
+    fn reconciled(&self) -> bool {
+        self.unmatched == 0 || self.unmatched_clipped == 0
+    }
+}
+
+/// One read feeding a partial, the allele it feeds and whose molecule its template is.
+type Feeding<'s> = (&'s ReadView, Found, Molecule);
+
+/// One sample's reads feeding a partial: as VarDict walks them aligned, and as it walks them after
+/// clipping their ends.
 struct Classified<'s> {
-    feeding: Vec<(&'s ReadView, Found, Molecule)>,
+    feeding: Vec<Feeding<'s>>,
+    clipped: Vec<Feeding<'s>>,
     decision: Decision,
 }
 
@@ -820,19 +974,23 @@ fn classify<'s>(
         })
         .collect();
     let others = &others;
-    let feeding: Vec<(&ReadView, Found, Molecule)> = survey
-        .reads
-        .iter()
-        .flat_map(|read| {
-            read.alleles(window, options)
-                .into_iter()
-                .filter(|allele| allele.is(partial))
-                .map(move |allele| {
-                    let molecule = survey.templates[read.template].molecule(others, options);
-                    (read, allele, molecule)
-                })
-        })
-        .collect();
+    let feed = |alleles: fn(&ReadView, &Window, ReadOptions) -> Vec<Found>| -> Vec<Feeding> {
+        survey
+            .reads
+            .iter()
+            .flat_map(|read| {
+                alleles(read, window, options)
+                    .into_iter()
+                    .filter(|allele| allele.is(partial))
+                    .map(move |allele| {
+                        let molecule = survey.templates[read.template].molecule(others, options);
+                        (read, allele, molecule)
+                    })
+            })
+            .collect()
+    };
+    let feeding = feed(ReadView::alleles);
+    let clipped = feed(ReadView::alleles_clipped);
     let mut decision = Decision::default();
     for (_, _, molecule) in &feeding {
         match molecule {
@@ -855,7 +1013,12 @@ fn classify<'s>(
         1.0
     };
     decision.unmatched = partial.alt_depth - feeding.len() as i32;
-    Classified { feeding, decision }
+    decision.unmatched_clipped = partial.alt_depth - clipped.len() as i32;
+    Classified {
+        feeding,
+        clipped,
+        decision,
+    }
 }
 
 /// What one sample's reads of a partial would do, and did.
@@ -884,10 +1047,12 @@ struct Outcome {
 /// that fraction to the power `k`.
 ///
 /// A sample's reads are split between the MNV and the row only when the reads found are exactly the
-/// reads VarDict counted, so every count and mean written comes from a read seen. When the pileup
-/// feeds the row more reads than VarDict counted, the row moves whole, with VarDict's own values,
-/// only if every read found would move; otherwise, and whenever it feeds fewer, the sample keeps
-/// VarDict's row whole, since which of its reads VarDict counted is not known.
+/// reads VarDict counted, so every count and mean written comes from a read seen: the reads found
+/// are those of the read walked as aligned, or else those left once VarDict's end clipping is
+/// replayed. When the pileup feeds the row more reads than VarDict counted either way, the row
+/// moves whole, with VarDict's own values, only if every read found would move; otherwise, and
+/// whenever it feeds fewer, the sample keeps VarDict's row whole, since which of its reads VarDict
+/// counted is not known.
 fn resolve<'a>(
     classified: &[Classified],
     mnv: &[TumorOnlyVariant<'a>],
@@ -932,26 +1097,36 @@ fn settle<'a>(
         Molecule::Ambiguous => ambiguous_moves,
         Molecule::Separate => false,
     };
-    let would_move = classified
-        .feeding
-        .iter()
-        .filter(|(_, _, molecule)| goes(*molecule))
-        .count() as i32;
-    let found = classified.feeding.len() as i32;
-    if partial.alt_depth > 0 && found == partial.alt_depth {
-        let mut moved = Reads::default();
-        let mut kept = Reads::default();
-        for (read, allele, molecule) in &classified.feeding {
-            if goes(*molecule) {
-                moved.add(read, allele, options);
-            } else {
-                kept.add(read, allele, options);
+    let movable = |feeding: &[Feeding]| -> i32 {
+        feeding
+            .iter()
+            .filter(|(_, _, molecule)| goes(*molecule))
+            .count() as i32
+    };
+    let candidates = [&classified.feeding, &classified.clipped];
+    let would_move = movable(&classified.feeding);
+    if partial.alt_depth > 0 {
+        for feeding in candidates {
+            if feeding.len() as i32 != partial.alt_depth {
+                continue;
+            }
+            let mut moved = Reads::default();
+            let mut kept = Reads::default();
+            for (read, allele, molecule) in feeding {
+                if goes(*molecule) {
+                    moved.add(read, allele, options);
+                } else {
+                    kept.add(read, allele, options);
+                }
+            }
+            return (moved.call(partial), kept.call(partial), movable(feeding));
+        }
+        for feeding in candidates {
+            let found = feeding.len() as i32;
+            if found > partial.alt_depth && movable(feeding) == found {
+                return (partial.clone(), without_reads(partial), would_move);
             }
         }
-        return (moved.call(partial), kept.call(partial), would_move);
-    }
-    if partial.alt_depth > 0 && found > partial.alt_depth && would_move == found {
-        return (partial.clone(), without_reads(partial), would_move);
     }
     (without_reads(partial), partial.clone(), would_move)
 }
@@ -1827,6 +2002,194 @@ mod tests {
             resolve_classes(&[((0, 1, 0), 10), ((1, 0, 0), 10)]),
             vec![(0, 2), (1, 0)]
         );
+    }
+
+    /// Surveys one fragment aligned over 1-based positions `start` to `end` of the window with this
+    /// CIGAR, whose bases are the window's reference with these edits and qualities.
+    fn survey_span(
+        start: u64,
+        end: u64,
+        cigar: &str,
+        edits: &[(u64, u8)],
+        quality_edits: &[(u64, u8)],
+    ) -> Survey {
+        let (from, to) = ((start - 101) as usize, (end - 100) as usize);
+        let ops: Vec<(usize, char)> = cigar
+            .split_inclusive(|c: char| c.is_ascii_alphabetic())
+            .map(|op| {
+                (
+                    op[..op.len() - 1].parse().unwrap(),
+                    op.chars().last().unwrap(),
+                )
+            })
+            .collect();
+        let soft = |op: Option<&(usize, char)>| {
+            op.filter(|&&(_, kind)| kind == 'S')
+                .map_or(0, |&(len, _)| len)
+        };
+        let (leading, trailing) = (soft(ops.first()), soft(ops.last()));
+        let bases = format!(
+            "{}{}{}",
+            "A".repeat(leading),
+            &edited(edits)[from..to],
+            "A".repeat(trailing)
+        );
+        let mut quals = vec![40u8; leading];
+        quals.extend_from_slice(&self::quals(quality_edits)[from..to]);
+        quals.extend(std::iter::repeat_n(40u8, trailing));
+        let mut builder = SamBuilder::new().read_length(to - from);
+        builder.add_frag(
+            Frag::at(start as usize)
+                .bases(bases)
+                .quals(quals)
+                .cigar(cigar),
+        );
+        survey(
+            builder.to_source(),
+            builder.header(),
+            &window(),
+            ReadOptions::default(),
+        )
+        .unwrap()
+    }
+
+    #[rstest]
+    #[case::at_the_end(105, "5M", 1)]
+    #[case::one_before_the_end(106, "6M", 2)]
+    #[case::two_before_the_end(107, "7M", 3)]
+    #[case::three_before_the_end(108, "8M", 0)]
+    #[case::hard_clipped_end(106, "6M14H", 0)]
+    #[case::soft_clipped_end(106, "6M2S", 0)]
+    fn test_vardict_clips_a_mismatch_within_three_bases_of_a_match_ended_read(
+        #[case] end: u64,
+        #[case] cigar: &str,
+        #[case] tail: usize,
+    ) {
+        let survey = survey_span(101, end, cigar, &[(105, b'T')], &[]);
+        let read = &survey.reads[0];
+        assert_eq!(read.clips(&window()), Clips { head: 0, tail });
+        assert_eq!(read.alleles(&window(), ReadOptions::default()).len(), 1);
+        assert_eq!(
+            read.alleles_clipped(&window(), ReadOptions::default())
+                .len(),
+            usize::from(tail == 0)
+        );
+    }
+
+    #[rstest]
+    #[case::at_the_start(105, "16M", 1)]
+    #[case::one_after_the_start(104, "17M", 2)]
+    #[case::two_after_the_start(103, "18M", 3)]
+    #[case::three_after_the_start(102, "19M", 0)]
+    #[case::hard_clipped_start(104, "3H17M", 0)]
+    #[case::soft_clipped_start(104, "2S17M", 0)]
+    fn test_vardict_clips_a_mismatch_within_three_bases_of_a_match_started_read(
+        #[case] start: u64,
+        #[case] cigar: &str,
+        #[case] head: usize,
+    ) {
+        let survey = survey_span(start, 120, cigar, &[(105, b'T')], &[]);
+        let read = &survey.reads[0];
+        assert_eq!(read.clips(&window()), Clips { head, tail: 0 });
+        assert_eq!(
+            read.alleles_clipped(&window(), ReadOptions::default())
+                .len(),
+            usize::from(head == 0)
+        );
+    }
+
+    #[test]
+    fn test_the_clip_scan_stops_at_three_matches_in_a_row() {
+        // The mismatch at 105 is met before three matches follow the one at 108, so the clip would
+        // reach 4 bases, more than VarDict clips.
+        let survey = survey_span(101, 108, "8M", &[(105, b'T'), (108, b'A')], &[]);
+        assert_eq!(survey.reads[0].clips(&window()), Clips::default());
+        // Three matches between the mismatches stop the scan at the one near the end.
+        let survey = survey_span(101, 108, "8M", &[(104, b'T'), (108, b'A')], &[]);
+        assert_eq!(survey.reads[0].clips(&window()), Clips { head: 0, tail: 1 });
+    }
+
+    #[test]
+    fn test_a_no_call_counts_as_a_mismatch_in_the_clip_scan() {
+        let survey = survey_span(101, 107, "7M", &[(105, b'T'), (107, b'N')], &[]);
+        assert_eq!(survey.reads[0].clips(&window()), Clips { head: 0, tail: 3 });
+    }
+
+    #[test]
+    fn test_the_clip_scan_compares_bases_whatever_their_quality() {
+        let survey = survey_span(101, 106, "6M", &[(105, b'T')], &[(104, 10), (105, 10)]);
+        assert_eq!(survey.reads[0].clips(&window()), Clips { head: 0, tail: 2 });
+    }
+
+    #[test]
+    fn test_a_read_with_an_indel_in_the_window_is_walked_as_aligned() {
+        let reference = edited(&[(105, b'T')]);
+        let mut builder = SamBuilder::new().read_length(6);
+        builder.add_frag(
+            Frag::at(101)
+                .bases(format!("{}{}", &reference[..3], &reference[4..7]))
+                .quals(vec![40u8; 6])
+                .cigar("3M1D3M"),
+        );
+        let survey = survey(
+            builder.to_source(),
+            builder.header(),
+            &window(),
+            ReadOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(survey.reads[0].clips(&window()), Clips::default());
+    }
+
+    #[test]
+    fn test_a_clipped_end_shortens_the_read_for_the_position_in_read() {
+        // The allele at 110 is 11 bases from the end of the 20-base read; with its last 2 bases
+        // clipped from the mismatch at 119 the read is 18 long and the allele 9 from the end.
+        let survey = survey_span(101, 120, "20M", &[(110, b'T'), (119, b'A')], &[]);
+        let read = &survey.reads[0];
+        let options = ReadOptions::default();
+        assert_eq!(read.alleles(&window(), options)[0].position_in_read, 10);
+        let clipped = read.alleles_clipped(&window(), options);
+        assert_eq!(clipped.len(), 1);
+        assert_eq!(clipped[0].position_in_read, 9);
+    }
+
+    #[test]
+    fn test_a_partial_reconciles_once_vardicts_clipping_is_replayed() {
+        // Three reads carry A>T at 105 under AC>TA: one ends at 105, which VarDict clips away and
+        // adds to the MNV by its soft clips, so VarDict counted the other two, whose mates prove
+        // the MNV molecule.
+        let mnv = row(105, "AC", "TA", 10);
+        let partial = row(105, "A", "T", 2);
+        let proven_read = (edited(&[(105, b'T'), (106, b'A')]), quals(&[(106, 20)]));
+        let proven_mate = (edited(&[(105, b'T'), (106, b'A')]), quals(&[]));
+        let mut builder = pairs_of(&[
+            (
+                (&proven_read.0, proven_read.1.clone()),
+                (&proven_mate.0, proven_mate.1.clone()),
+            ),
+            (
+                (&proven_read.0, proven_read.1.clone()),
+                (&proven_mate.0, proven_mate.1.clone()),
+            ),
+        ]);
+        builder.add_frag(
+            Frag::at(101)
+                .bases(edited(&[(105, b'T')])[..5].to_string())
+                .quals(quals(&[])[..5].to_vec())
+                .cigar("5M"),
+        );
+        let survey = survey(
+            builder.to_source(),
+            builder.header(),
+            &window(),
+            ReadOptions::default(),
+        )
+        .unwrap();
+        let (moved, kept, decision) = decide_survey(&survey, &mnv, &partial);
+        assert_eq!((decision.unmatched, decision.unmatched_clipped), (-1, 0));
+        assert!(decision.reconciled());
+        assert_eq!((moved.alt_depth, kept.alt_depth), (2, 0));
     }
 
     /// Writes one indexed BAM per read group sample name and opens them in that order.
