@@ -18,7 +18,7 @@
 //!
 //! Each read is also walked as VarDict clips it, and a partial splits when either walk numbers VarDict's.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -1046,15 +1046,18 @@ struct Outcome {
 /// sample's classified reads: the fate of the row, and each sample's outcome.
 ///
 /// A read whose template is the MNV's molecule moves whatever the MNV's count in the sample. A read
-/// whose template is another allele's stays. A read whose template proves nothing follows the row's
-/// other reads: it moves only when no template of the row in any sample is shown to be another
-/// allele's, since a row with no read shown to be its own is leakage far more often than an allele
-/// that lost the base in every read, while an allele shown real in one sample is real in the
-/// individual; only when the MNV has reads in its sample, since nothing leaks from an MNV with none;
-/// and, in a sample after the tumor, only when the tumor keeps no read of the row, so a normal never
-/// gives up the reads that say it carries an allele the tumor keeps. The fraction of all templates
-/// that prove nothing at those positions bounds how often an allele's `k` reads all prove nothing:
-/// that fraction to the power `k`.
+/// whose template is another allele's stays. A template that proves nothing is as likely the MNV's as
+/// another allele's as those are common among the molecules with the partial's bases: the MNV's
+/// reads, and the row's templates shown to be the MNV's or another allele's, over the samples whose
+/// reads numbered VarDict's, since an allele in one sample is in the individual. Of a sample's `u`
+/// unknown templates, `u s / (m + p + s)` rounded stay, with `m` the MNV's reads, `p` the proven and
+/// `s` the separate templates, and the rest move: a lone separate template beside a deep MNV keeps
+/// none, while one beside a shallow MNV keeps them all. The fraction of all templates that prove
+/// nothing at those positions bounds how often an allele's `k` templates all prove nothing: that
+/// fraction to the power `k`. Unknown templates move only when the MNV has reads in their sample,
+/// since nothing leaks from an MNV with none; and, in a sample after the tumor, only when the tumor
+/// keeps no read of the row, so a normal never gives up the reads that say it carries an allele the
+/// tumor keeps.
 ///
 /// A sample's reads are split between the MNV and the row only when the reads found are exactly the
 /// reads VarDict counted, as aligned or else as VarDict clips them, so every count and mean written
@@ -1068,7 +1071,19 @@ fn resolve<'a>(
     partials: &[&TumorOnlyVariant<'a>],
     options: ReadOptions,
 ) -> (ReadFate<'a>, Vec<Outcome>) {
-    let separate_anywhere = classified.iter().any(|sample| sample.decision.separate > 0);
+    let pooled = classified
+        .iter()
+        .filter(|sample| sample.reconciled().is_some())
+        .map(|sample| templates(sample.tallied()))
+        .fold((0, 0), |(proven, separate), (p, s, _)| {
+            (proven + p, separate + s)
+        });
+    let molecules = mnv
+        .iter()
+        .map(|call| call.alt_depth.max(0) as usize)
+        .sum::<usize>()
+        + pooled.0
+        + pooled.1;
     let mut fate = ReadFate {
         moved: Vec::new(),
         kept: Vec::new(),
@@ -1076,9 +1091,13 @@ fn resolve<'a>(
     let mut outcomes = Vec::new();
     let mut tumor_keeps = false;
     for (sample, (classified, partial)) in classified.iter().zip(partials).enumerate() {
-        let ambiguous_moves =
-            mnv[sample].alt_depth > 0 && !separate_anywhere && (sample == 0 || !tumor_keeps);
-        let (moved, kept, would_move) = settle(classified, partial, ambiguous_moves, options);
+        let unknown = templates(classified.tallied()).2;
+        let keep_unknown = if mnv[sample].alt_depth > 0 && (sample == 0 || !tumor_keeps) {
+            Some((2 * unknown * pooled.1 + molecules) / (2 * molecules.max(1)))
+        } else {
+            None
+        };
+        let (moved, kept, would_move) = settle(classified, partial, keep_unknown, options);
         if sample == 0 {
             tumor_keeps = kept.alt_depth > 0;
         }
@@ -1093,23 +1112,45 @@ fn resolve<'a>(
     (fate, outcomes)
 }
 
+/// The templates among these reads of each class: (proven, separate, unknown), each counted once.
+fn templates(feeding: &[Feeding]) -> (usize, usize, usize) {
+    let mut seen: [HashSet<usize>; 3] = Default::default();
+    for (read, _, molecule) in feeding {
+        let class = match molecule {
+            Molecule::Mnv => 0,
+            Molecule::Separate => 1,
+            Molecule::Ambiguous => 2,
+        };
+        seen[class].insert(read.template);
+    }
+    (seen[0].len(), seen[1].len(), seen[2].len())
+}
+
 /// One sample's calls of a partial's reads that move and that stay, as [`resolve`] decides them,
-/// and the reads found that would move by their class.
+/// and the reads found that would move by their class; `keep_unknown` is how many unknown templates
+/// stay, the first in the pileup, or every one when `None`.
 fn settle<'a>(
     classified: &Classified,
     partial: &TumorOnlyVariant<'a>,
-    ambiguous_moves: bool,
+    keep_unknown: Option<usize>,
     options: ReadOptions,
 ) -> (TumorOnlyVariant<'a>, TumorOnlyVariant<'a>, i32) {
-    let goes = |molecule: Molecule| match molecule {
+    let mut staying: HashSet<usize> = HashSet::new();
+    for (read, _, molecule) in classified.tallied() {
+        if *molecule == Molecule::Ambiguous && keep_unknown.is_none_or(|keep| staying.len() < keep)
+        {
+            staying.insert(read.template);
+        }
+    }
+    let goes = |read: &ReadView, molecule: Molecule| match molecule {
         Molecule::Mnv => true,
-        Molecule::Ambiguous => ambiguous_moves,
+        Molecule::Ambiguous => !staying.contains(&read.template),
         Molecule::Separate => false,
     };
     let movable = |feeding: &[Feeding]| -> i32 {
         feeding
             .iter()
-            .filter(|(_, _, molecule)| goes(*molecule))
+            .filter(|(read, _, molecule)| goes(read, *molecule))
             .count() as i32
     };
     let would_move = movable(classified.tallied());
@@ -1118,7 +1159,7 @@ fn settle<'a>(
             let mut moved = Reads::default();
             let mut kept = Reads::default();
             for (read, allele, molecule) in feeding {
-                if goes(*molecule) {
+                if goes(read, *molecule) {
                     moved.add(read, allele, options);
                 } else {
                     kept.add(read, allele, options);
@@ -1590,7 +1631,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ambiguous_reads_stay_beside_a_read_shown_to_be_another_alleles() {
+    fn test_ambiguous_reads_move_beside_a_lone_separate_template_under_a_deep_mnv() {
         let mnv = row(105, "AC", "TA", 10);
         let ambiguous = (edited(&[(105, b'T'), (106, b'N')]), quals(&[]));
         let separate = (edited(&[(105, b'T')]), quals(&[]));
@@ -1613,7 +1654,8 @@ mod tests {
         assert_eq!((decision.separate, decision.ambiguous), (2, 4));
         // The partial's two ambiguous templates and the four masked ones, of 23 at the other base.
         assert!((decision.ambiguity - 6.0 / 23.0).abs() < 1e-9);
-        assert_eq!((moved.alt_depth, kept.alt_depth), (0, 6));
+        // Of 2 unknown templates, 2 * 1 / (10 + 1) rounds to none staying.
+        assert_eq!((moved.alt_depth, kept.alt_depth), (4, 2));
     }
 
     #[test]
@@ -1972,11 +2014,29 @@ mod tests {
 
     #[test]
     fn test_a_normal_keeps_its_ambiguous_reads_while_the_tumor_keeps_reads_of_the_row() {
-        // Tumor: one separate template and one ambiguous; normal: one ambiguous template.
+        // The tumor's unknown template moves (1 * 1 / 21 rounds to 0) but its separate one stays.
         assert_eq!(
             resolve_classes(&[((0, 1, 1), 10), ((0, 0, 1), 10)]),
-            vec![(0, 4), (0, 2)]
+            vec![(2, 2), (0, 2)]
         );
+    }
+
+    #[rstest]
+    #[case::deep_mnv_moves_it(((0, 1, 1), 10), vec![(2, 2)])]
+    #[case::shallow_mnv_keeps_it(((0, 1, 1), 1), vec![(0, 4)])]
+    #[case::half_rounds_up_and_keeps_it(((0, 1, 1), 1), vec![(0, 4)])]
+    #[case::under_half_moves_it(((0, 1, 1), 2), vec![(2, 2)])]
+    #[case::two_separate_templates(((0, 2, 1), 10), vec![(2, 4)])]
+    #[case::three_unknown_templates_all_move(((0, 1, 3), 10), vec![(6, 2)])]
+    #[case::six_unknown_templates_keep_one(((0, 1, 6), 10), vec![(10, 4)])]
+    #[case::thirty_unknown_templates_keep_three(((0, 1, 30), 10), vec![(54, 8)])]
+    #[case::proven_templates_count_for_the_mnv(((5, 1, 1), 1), vec![(7, 2)])]
+    fn test_unknown_templates_stay_in_the_share_expected_to_be_another_alleles(
+        #[case] sample: ((i32, i32, i32), i32),
+        #[case] expected: Vec<(i32, i32)>,
+    ) {
+        // Each class unit is one template; `u s / (m + p + s)` rounded stay: 1 * 1 / 2 keeps one.
+        assert_eq!(resolve_classes(&[sample]), expected);
     }
 
     #[test]
@@ -1993,10 +2053,15 @@ mod tests {
     }
 
     #[test]
-    fn test_a_separate_read_in_the_normal_keeps_the_tumors_ambiguous_reads() {
+    fn test_a_separate_read_in_the_normal_counts_against_the_tumors_ambiguous_reads() {
+        // Beside 20 MNV reads, 2 * 1 / 21 rounds to no template staying; beside 2, 2 * 1 / 3 to one.
         assert_eq!(
             resolve_classes(&[((0, 0, 2), 10), ((0, 1, 0), 10)]),
-            vec![(0, 4), (0, 2)]
+            vec![(4, 0), (0, 2)]
+        );
+        assert_eq!(
+            resolve_classes(&[((0, 0, 2), 1), ((0, 1, 0), 1)]),
+            vec![(2, 2), (0, 2)]
         );
     }
 
