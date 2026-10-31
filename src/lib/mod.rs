@@ -401,10 +401,11 @@ fn convert<I: Read>(
     if let Some(Folder::Reads(sources)) = &sink.folder {
         let summary = sources.summary;
         info!(
-            "Reads decided {} partial row(s) and sample(s) under {} MNV pileup(s); {} reconciled with VarDict's ALT reads, and {} of the {} whose reads would have moved did not.",
+            "Reads decided {} partial row(s) and sample(s) under {} MNV pileup(s); {} reconciled with VarDict's ALT reads, {} of them only once VarDict's end clipping was replayed, and {} of the {} whose reads would have moved did not.",
             summary.decisions,
             summary.pileups,
             summary.reconciled,
+            summary.reconciled_clipped,
             summary.decisive_unreconciled,
             summary.decisive
         );
