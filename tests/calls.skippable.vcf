@@ -30,6 +30,6 @@
 ##contig=<ID=chr1,length=4000>
 ##contig=<ID=chr12,length=6000>
 ##contig=<ID=chr13,length=5000>
-##source=vartovcf-6.0.0
+##source=vartovcf-7.0.0
 ##reference=tests/reference.fa
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	dna00001
