@@ -47,7 +47,7 @@ assert_cmd = "2.2.2"
 file_diff = "1.0.0"
 noodles = { version = "0.116.0", features = ["fasta"] }
 pretty_assertions = "1.4.1"
-rstest = "0.27.0"
+rstest = "0.28.0"
 streampile = { version = "0.2.0", default-features = false, features = ["testing"] }
 
 [lints.rust]
