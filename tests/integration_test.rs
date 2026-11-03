@@ -721,7 +721,7 @@ mod tests {
         let rows = read_to_string("tests/calls.leaky-mnv.nested.var")?;
         assert_eq!(
             records(&rows, &["--fix-leaky-mnv"])?,
-            vec!["chr1 1100 GGG CAT .,208", "chr1 1101 GG AT .,43"]
+            vec!["chr1 1100 GGGT CATC .,208", "chr1 1101 GG AT .,43"]
         );
         Ok(())
     }

@@ -136,21 +136,22 @@ Six of the labels are patterns in the reads:
 
 VarDict builds a multi-nucleotide variant (MNV) from a read's mismatches that are at most `-X` matching bases apart.
 A read that ends inside the MNV, or has a no-call or low-quality base there, counts toward a shorter allele instead, a partial allele of the MNV.
-Here reads 3 and 4 leave the partial alleles `G>C` and `G>A` beside the MNV `GG>CA`:
+Here reads 3 and 4 each leave a partial allele of the MNV `GG>CA`.
+VarDict folds read 4's `G>A` back itself, as it ends at the MNV's last base, but writes read 3's `G>C` as a call of its own:
 
-![A leaky MNV: four reads carry the MNV GG>CA, reads 3 and 4 have a no-call inside it, so VarDict writes the partial alleles G>C and G>A as calls of their own, and --fix-leaky-mnv folds them back into the MNV.](.github/img/leaky-mnv.svg)
+![A leaky MNV: four reads carry the MNV GG>CA, and reads 3 and 4 have a no-call (N) inside it, so each leaves a partial allele. VarDict folds read 4's partial G>A back itself, as it ends at the MNV's last base, but writes read 3's partial G>C as a call of its own, and --fix-leaky-mnv folds it back into the MNV.](.github/img/leaky-mnv.svg)
 
 With `--fix-leaky-mnv`, each partial allele folds back into its MNV, whose record counts the partial alleles folded in INFO `MNV_PARTIALS` and their reads in FORMAT `MNV_PARTIAL_READS`.
 
 > [!WARNING]
-> VarDictJava folds a partial allele starting after the MNV's first base whenever the partial has fewer reads than the MNV, even an SNV of another haplotype, and writes no row for the SNV, so `--fix-leaky-mnv` cannot undo it.
+> VarDictJava folds a partial allele ending at the MNV's last base whenever the partial has fewer reads than the MNV, even an SNV of another haplotype, and writes no row for the SNV, so `--fix-leaky-mnv` cannot undo it.
 
 #### Deciding Partials by Their Reads
 
 Give `--fix-leaky-mnv` the BAM VarDict read with `--reads` whenever you can.
 Each template of a partial allele, a read and its mate, is then examined at the MNV's changed positions outside the partial allele:
 
-![Deciding a partial allele by its reads: each template of the partial allele G>C is examined at the MNV's other changed base. Template 1's mate reads the MNV's A, so read 1 moves to the MNV; template 2's mate reads the reference G, so template 2 is another allele and stays; template 3 has no read of the base, so it is unknown and stays, since template 2 is another allele.](.github/img/reads-decision.svg)
+![Deciding a partial allele by its reads: each template of the partial allele G>C is examined at the other changed base of the MNV GG>CA, which has 10 reads. Template 1's mate reads the MNV's A, so read 1 moves to the MNV; template 2's mate reads the reference G, so template 2 is another allele and stays; neither read of template 3 calls the base, so it is unknown, and read 3 moves, as only template 2 of the 12 molecules, the MNV's 10 reads and templates 1 and 2, is another allele's.](.github/img/reads-decision.svg)
 
 A partial allele with reads left keeps only those reads, and FORMAT `MNV_MOVED_READS` counts the reads that moved.
 Set these options to the values VarDict ran with:
@@ -169,7 +170,7 @@ Without `--reads`, a partial allele folds when it carries the MNV's ALT bases an
 At that rate, an MNV folds a 1-read partial allele once the MNV has 2 reads, a 2-read partial allele at 6, and a 10-read partial allele at 101.
 A partial allele with too many reads to fold becomes an MNV of its own, and takes in the partial alleles that fit it more closely:
 
-![Deciding a partial allele by its count: the partial allele GGG>CAG with 8 reads folds into the MNV GGG>CAT with 200 reads, while GGG>GAT, with 40 reads, has too many reads to fold and becomes an MNV of its own, taking in GGG>GAG with 3 reads. A partial allele folds when its reads fall below a line that rises with the MNV's reads, shaded by the chance the MNV leaks that many reads or more at the rate 0.05.](.github/img/count-decision.svg)
+![Deciding a partial allele by its count: the partial allele GGGT>CAGT with 8 reads folds into the MNV GGGT>CATC with 200 reads, while GGGT>GATT, with 40 reads, has too many reads to fold and becomes an MNV of its own, taking in GGGT>GAGT with 3 reads. A partial allele folds when its reads fall below a line that rises with the MNV's reads, shaded by the chance the MNV leaks that many reads or more at the rate 0.05.](.github/img/count-decision.svg)
 
 Judged by its count alone, a real allele with few reads beside a deep MNV folds too.
 The figure's calls are in this repository's test data:
@@ -181,12 +182,12 @@ bcftools query -f '%POS\t%REF\t%ALT[\t%AD]\n' "calls.vcf.gz"
 
 ```text
 1100	GG	CA	.,8
-1100	GGG	CAT	.,200
+1100	GGGT	CATC	.,200
 1101	G	A	196,3
 1101	GG	AT	.,40
 ```
 
-With `--fix-leaky-mnv`, `GG>CA` folds into `GGG>CAT`, and `G>A` into `GG>AT`:
+With `--fix-leaky-mnv`, `GG>CA` folds into `GGGT>CATC`, and `G>A` into `GG>AT`:
 
 ```bash
 vartovcf --reference "tests/reference.fa" --input "tests/calls.leaky-mnv.nested.var" --fix-leaky-mnv --output "folded.vcf.gz"
@@ -194,7 +195,7 @@ bcftools query -f '%POS\t%REF\t%ALT\t%MNV_PARTIALS[\t%AD\t%MNV_PARTIAL_READS]\n'
 ```
 
 ```text
-1100	GGG	CAT	1	.,208	8
+1100	GGGT	CATC	1	.,208	8
 1101	GG	AT	1	.,43	3
 ```
 
@@ -208,7 +209,7 @@ In pileup mode (`-p`), VarDict leaves some positions of its regions without a re
 With `--fill-gvcf`, each such position gets a reference-only record.
 Here a homozygous deletion and reads that end at 1111 leave four positions to fill:
 
-![Filling a gVCF: reads carry a homozygous 3-base deletion after position 1106 and end by 1111, so --fill-gvcf writes position 1107 as ROWS, where VarDict counted the deletion it wrote at 1106, 1108 and 1109 as SPANNED, inside the deletion, and 1112 as NO_READS, with each position's SITE_DP below.](.github/img/gvcf-fill.svg)
+![Filling a gVCF: reads carry a homozygous 3-base deletion after position 1106 and end by 1111, so --fill-gvcf writes position 1107 as ROWS, where VarDict counted the deletion it wrote at 1106, 1108 and 1109 as SPANNED, inside the deletion, and 1112 as NO_READS, with each position's SITE_DP below. VarDict counts a deletion's reads at its first deleted base, 1107, but writes the deletion at 1106.](.github/img/gvcf-fill.svg)
 
 A filled record's INFO `GVCF_FILL` says where its depth came from:
 
