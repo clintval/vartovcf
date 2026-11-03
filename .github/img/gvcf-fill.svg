@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="880" height="262" viewBox="0 0 880 262" role="img" aria-labelledby="title">
-  <title id="title">Filling a gVCF: reads carry a homozygous 3-base deletion after position 1106 and end by 1111, so --fill-gvcf writes position 1107 as ROWS, where VarDict counted the deletion it wrote at 1106, 1108 and 1109 as SPANNED, inside the deletion, and 1112 as NO_READS, with each position's SITE_DP below.</title>
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="290" viewBox="0 0 880 290" role="img" aria-labelledby="title">
+  <title id="title">Filling a gVCF: reads carry a homozygous 3-base deletion after position 1106 and end by 1111, so --fill-gvcf writes position 1107 as ROWS, where VarDict counted the deletion it wrote at 1106, 1108 and 1109 as SPANNED, inside the deletion, and 1112 as NO_READS, with each position's SITE_DP below. VarDict counts a deletion's reads at its first deleted base, 1107, but writes the deletion at 1106.</title>
   <style>
     text { font-family: Helvetica, Arial, sans-serif; }
     .head { fill: #57606a; font-size: 13px; font-weight: 700; }
@@ -65,4 +65,5 @@
   <text class="tag" x="620" y="244" text-anchor="middle">250</text>
   <text class="tag" x="710" y="244" text-anchor="middle">240</text>
   <text class="tag" x="800" y="244" text-anchor="middle">0</text>
+  <text class="ink" x="20" y="278">VarDict counts a deletion&#8217;s reads at its first deleted base, 1107, but writes the deletion at 1106</text>
 </svg>
