@@ -170,7 +170,7 @@ Without `--reads`, a partial allele folds when it carries the MNV's ALT bases an
 At that rate, an MNV folds a 1-read partial allele once the MNV has 2 reads, a 2-read partial allele at 6, and a 10-read partial allele at 101.
 A partial allele with too many reads to fold becomes an MNV of its own, and takes in the partial alleles that fit it more closely:
 
-![Deciding a partial allele by its count: the partial allele GGGT>CAGT with 8 reads folds into the MNV GGGT>CATC with 200 reads, while GGGT>GATT, with 40 reads, has too many reads to fold and becomes an MNV of its own, taking in GGGT>GAGT with 3 reads. A partial allele folds when its reads fall below a line that rises with the MNV's reads, shaded by the chance the MNV leaks that many reads or more at the rate 0.05.](.github/img/count-decision.svg)
+![Deciding a partial allele by its count: the partial allele GG>CA at 1100 with 8 reads folds into the MNV GGGT>CATC with 200 reads, while GG>AT at 1101, with 40 reads, has too many reads to fold and becomes an MNV of its own, taking in G>A at 1101 with 3 reads. Each call is shown over the MNV's 4 bases, with a dot where it has none. A partial allele folds when its reads fall below a line that rises with the MNV's reads, shaded by the chance the MNV leaks that many reads or more at the rate 0.05.](.github/img/count-decision.svg)
 
 Judged by its count alone, a real allele with few reads beside a deep MNV folds too.
 The figure's calls are in this repository's test data:

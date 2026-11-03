@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="900" height="322" viewBox="0 0 900 322" role="img" aria-labelledby="title">
-  <title id="title">Deciding a partial allele by its count: the partial allele GGGT&gt;CAGT with 8 reads folds into the MNV GGGT&gt;CATC with 200 reads, while GGGT&gt;GATT, with 40 reads, has too many reads to fold and becomes an MNV of its own, taking in GGGT&gt;GAGT with 3 reads. A partial allele folds when its reads fall below a line that rises with the MNV&#8217;s reads, shaded by the chance the MNV leaks that many reads or more at the rate 0.05.</title>
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="338" viewBox="0 0 900 338" role="img" aria-labelledby="title">
+  <title id="title">Deciding a partial allele by its count: the partial allele GG&gt;CA at 1100 with 8 reads folds into the MNV GGGT&gt;CATC with 200 reads, while GG&gt;AT at 1101, with 40 reads, has too many reads to fold and becomes an MNV of its own, taking in G&gt;A at 1101 with 3 reads. Each call is shown over the MNV&#8217;s 4 bases, with a dot where it has none. A partial allele folds when its reads fall below a line that rises with the MNV&#8217;s reads, shaded by the chance the MNV leaks that many reads or more at the rate 0.05.</title>
   <style>
     text { font-family: Helvetica, Arial, sans-serif; }
     .head { fill: #57606a; font-size: 13px; font-weight: 700; }
@@ -50,32 +50,35 @@
   <defs><marker id="head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#2a78d6"/></marker></defs>
 
   <text class="head" x="20" y="24">1. Calls Beside an MNV</text>
-  <text class="ink" x="20" y="42">each circle is a call, sized by its ALT reads:</text>
-  <text class="ink" x="20" y="58"><tspan class="green">real</tspan> calls stay, <tspan class="purple">leaked</tspan> calls fold</text>
-  <text class="ink" x="20" y="310">GGGT&gt;GATT is too deep to fold and takes in GGGT&gt;GAGT</text>
-  <circle class="real" cx="80" cy="150" r="50.9"/>
-  <text class="base" x="80" y="148" text-anchor="middle">GGGT&gt;<tspan class="alt">C</tspan><tspan class="alt">A</tspan><tspan class="alt">T</tspan><tspan class="alt">C</tspan></text>
-  <text class="ink" x="80" y="166" text-anchor="middle">200 reads</text>
-  <circle class="leaked" cx="232" cy="88" r="10.2"/>
-  <text class="base" x="250.2" y="87">GGGT&gt;<tspan class="alt">C</tspan><tspan class="alt">A</tspan>GT</text>
-  <text class="ink" x="250.2" y="103">8 reads</text>
-  <circle class="real" cx="215" cy="222" r="22.8"/>
-  <text class="base" x="215" y="264.8" text-anchor="middle">GGGT&gt;G<tspan class="alt">A</tspan><tspan class="alt">T</tspan>T</text>
-  <text class="ink" x="215" y="280.8" text-anchor="middle">40 reads</text>
-  <circle class="leaked" cx="325" cy="222" r="6.2"/>
-  <text class="base" x="325" y="248.2" text-anchor="middle">GGGT&gt;G<tspan class="alt">A</tspan>GT</text>
-  <text class="ink" x="325" y="264.2" text-anchor="middle">3 reads</text>
-  <path class="fold" d="M217.9 93.7 L131.8 128.9" marker-end="url(#head)"/>
-  <text class="moves" x="174.9" y="103.3" text-anchor="middle">folds</text>
-  <path class="block" d="M190.5 208.9 L129.3 176.3"/>
-  <path class="cross" d="M153.9 186.6 l12 12 m0 -12 l-12 12"/>
-  <text class="halt" x="153.9" y="216.6" text-anchor="middle">stays</text>
-  <path class="fold" d="M313.8 222.0 L242.8 222.0" marker-end="url(#head)"/>
-  <text class="moves" x="278.3" y="214.0" text-anchor="middle">folds</text>
+  <text class="ink" x="20" y="42">each circle is a call, sized by its ALT reads and shown</text>
+  <text class="ink" x="20" y="58">over the MNV&#8217;s 4 bases, with &#183; where it has none:</text>
+  <text class="ink" x="20" y="74"><tspan class="green">real</tspan> calls stay, <tspan class="purple">leaked</tspan> calls fold</text>
+  <text class="ink" x="20" y="326">the 40-read call stays, and takes in the 3-read call</text>
+  <g transform="translate(0 16)">
+    <circle class="real" cx="80" cy="150" r="50.9"/>
+    <text class="base" x="80" y="148" text-anchor="middle">GGGT&gt;<tspan class="alt">C</tspan><tspan class="alt">A</tspan><tspan class="alt">T</tspan><tspan class="alt">C</tspan></text>
+    <text class="ink" x="80" y="166" text-anchor="middle">200 reads</text>
+    <circle class="leaked" cx="232" cy="88" r="10.2"/>
+    <text class="base" x="250.2" y="87">GGGT&gt;<tspan class="alt">C</tspan><tspan class="alt">A</tspan>&#183;&#183;</text>
+    <text class="ink" x="250.2" y="103">8 reads</text>
+    <circle class="real" cx="215" cy="222" r="22.8"/>
+    <text class="base" x="215" y="264.8" text-anchor="middle">GGGT&gt;&#183;<tspan class="alt">A</tspan><tspan class="alt">T</tspan>&#183;</text>
+    <text class="ink" x="215" y="280.8" text-anchor="middle">40 reads</text>
+    <circle class="leaked" cx="325" cy="222" r="6.2"/>
+    <text class="base" x="325" y="248.2" text-anchor="middle">GGGT&gt;&#183;<tspan class="alt">A</tspan>&#183;&#183;</text>
+    <text class="ink" x="325" y="264.2" text-anchor="middle">3 reads</text>
+    <path class="fold" d="M217.9 93.7 L131.8 128.9" marker-end="url(#head)"/>
+    <text class="moves" x="174.9" y="103.3" text-anchor="middle">folds</text>
+    <path class="block" d="M190.5 208.9 L129.3 176.3"/>
+    <path class="cross" d="M153.9 186.6 l12 12 m0 -12 l-12 12"/>
+    <text class="halt" x="153.9" y="216.6" text-anchor="middle">stays</text>
+    <path class="fold" d="M313.8 222.0 L242.8 222.0" marker-end="url(#head)"/>
+    <text class="moves" x="278.3" y="214.0" text-anchor="middle">folds</text>
+  </g>
 
   <text class="head" x="370" y="24">2. Folding by Count</text>
   <text class="ink" x="370" y="42">a partial allele folds below the line, at the default rate of 0.05</text>
-  <text class="ink" x="370" y="310">so a real allele with few reads beside a deep MNV folds too</text>
+  <text class="ink" x="370" y="326">so a real allele with few reads beside a deep MNV folds too</text>
   <path class="band" d="M432.0 244 H476.2 V218.2 H546.1 V198.1 H600.1 V185.3 H637.0 V176.0 H660.3 V168.5 H678.6 V162.4 H693.8 V157.1 H706.2 V152.5 H716.5 V148.4 H726.0 V144.7 H734.2 V141.4 H741.6 V138.3 H748.1 V135.5 H754.5 V132.9 H760.2 V130.4 H765.5 V128.1 H770.4 V125.9 H775.0 V123.9 H779.2 V122.0 H783.4 V120.1 H787.2 V118.4 H790.7 V116.7 H794.2 V115.1 H797.6 V113.6 H800.8 V112.1 H803.7 V110.7 H806.6 V109.4 H809.4 V108.0 H812.0 V106.8 H814.6 V105.6 H817.0 V104.4 H819.4 V103.2 H821.8 V102.1 H824.0 V101.0 H826.2 V100.0 H828.2 V99.0 H830.3 V98.0 H832.3 V97.0 H834.2 V96.1 H836.1 V95.2 H837.8 V94.3 H839.7 V93.4 H841.3 V92.5 H843.1 V91.7 H844.8 V90.9 H846.3 V90.1 H847.9 V89.3 H849.4 V88.5 H850.9 V87.8 H852.4 V87.1 H853.8 V86.3 H855.2 V85.6 H856.6 V84.9 H857.9 V84.3 H859.3 V83.6 H860.6 V82.9 H861.9 V82.3 H863.1 V81.7 H864.3 V81.0 H865.5 V80.4 H866.7 V79.8 H867.9 V79.2 H869.0 V78.7 H870.1 V78.1 H871.2 V77.5 H872.0 V244 Z"/>
   <path class="band" d="M432.0 244 H520.3 V218.2 H604.5 V198.1 H644.2 V185.3 H671.6 V176.0 H690.6 V168.5 H705.3 V162.4 H717.9 V157.1 H728.4 V152.5 H737.5 V148.4 H745.4 V144.7 H752.8 V141.4 H759.1 V138.3 H765.2 V135.5 H770.7 V132.9 H775.6 V130.4 H780.3 V128.1 H784.7 V125.9 H788.8 V123.9 H792.7 V122.0 H796.4 V120.1 H800.0 V118.4 H803.3 V116.7 H806.4 V115.1 H809.4 V113.6 H812.3 V112.1 H815.1 V110.7 H817.6 V109.4 H820.3 V108.0 H822.7 V106.8 H825.1 V105.6 H827.3 V104.4 H829.6 V103.2 H831.7 V102.1 H833.8 V101.0 H835.9 V100.0 H837.7 V99.0 H839.7 V98.0 H841.4 V97.0 H843.3 V96.1 H845.0 V95.2 H846.8 V94.3 H848.4 V93.4 H850.0 V92.5 H851.6 V91.7 H853.1 V90.9 H854.6 V90.1 H856.1 V89.3 H857.5 V88.5 H859.0 V87.8 H860.4 V87.1 H861.6 V86.3 H863.0 V85.6 H864.3 V84.9 H865.6 V84.3 H866.8 V83.6 H868.1 V82.9 H869.3 V82.3 H870.5 V81.7 H871.6 V81.0 H872.0 V244 Z"/>
   <path class="band" d="M432.0 244 H595.4 V218.2 H652.8 V198.1 H682.4 V185.3 H702.6 V176.0 H717.9 V168.5 H730.2 V162.4 H740.6 V157.1 H749.4 V152.5 H757.2 V148.4 H764.2 V144.7 H770.4 V141.4 H776.1 V138.3 H781.4 V135.5 H786.2 V132.9 H790.7 V130.4 H794.9 V128.1 H798.8 V125.9 H802.5 V123.9 H806.0 V122.0 H809.4 V120.1 H812.5 V118.4 H815.5 V116.7 H818.4 V115.1 H821.1 V113.6 H823.8 V112.1 H826.3 V110.7 H828.7 V109.4 H831.1 V108.0 H833.3 V106.8 H835.5 V105.6 H837.6 V104.4 H839.7 V103.2 H841.7 V102.1 H843.6 V101.0 H845.4 V100.0 H847.2 V99.0 H849.0 V98.0 H850.7 V97.0 H852.4 V96.1 H854.0 V95.2 H855.6 V94.3 H857.1 V93.4 H858.7 V92.5 H860.1 V91.7 H861.6 V90.9 H863.0 V90.1 H864.4 V89.3 H865.7 V88.5 H867.0 V87.8 H868.3 V87.1 H869.6 V86.3 H870.8 V85.6 H872.0 V244 Z"/>
@@ -91,15 +94,15 @@
   <text class="ink" x="652.0" y="278" text-anchor="middle">MNV ALT reads</text>
   <text class="ink" x="384" y="153.0" text-anchor="middle" transform="rotate(-90 384 153.0)">partial allele ALT reads</text>
   <path class="mark" d="M667.0 76 V244"/>
-  <text class="tag" x="667.0" y="70" text-anchor="middle">GGGT&gt;G<tspan class="alt">A</tspan><tspan class="alt">T</tspan>T</text>
+  <text class="tag" x="667.0" y="70" text-anchor="middle">GGGT&gt;&#183;<tspan class="alt">A</tspan><tspan class="alt">T</tspan>&#183;</text>
   <path class="mark" d="M769.5 76 V244"/>
   <text class="tag" x="769.5" y="70" text-anchor="middle">GGGT&gt;<tspan class="alt">C</tspan><tspan class="alt">A</tspan><tspan class="alt">T</tspan><tspan class="alt">C</tspan></text>
   <circle class="dot" cx="769.5" cy="154.6" r="3.5"/>
-  <text class="tag" x="777.5" y="158.6">GGGT&gt;<tspan class="alt">C</tspan><tspan class="alt">A</tspan>GT</text>
+  <text class="tag" x="777.5" y="158.6">GGGT&gt;<tspan class="alt">C</tspan><tspan class="alt">A</tspan>&#183;&#183;</text>
   <path class="cross" d="M765.5 91.6 l8 8 m0 -8 l-8 8"/>
-  <text class="tag" x="760.5" y="99.6" text-anchor="end">GGGT&gt;G<tspan class="alt">A</tspan><tspan class="alt">T</tspan>T</text>
+  <text class="tag" x="760.5" y="99.6" text-anchor="end">GGGT&gt;&#183;<tspan class="alt">A</tspan><tspan class="alt">T</tspan>&#183;</text>
   <circle class="dot" cx="667.0" cy="190.6" r="3.5"/>
-  <text class="tag" x="675.0" y="194.6">GGGT&gt;G<tspan class="alt">A</tspan>GT</text>
+  <text class="tag" x="675.0" y="194.6">GGGT&gt;&#183;<tspan class="alt">A</tspan>&#183;&#183;</text>
   <text class="ink" x="446" y="72">chance the MNV leaks</text>
   <text class="ink" x="446" y="87">this many reads or more</text>
   <rect class="band" x="446" y="98" width="22" height="12"/>
