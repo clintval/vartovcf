@@ -1,6 +1,6 @@
 //! FILTER labels for VarDict calls.
 
-use crate::reads::Recount;
+use crate::reads::ReadEvidence;
 use crate::record::TumorOnlyVariant;
 use crate::vcf::Numeric;
 
@@ -41,6 +41,36 @@ pub const LOW_HICNT: &str = "LOW_HICNT";
 /// although they do not match the reference past the ALT base.
 pub const FOREIGN_CLIP_SUPPORT: &str = "FOREIGN_CLIP_SUPPORT";
 
+/// The FILTER label for long insertions with few high-quality ALT reads that no read carries
+/// whole, which VarDict assembled from soft clips.
+pub const UNSPANNED_INSERTION: &str = "UNSPANNED_INSERTION";
+
+/// The rule of the UNSPANNED_INSERTION label: which insertions it tests, by their inserted bases,
+/// and the high-quality ALT reads one needs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UnspannedInsertion {
+    /// The fewest inserted bases of an insertion the label tests.
+    pub min_length: usize,
+    /// The number of high-quality ALT reads below which a tested insertion is labelled.
+    pub min_hicnt: i32,
+}
+
+impl UnspannedInsertion {
+    /// Whether a call is one the label tests, and so is looked for in the reads when they are
+    /// given: an insertion of at least the length, with its high-quality ALT reads known and under
+    /// the floor, and with REF reads, since a site where every read carries the insertion is the
+    /// sample's own sequence.
+    pub fn tests(&self, variant: &TumorOnlyVariant) -> bool {
+        let hicnt = variant.hicnt_value();
+        variant
+            .inserted_length()
+            .is_some_and(|length| length >= self.min_length)
+            && !hicnt.is_missing()
+            && hicnt < self.min_hicnt
+            && variant.ref_forward.saturating_add(variant.ref_reverse) > 0
+    }
+}
+
 /// The thresholds of the FILTER labels to apply; a label without a threshold is not applied.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct FilterThresholds {
@@ -77,6 +107,9 @@ pub struct FilterThresholds {
     /// The minimum number of high-quality ALT reads an SNV must keep once recounted from the reads
     /// without the soft clips that do not match the reference past the ALT base.
     pub foreign_clip_support: Option<i32>,
+    /// The insertions to label when no read carries them whole, and the high-quality ALT reads
+    /// that exempt one.
+    pub unspanned_insertion: Option<UnspannedInsertion>,
 }
 
 impl FilterThresholds {
@@ -94,6 +127,7 @@ impl FilterThresholds {
             || self.low_dp.is_some()
             || self.low_hicnt.is_some()
             || self.foreign_clip_support.is_some()
+            || self.unspanned_insertion.is_some()
     }
 
     /// Whether an SNV call is recounted from the reads for FOREIGN_CLIP_SUPPORT: one VarDict
@@ -193,6 +227,12 @@ impl FilterThresholds {
                 format!(r#"SNV with at least {min_hicnt} high-quality ALT reads by VarDict (FORMAT HICNT) but fewer than {min_hicnt} in the reads it was run on: reads carrying the ALT base aligned at the site at or above VarDict's -q, once its clipping of mismatches at read ends is replayed, or first in a soft clip at the site whose later bases match the reference. VarDict reached its count by adding soft clips whose later bases do not match the reference, which it compares only at the second base. Every count is left as VarDict wrote it."#),
             ));
         }
+        if let Some(rule) = self.unspanned_insertion {
+            filters.push((
+                UNSPANNED_INSERTION,
+                format!(r#"Insertion of at least {} bases with fewer than {} high-quality ALT reads (FORMAT HICNT) and at least one REF read (FORMAT AD) that no read carries whole. An aligner soft-clips a read at an insertion this long rather than opening a gap, so VarDict assembles the call from the soft clips at its ends, taking the inserted bases from the reference between a clip and where its bases match. When the reads VarDict ran on are given, a read with every inserted base in one insertion operation, at a mean quality at or above VarDict's -q, at the call's position or one its insertion slides to, exempts the call. Every count is left as VarDict wrote it."#, rule.min_length, rule.min_hicnt),
+            ));
+        }
         filters
     }
 
@@ -204,13 +244,10 @@ impl FilterThresholds {
             .collect()
     }
 
-    /// Return the FILTER labels a call fails by its FORMAT values, and by its recount from the reads
-    /// when it has one: none without reads of an ALT allele, and none from a value that is missing.
-    pub fn labels(
-        &self,
-        variant: &TumorOnlyVariant,
-        recount: Option<Recount>,
-    ) -> Vec<&'static str> {
+    /// Return the FILTER labels a call fails by its FORMAT values, and by what the reads say of it
+    /// when they were asked: none without reads of an ALT allele, and none from a value that is
+    /// missing.
+    pub fn labels(&self, variant: &TumorOnlyVariant, reads: ReadEvidence) -> Vec<&'static str> {
         let mut labels = Vec::new();
         if !variant.has_alt_reads() {
             return labels;
@@ -300,11 +337,18 @@ impl FilterThresholds {
         }) {
             labels.push(LOW_HICNT);
         }
-        if let (Some(min_hicnt), Some(recount)) = (self.foreign_clip_support, recount)
+        if let (Some(min_hicnt), Some(recount)) = (self.foreign_clip_support, reads.recount)
             && self.recounts(variant)
             && recount.supporting() < min_hicnt
         {
             labels.push(FOREIGN_CLIP_SUPPORT);
+        }
+        if self
+            .unspanned_insertion
+            .is_some_and(|rule| rule.tests(variant))
+            && reads.spanning.is_none_or(|spanning| spanning == 0)
+        {
+            labels.push(UNSPANNED_INSERTION);
         }
         labels
     }
@@ -339,6 +383,7 @@ mod tests {
     use rstest::rstest;
 
     use super::*;
+    use crate::reads::Recount;
 
     fn variant(
         ref_allele: &'static str,
@@ -380,7 +425,11 @@ mod tests {
             alt_reverse: 10,
             ..variant("G", "A", 0.0)
         };
-        assert!(filters.labels(&no_alt_reads, None).is_empty());
+        assert!(
+            filters
+                .labels(&no_alt_reads, ReadEvidence::default())
+                .is_empty()
+        );
     }
 
     fn mapq_variant(
@@ -399,7 +448,11 @@ mod tests {
         let filters = FilterThresholds::default();
         assert!(!filters.any());
         assert!(filters.header_lines().is_empty());
-        assert!(filters.labels(&variant("G", "A", 1.0), None).is_empty());
+        assert!(
+            filters
+                .labels(&variant("G", "A", 1.0), ReadEvidence::default())
+                .is_empty()
+        );
     }
 
     #[rstest]
@@ -418,7 +471,10 @@ mod tests {
         };
         assert!(filters.any());
         assert_eq!(
-            filters.labels(&variant(ref_allele, alt_allele, mean_dist), None),
+            filters.labels(
+                &variant(ref_allele, alt_allele, mean_dist),
+                ReadEvidence::default()
+            ),
             expected
         );
     }
@@ -453,7 +509,10 @@ mod tests {
         };
         assert!(filters.any());
         assert_eq!(
-            filters.labels(&mapq_variant(ref_allele, alt_allele, mean_mapq), None),
+            filters.labels(
+                &mapq_variant(ref_allele, alt_allele, mean_mapq),
+                ReadEvidence::default()
+            ),
             expected
         );
     }
@@ -512,7 +571,7 @@ mod tests {
         };
         assert!(filters.any());
         let variant = repeat_variant(ref_allele, alt_allele, unit_length, copies, alt_depth);
-        assert_eq!(filters.labels(&variant, None), expected);
+        assert_eq!(filters.labels(&variant, ReadEvidence::default()), expected);
     }
 
     #[rstest]
@@ -537,7 +596,7 @@ mod tests {
         };
         assert!(filters.any());
         let variant = repeat_variant(ref_allele, alt_allele, unit_length, copies, alt_depth);
-        assert_eq!(filters.labels(&variant, None), expected);
+        assert_eq!(filters.labels(&variant, ReadEvidence::default()), expected);
     }
 
     #[test]
@@ -548,11 +607,17 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            filters.labels(&repeat_variant("GA", "G", 1, 13.0, 90), None),
+            filters.labels(
+                &repeat_variant("GA", "G", 1, 13.0, 90),
+                ReadEvidence::default()
+            ),
             vec![HOMOPOLYMER_INDEL]
         );
         assert_eq!(
-            filters.labels(&repeat_variant("GCA", "G", 2, 13.0, 90), None),
+            filters.labels(
+                &repeat_variant("GCA", "G", 2, 13.0, 90),
+                ReadEvidence::default()
+            ),
             vec![TANDEM_REPEAT_INDEL]
         );
     }
@@ -593,7 +658,7 @@ mod tests {
             mean_mismatches_in_reads: mean_mismatches,
             ..variant(ref_allele, alt_allele, 30.0)
         };
-        assert_eq!(filters.labels(&variant, None), expected);
+        assert_eq!(filters.labels(&variant, ReadEvidence::default()), expected);
     }
 
     #[test]
@@ -634,7 +699,7 @@ mod tests {
             depth: 100,
             ..variant(ref_allele, alt_allele, 30.0)
         };
-        assert_eq!(filters.labels(&variant, None), expected);
+        assert_eq!(filters.labels(&variant, ReadEvidence::default()), expected);
     }
 
     #[test]
@@ -686,7 +751,10 @@ mod tests {
         };
         assert!(filters.any());
         assert_eq!(
-            filters.labels(&strand_variant(ref_strands, alt_strands), None),
+            filters.labels(
+                &strand_variant(ref_strands, alt_strands),
+                ReadEvidence::default()
+            ),
             expected
         );
     }
@@ -699,7 +767,7 @@ mod tests {
         };
         let modest_skew_at_high_af = strand_variant((500, 500), (200, 400));
         assert_eq!(
-            filters.labels(&modest_skew_at_high_af, None),
+            filters.labels(&modest_skew_at_high_af, ReadEvidence::default()),
             vec![STRAND_BIAS]
         );
     }
@@ -714,7 +782,11 @@ mod tests {
             alt_allele: "G",
             ..strand_variant((500, 500), (0, 10))
         };
-        assert!(filters.labels(&reference_row, None).is_empty());
+        assert!(
+            filters
+                .labels(&reference_row, ReadEvidence::default())
+                .is_empty()
+        );
     }
 
     #[test]
@@ -764,7 +836,7 @@ mod tests {
             depth: 1000,
             ..variant(ref_allele, alt_allele, 30.0)
         };
-        assert_eq!(filters.labels(&variant, None), expected);
+        assert_eq!(filters.labels(&variant, ReadEvidence::default()), expected);
     }
 
     #[test]
@@ -800,7 +872,7 @@ mod tests {
             base_quality_mean: qmean,
             ..variant(ref_allele, alt_allele, 30.0)
         };
-        assert_eq!(filters.labels(&variant, None), expected);
+        assert_eq!(filters.labels(&variant, ReadEvidence::default()), expected);
     }
 
     #[test]
@@ -837,7 +909,7 @@ mod tests {
             alt_depth: 1,
             ..variant(ref_allele, alt_allele, 30.0)
         };
-        assert_eq!(filters.labels(&variant, None), expected);
+        assert_eq!(filters.labels(&variant, ReadEvidence::default()), expected);
     }
 
     #[test]
@@ -873,7 +945,7 @@ mod tests {
             high_quality_variant_reads: hicnt,
             ..variant(ref_allele, alt_allele, 30.0)
         };
-        assert_eq!(filters.labels(&variant, None), expected);
+        assert_eq!(filters.labels(&variant, ReadEvidence::default()), expected);
     }
 
     #[test]
@@ -927,7 +999,16 @@ mod tests {
             ..Default::default()
         };
         assert!(filters.any());
-        assert_eq!(filters.labels(&snv_with_hicnt(hicnt), recount), expected);
+        assert_eq!(
+            filters.labels(
+                &snv_with_hicnt(hicnt),
+                ReadEvidence {
+                    recount,
+                    ..Default::default()
+                }
+            ),
+            expected
+        );
     }
 
     #[rstest]
@@ -944,7 +1025,16 @@ mod tests {
             foreign_clip_support: Some(min_hicnt),
             ..Default::default()
         };
-        assert_eq!(filters.labels(&snv_with_hicnt(hicnt), recount), expected);
+        assert_eq!(
+            filters.labels(
+                &snv_with_hicnt(hicnt),
+                ReadEvidence {
+                    recount,
+                    ..Default::default()
+                }
+            ),
+            expected
+        );
     }
 
     #[rstest]
@@ -989,6 +1079,86 @@ mod tests {
         );
     }
 
+    /// An insertion of this many bases with these high-quality ALT reads, as VarDict counted them,
+    /// or none known, and these REF reads.
+    fn insertion(inserted: usize, hicnt: i32, ref_reads: i32) -> TumorOnlyVariant<'static> {
+        let alt_allele: &'static str = Box::leak(
+            format!("G{}", "ACGT".repeat(inserted.div_ceil(4)))[..inserted + 1]
+                .to_string()
+                .into_boxed_str(),
+        );
+        TumorOnlyVariant {
+            alt_depth: hicnt.max(1),
+            high_quality_variant_reads: hicnt,
+            ref_forward: ref_reads,
+            ref_reverse: 0,
+            ..variant("G", alt_allele, 30.0)
+        }
+    }
+
+    fn unspanned() -> FilterThresholds {
+        FilterThresholds {
+            unspanned_insertion: Some(UnspannedInsertion {
+                min_length: 50,
+                min_hicnt: 8,
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[rstest]
+    #[case::few_reads_and_no_reads_given(insertion(60, 3, 10), None, vec![UNSPANNED_INSERTION])]
+    #[case::few_reads_and_no_read_carries_it(insertion(60, 3, 10), Some(0), vec![UNSPANNED_INSERTION])]
+    #[case::a_read_carries_it(insertion(60, 3, 10), Some(1), vec![])]
+    #[case::at_the_length(insertion(50, 7, 10), None, vec![UNSPANNED_INSERTION])]
+    #[case::under_the_length(insertion(49, 3, 10), None, vec![])]
+    #[case::at_the_floor(insertion(60, 8, 10), None, vec![])]
+    #[case::no_ref_reads(insertion(60, 3, 0), None, vec![])]
+    #[case::hicnt_unknown(insertion(60, i32::missing(), 10), None, vec![])]
+    #[case::a_deletion(TumorOnlyVariant { ref_allele: insertion(60, 3, 10).alt_allele, ..insertion(60, 3, 10) }, None, vec![])]
+    #[case::a_complex_call(TumorOnlyVariant { ref_allele: "GA", ..insertion(60, 3, 10) }, None, vec![])]
+    #[case::a_symbolic_allele(TumorOnlyVariant { alt_allele: "<DUP>", ..insertion(60, 3, 10) }, None, vec![])]
+    fn test_unspanned_insertion(
+        #[case] call: TumorOnlyVariant<'static>,
+        #[case] spanning: Option<i32>,
+        #[case] expected: Vec<&str>,
+    ) {
+        let filters = unspanned();
+        assert!(filters.any());
+        let reads = ReadEvidence {
+            spanning,
+            ..Default::default()
+        };
+        assert_eq!(filters.labels(&call, reads), expected);
+        assert_eq!(
+            filters.unspanned_insertion.unwrap().tests(&call),
+            spanning.is_some() || !expected.is_empty()
+        );
+        assert!(FilterThresholds::default().labels(&call, reads).is_empty());
+    }
+
+    #[test]
+    fn test_unspanned_insertion_beside_low_hicnt() {
+        let filters = FilterThresholds {
+            low_hicnt: Some(2),
+            ..unspanned()
+        };
+        assert_eq!(
+            filters.labels(&insertion(60, 1, 10), ReadEvidence::default()),
+            vec![LOW_HICNT, UNSPANNED_INSERTION]
+        );
+    }
+
+    #[test]
+    fn test_unspanned_insertion_header_line_states_the_thresholds() {
+        assert_eq!(
+            unspanned().header_lines(),
+            vec![
+                r#"##FILTER=<ID=UNSPANNED_INSERTION,Description="Insertion of at least 50 bases with fewer than 8 high-quality ALT reads (FORMAT HICNT) and at least one REF read (FORMAT AD) that no read carries whole. An aligner soft-clips a read at an insertion this long rather than opening a gap, so VarDict assembles the call from the soft clips at its ends, taking the inserted bases from the reference between a clip and where its bases match. When the reads VarDict ran on are given, a read with every inserted base in one insertion operation, at a mean quality at or above VarDict's -q, at the call's position or one its insertion slides to, exempts the call. Every count is left as VarDict wrote it.">"#
+            ]
+        );
+    }
+
     #[test]
     fn test_labels_are_listed_in_a_fixed_order() {
         let filters = FilterThresholds {
@@ -1001,7 +1171,7 @@ mod tests {
             ..variant("G", "A", 3.0)
         };
         assert_eq!(
-            filters.labels(&failing_both, None),
+            filters.labels(&failing_both, ReadEvidence::default()),
             vec![NEAR_READ_END, LOW_MEAN_MAPQ]
         );
     }
