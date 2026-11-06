@@ -14,6 +14,7 @@ use crate::filter::FilterThresholds;
 use crate::fisher::{fisher_exact_greater, fisher_exact_two_sided};
 use crate::hicnt::{hicnt_from_sn, parse_thousandths};
 use crate::mnv::{LEAK_TAIL, LeakyMnvFix};
+use crate::reads::ReadOptions;
 use crate::vcf::{GenotypeAllele, Numeric};
 use noodles::vcf::Header;
 use noodles::vcf::header::FileFormat;
@@ -344,6 +345,21 @@ impl<'a> TumorOnlyVariant<'a> {
     /// Whether this record has an ALT allele and at least one read carrying it.
     pub fn has_alt_reads(&self) -> bool {
         self.ref_allele != self.alt_allele && self.alt_depth > 0
+    }
+
+    /// Whether this record changes one base to another, as VarDict wrote it.
+    pub fn is_snv(&self) -> bool {
+        self.ref_allele.len() == 1
+            && self.alt_allele.len() == 1
+            && self.ref_allele != self.alt_allele
+            && self
+                .alt_allele
+                .bytes()
+                .all(|base| base.is_ascii_alphabetic())
+            && self
+                .ref_allele
+                .bytes()
+                .all(|base| base.is_ascii_alphabetic())
     }
 
     /// Return the "AF" formatted VCF field for this record: the ALT depth over DP at full precision,
@@ -706,7 +722,7 @@ impl<'a> AbstractInterval for TumorOnlyVariant<'a> {
 /// The INFO description of the count of partial rows folded into an MNV, which also says how a
 /// partial is recognized, by its counts at this leak rate or by its reads, and how each field of
 /// such a record is combined. By counts the description is the one written before reads could decide.
-fn mnv_partials_description(fix: &LeakyMnvFix) -> String {
+fn mnv_partials_description(fix: &LeakyMnvFix, reads: Option<&ReadOptions>) -> String {
     match fix {
         LeakyMnvFix::Counts(leak_rate) => format!(
             r#"Number of VarDict rows folded into this MNV as its partials: SNVs and shorter MNVs that carry its ALT bases over their own span, which VarDict writes for reads that end, have a no-call (N) or a base below its -q plus 5 inside the MNV. A row can be folded only when, in every sample with reads of it, it has fewer ALT reads (c) than the MNV (n) and P(X >= c) is {} or more for X ~ Binomial(n + c, {}); at that rate a partial of 1, 2, 5 or 10 reads needs an MNV of at least {}, {}, {} or {} reads. Written only on records that absorbed partials. On such a record, AD[1], ADF[1] and ADR[1] add the partials' reads, and HICNT adds them too or is missing when any row's is; DP adds the reads of partials starting after the MNV's first base as VarDict wrote it, as VarDict's own MNV merging does, while a partial starting at that base is folded only when its reads fit in DP beside the MNV's, so AD[1] never exceeds DP by more than VarDict's own row did; AF, GT, FILTER, STRAND_BIAS_FISHER_P and TUMOR_NORMAL_FISHER_P follow from these; QMEAN, MEAN_MAPQ, MEAN_MISMATCHES and MEAN_DIST_TO_READ_END are the rows' values weighted by their ALT reads, each as VarDict rounded it and measured at that row's own bases, and the weighted mean is not rounded; ALT_READ_POS_VARIES is 1 when any row's is or the rows' MEAN_DIST_TO_READ_END differ; REALIGNED_FRAC_OF_DP counts the partials' reads as reassigned and is not rounded; VARDICT_STATUS is VarDict's label for the MNV's own row."#,
@@ -717,15 +733,18 @@ fn mnv_partials_description(fix: &LeakyMnvFix) -> String {
             leak_rate.fewest_mnv_reads(5),
             leak_rate.fewest_mnv_reads(10),
         ),
-        LeakyMnvFix::Reads { options, .. } => format!(
-            r#"Number of VarDict rows folded into this MNV, whole or in part, as its partials: SNVs and shorter MNVs that carry its ALT bases over their own span, which VarDict writes for reads that end, have a no-call (N) or a base below its -q plus 5 inside the MNV. Each read VarDict counted toward the row was followed in the BAM VarDict read to the MNV's other changed bases, with its mate's bases called into one: a read whose template carries the MNV's ALT base at every one of them at quality {q} or more is the MNV's own molecule and is folded; one whose template carries a base other than the ALT at quality {q} or more at any of them is another allele's and stays; one with a no-call, a base below quality {q} or no coverage at some of them is consistent with leakage and is folded only where the MNV has reads in that sample, no read of the row in any sample is another allele's, and, in a sample after the tumor, the tumor keeps no read of the row. A sample's reads are split between the MNV and the row only when the reads found are exactly the reads VarDict counted; otherwise the row moves whole when every read found would move, and stays whole when not. A row with reads that stay is written with only them, with FORMAT MNV_MOVED_READS, and a row with none is not written. Reads were taken as VarDict takes them: mapping quality {mapq} or more, none of the flags {flags:#x} and no supplementary record, at most {mismatches} mismatches beside indels, and an MNV grown through a changed base only at quality {grow} or more, bridging up to {gap} matching bases. Written only on records that absorbed partials. On such a record, AD[1], ADF[1] and ADR[1] add the partials' reads, and HICNT adds them too or is missing when any row's is; DP adds the reads of partials starting after the MNV's first base as VarDict wrote it, as VarDict's own MNV merging does, while a partial starting at that base is folded only when its reads fit in DP beside the MNV's, so AD[1] never exceeds DP by more than VarDict's own row did; AF, GT, FILTER, STRAND_BIAS_FISHER_P and TUMOR_NORMAL_FISHER_P follow from these; QMEAN, MEAN_MAPQ, MEAN_MISMATCHES and MEAN_DIST_TO_READ_END are the rows' values weighted by their ALT reads, each as VarDict rounded it and measured at that row's own bases, or measured on the reads that moved when a row was split, and the weighted mean is not rounded; ALT_READ_POS_VARIES is 1 when any row's is or the rows' MEAN_DIST_TO_READ_END differ; REALIGNED_FRAC_OF_DP counts the partials' reads as reassigned and is not rounded; VARDICT_STATUS is VarDict's label for the MNV's own row."#,
-            q = options.base_quality,
-            mapq = options.min_mapping_quality,
-            flags = options.exclude_flags,
-            mismatches = options.max_mismatches,
-            grow = options.base_quality + 5.0,
-            gap = options.mnv_gap,
-        ),
+        LeakyMnvFix::Reads => {
+            let options = reads.expect("folding by reads needs the reads VarDict read");
+            format!(
+                r#"Number of VarDict rows folded into this MNV, whole or in part, as its partials: SNVs and shorter MNVs that carry its ALT bases over their own span, which VarDict writes for reads that end, have a no-call (N) or a base below its -q plus 5 inside the MNV. Each read VarDict counted toward the row was followed in the BAM VarDict read to the MNV's other changed bases, with its mate's bases called into one: a read whose template carries the MNV's ALT base at every one of them at quality {q} or more is the MNV's own molecule and is folded; one whose template carries a base other than the ALT at quality {q} or more at any of them is another allele's and stays; one with a no-call, a base below quality {q} or no coverage at some of them is consistent with leakage and is folded only where the MNV has reads in that sample, no read of the row in any sample is another allele's, and, in a sample after the tumor, the tumor keeps no read of the row. A sample's reads are split between the MNV and the row only when the reads found are exactly the reads VarDict counted; otherwise the row moves whole when every read found would move, and stays whole when not. A row with reads that stay is written with only them, with FORMAT MNV_MOVED_READS, and a row with none is not written. Reads were taken as VarDict takes them: mapping quality {mapq} or more, none of the flags {flags:#x} and no supplementary record, at most {mismatches} mismatches beside indels, and an MNV grown through a changed base only at quality {grow} or more, bridging up to {gap} matching bases. Written only on records that absorbed partials. On such a record, AD[1], ADF[1] and ADR[1] add the partials' reads, and HICNT adds them too or is missing when any row's is; DP adds the reads of partials starting after the MNV's first base as VarDict wrote it, as VarDict's own MNV merging does, while a partial starting at that base is folded only when its reads fit in DP beside the MNV's, so AD[1] never exceeds DP by more than VarDict's own row did; AF, GT, FILTER, STRAND_BIAS_FISHER_P and TUMOR_NORMAL_FISHER_P follow from these; QMEAN, MEAN_MAPQ, MEAN_MISMATCHES and MEAN_DIST_TO_READ_END are the rows' values weighted by their ALT reads, each as VarDict rounded it and measured at that row's own bases, or measured on the reads that moved when a row was split, and the weighted mean is not rounded; ALT_READ_POS_VARIES is 1 when any row's is or the rows' MEAN_DIST_TO_READ_END differ; REALIGNED_FRAC_OF_DP counts the partials' reads as reassigned and is not rounded; VARDICT_STATUS is VarDict's label for the MNV's own row."#,
+                q = options.base_quality,
+                mapq = options.min_mapping_quality,
+                flags = options.exclude_flags,
+                mismatches = options.max_mismatches,
+                grow = options.base_quality + 5.0,
+                gap = options.mnv_gap,
+            )
+        }
     }
 }
 
@@ -742,10 +761,11 @@ pub fn tumor_only_header(
     sample: &str,
     filters: &FilterThresholds,
     fix: Option<&LeakyMnvFix>,
+    reads: Option<&ReadOptions>,
     context_3mer: bool,
     fill_gvcf: bool,
 ) -> Header {
-    vcf_header(&[sample], filters, fix, context_3mer, fill_gvcf)
+    vcf_header(&[sample], filters, fix, reads, context_3mer, fill_gvcf)
 }
 
 /// Create a VCF header for VarDict/VarDictJava run on a tumor and normal pair, declaring the applied
@@ -756,14 +776,16 @@ pub fn tumor_normal_header(
     normal: &str,
     filters: &FilterThresholds,
     fix: Option<&LeakyMnvFix>,
+    reads: Option<&ReadOptions>,
     context_3mer: bool,
 ) -> Header {
-    vcf_header(&[tumor, normal], filters, fix, context_3mer, false)
+    vcf_header(&[tumor, normal], filters, fix, reads, context_3mer, false)
 }
 
-/// Create a VCF header for one tumor-only sample or a tumor and normal pair.
+/// Create a VCF header for one tumor-only sample or a tumor and normal pair, with the fold described
+/// by the options the reads were taken with when they decide it.
 #[rustfmt::skip]
-fn vcf_header(samples: &[&str], filters: &FilterThresholds, fix: Option<&LeakyMnvFix>, context_3mer: bool, fill_gvcf: bool) -> Header {
+fn vcf_header(samples: &[&str], filters: &FilterThresholds, fix: Option<&LeakyMnvFix>, reads: Option<&ReadOptions>, context_3mer: bool, fill_gvcf: bool) -> Header {
     let tumor_normal = samples.len() == 2;
     let source = [CARGO_PKG_NAME, CARGO_PKG_VERSION].join("-");
     let mut header = Header::builder()
@@ -784,7 +806,7 @@ fn vcf_header(samples: &[&str], filters: &FilterThresholds, fix: Option<&LeakyMn
         add_info(&mut header, "TUMOR_NORMAL_FISHER_P", info::Number::AlternateBases, info::Type::Float, r#"One-sided Fisher exact p-value that this allele's read fraction is higher in the tumor than in the normal, from each sample's ALT reads (FORMAT AD[1]) against its other reads (FORMAT DP minus AD[1]), so it compares the two samples' FORMAT AF. Computed by vartovcf, not VarDict's SSF, which is the smaller of the two one-sided p-values rounded to 5 decimals. 1 when either sample has no depth; stored as a 32-bit float, so values below about 1e-45 read 0."#);
     }
     if let Some(fix) = fix {
-        add_info(&mut header, "MNV_PARTIALS", info::Number::Count(1), info::Type::Integer, &mnv_partials_description(fix));
+        add_info(&mut header, "MNV_PARTIALS", info::Number::Count(1), info::Type::Integer, &mnv_partials_description(fix, reads));
     }
     if context_3mer {
         add_info(&mut header, "CONTEXT_3mer", info::Number::Count(1), info::Type::String, r#"The reference bases at POS-1, POS and POS+1, uppercase even where the reference is soft-masked, with N for a base past either end of the contig. POS is the record's after normalization, so an insertion's or deletion's 3-mer is centered on its anchor base, the reference base before the inserted or deleted bases. Not reverse-complemented when the base at POS is a purine, and an IUPAC ambiguity code is kept as the reference spells it, even where REF writes the first base it stands for."#);
@@ -821,7 +843,7 @@ fn vcf_header(samples: &[&str], filters: &FilterThresholds, fix: Option<&LeakyMn
     if fix.is_some() {
         add_format(&mut header, "MNV_PARTIAL_READS", format::Number::AlternateBases, format::Type::Integer, MNV_PARTIAL_READS_DESCRIPTION);
     }
-    if matches!(fix, Some(LeakyMnvFix::Reads { .. })) {
+    if matches!(fix, Some(LeakyMnvFix::Reads)) {
         add_format(&mut header, "MNV_MOVED_READS", format::Number::AlternateBases, format::Type::Integer, MNV_MOVED_READS_DESCRIPTION);
     }
     add_format(&mut header, "SITE_DP", format::Number::Count(1), format::Type::Integer, r#"Read depth at POS, the same on every record at the position, written after every other FORMAT field: the reads VarDict counted there as REF or as any allele, an insertion's once although VarDict takes them from REF, with the reads of each deletion, MNV or Complex call VarDict counted at an earlier base whose REF covers POS, including a <DEL> VarDict found in the reads' alignments, but not one it found by split and discordant reads, nor any other symbolic allele, whose reads do not cover its bases. Where a row labeled Complex was counted at POS, no more than the most DP of VarDict's rows there, as VarDict can count a Complex call's reads as REF too; elsewhere the sum is kept even above DP, and vartovcf warns of each such position. Counted in VarDict's coordinates, so a record normalization moved takes the depth where it lands, and missing where VarDict counted no row at POS. Complete only for VarDict's pileup (-p) output, as VarDict otherwise leaves out the alleles failing its -f, -q and -r and writes no row at a deletion's base before. Unlike DP, it does not depend on the record it is written on, so one record per position can be summed without double counting; AD[1] / SITE_DP is the ALT allele's share of it, except for a deletion, whose AD VarDict counts at its first deleted base. Where VarDict regions overlap, the first region that counted a row at the position gives it."#);
@@ -1371,8 +1393,14 @@ mod tests {
 
     #[test]
     fn test_header_is_written_as_vcf_4_2_with_the_source_last() {
-        let header =
-            tumor_only_header("dna00001", &FilterThresholds::default(), None, false, false);
+        let header = tumor_only_header(
+            "dna00001",
+            &FilterThresholds::default(),
+            None,
+            None,
+            false,
+            false,
+        );
         let text = String::from_utf8(crate::vcf::header_bytes(&header).unwrap()).unwrap();
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines[0], "##fileformat=VCFv4.2");
@@ -1384,8 +1412,14 @@ mod tests {
 
     #[test]
     fn test_tumor_only_header() {
-        let header =
-            tumor_only_header("dna00001", &FilterThresholds::default(), None, false, false);
+        let header = tumor_only_header(
+            "dna00001",
+            &FilterThresholds::default(),
+            None,
+            None,
+            false,
+            false,
+        );
         let file = NamedTempFile::new().expect("Cannot create temporary file!");
         let (header, text) = read_back(&header, &file);
         let records: Vec<&str> = text.lines().filter(|line| line.starts_with("##")).collect();
@@ -1529,7 +1563,7 @@ mod tests {
 
     #[test]
     fn test_tumor_normal_header() {
-        let header = tumor_normal_header("T", "N", &FilterThresholds::default(), None, false);
+        let header = tumor_normal_header("T", "N", &FilterThresholds::default(), None, None, false);
         let file = NamedTempFile::new().expect("Cannot create temporary file!");
         let (header, _) = read_back(&header, &file);
         let samples: Vec<&[u8]> = header.sample_names().iter().map(|s| s.as_bytes()).collect();
@@ -1567,8 +1601,8 @@ mod tests {
     ) {
         let filters = FilterThresholds::default();
         for header in [
-            tumor_only_header("dna00001", &filters, None, context_3mer, false),
-            tumor_normal_header("T", "N", &filters, None, context_3mer),
+            tumor_only_header("dna00001", &filters, None, None, context_3mer, false),
+            tumor_normal_header("T", "N", &filters, None, None, context_3mer),
         ] {
             let declared = header
                 .infos()
@@ -1588,6 +1622,7 @@ mod tests {
         let header = tumor_only_header(
             "dna00001",
             &FilterThresholds::default(),
+            None,
             None,
             false,
             fill_gvcf,
