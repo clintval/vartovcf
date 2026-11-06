@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 
 use anyhow::{Error, Result};
-use clap::Parser;
+use clap::{ArgGroup, Parser};
 use env_logger::Env;
 use log::*;
 use signal_hook::consts::{SIGINT, SIGTERM};
@@ -16,11 +16,12 @@ use signal_hook::flag;
 use vartovcflib::fill::BedLayout;
 use vartovcflib::filter::FilterThresholds;
 use vartovcflib::mnv::{LeakRate, LeakyMnvFix};
-use vartovcflib::reads::{ReadOptions, parse_flags, split_bams};
+use vartovcflib::reads::{ReadFiles, ReadOptions, parse_flags, split_bams};
 use vartovcflib::{Options, vartovcf};
 
 #[derive(Clone, Debug, Parser)]
 #[command(version, about)]
+#[command(group = ArgGroup::new("reads_users").multiple(true).args(["fix_leaky_mnv", "filter_foreign_clip_support"]))]
 struct Opt {
     /// The indexed FASTA reference VarDict was run with, which every record is checked and normalized against
     #[arg(short, long)]
@@ -83,8 +84,8 @@ struct Opt {
     #[arg(long, value_name = "RATE", default_value_t = LeakRate::default().value(), requires = "fix_leaky_mnv", conflicts_with = "reads")]
     leaky_mnv_rate: f64,
 
-    /// The indexed BAM VarDict read for the tumor (or only) sample, or `tumor.bam|normal.bam` for both, as VarDict's -b takes them. With --fix-leaky-mnv, each partial row's reads are then followed to the MNV's other changed bases, and only those that are the MNV's own molecules, or consistent with leakage, are folded; a row whose reads are another allele's keeps them. See the README
-    #[arg(long, value_name = "BAMS", requires = "fix_leaky_mnv")]
+    /// The indexed BAM VarDict read for the tumor (or only) sample, or `tumor.bam|normal.bam` for both, as VarDict's -b takes them, for --fix-leaky-mnv or --filter-foreign-clip-support. With --fix-leaky-mnv, each partial row's reads are followed to the MNV's other changed bases, and only those that are the MNV's own molecules, or consistent with leakage, are folded; a row whose reads are another allele's keeps them. With --filter-foreign-clip-support, each SNV's high-quality ALT reads are recounted. See the README
+    #[arg(long, value_name = "BAMS", requires = "reads_users")]
     reads: Option<String>,
 
     /// The base quality VarDict ran with (-q): a base is a good call at this, an MNV grows through a changed base only at this plus 5, and a base at the MNV's other changed position is evidence only at this
@@ -166,6 +167,10 @@ struct Opt {
     /// Label calls LOW_HICNT when they have fewer high-quality ALT reads than this; not applied when not given
     #[arg(long, value_name = "MIN_HICNT")]
     filter_low_hicnt: Option<i32>,
+
+    /// Label SNVs FOREIGN_CLIP_SUPPORT when VarDict counted at least this many high-quality ALT reads (FORMAT HICNT) but fewer are found in --reads carrying the ALT base aligned, or first in a soft clip that matches the reference past it: VarDict adds a soft clip to an SNV after comparing only its second base to the reference. Counts are left as VarDict wrote them; not applied when not given
+    #[arg(long, value_name = "MIN_HICNT", requires = "reads")]
+    filter_foreign_clip_support: Option<i32>,
 }
 
 /// Main binary entrypoint.
@@ -217,18 +222,20 @@ fn main() -> Result<(), Error> {
             extend: opt.fill_gvcf_bed_extend,
             one_based: opt.fill_gvcf_bed_one_based,
         },
-        fix_leaky_mnv: opt.fix_leaky_mnv.then(|| match &opt.reads {
-            Some(bams) => LeakyMnvFix::Reads {
-                bams: split_bams(bams),
-                options: ReadOptions {
-                    base_quality: opt.reads_base_quality,
-                    min_mapping_quality: opt.reads_min_mapq,
-                    exclude_flags: opt.reads_exclude_flags,
-                    max_mismatches: opt.reads_max_mismatches,
-                    mnv_gap: opt.reads_mnv_gap,
-                },
+        reads: opt.reads.as_deref().map(|bams| ReadFiles {
+            bams: split_bams(bams),
+            options: ReadOptions {
+                base_quality: opt.reads_base_quality,
+                min_mapping_quality: opt.reads_min_mapq,
+                exclude_flags: opt.reads_exclude_flags,
+                max_mismatches: opt.reads_max_mismatches,
+                mnv_gap: opt.reads_mnv_gap,
             },
-            None => {
+        }),
+        fix_leaky_mnv: opt.fix_leaky_mnv.then(|| {
+            if opt.reads.is_some() {
+                LeakyMnvFix::Reads
+            } else {
                 LeakyMnvFix::Counts(LeakRate::new(opt.leaky_mnv_rate).unwrap_or_else(|message| {
                     error!("{message}");
                     process::exit(1)
@@ -253,6 +260,7 @@ fn main() -> Result<(), Error> {
             low_qmean: opt.filter_low_qmean,
             low_dp: opt.filter_low_dp,
             low_hicnt: opt.filter_low_hicnt,
+            foreign_clip_support: opt.filter_foreign_clip_support,
         },
     };
 

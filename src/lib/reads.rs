@@ -17,6 +17,12 @@
 //! MNV's changed positions outside the partial.
 //!
 //! Each read is also walked as VarDict clips it, and a partial splits when either walk numbers VarDict's.
+//!
+//! The same pileup recounts an SNV's high-quality ALT reads: those carrying the ALT base aligned at
+//! the site, and those whose soft clip starts there with the ALT base and matches the reference
+//! beyond it. VarDict's `adjSNV` adds a soft clip of up to 5 bases to an SNV after comparing only
+//! its second base to the reference, so a clip whose later bases are foreign lifts a one-read SNV
+//! over its `-r` floor; the recount leaves such clips out.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -42,6 +48,16 @@ use streampile::{
 use crate::mnv::{ReadFate, ReadFates, is_sub_event, is_substitution};
 use crate::record::TumorOnlyVariant;
 use crate::reference::Reference;
+
+/// The indexed BAMs VarDict read, one per sample with the tumor (or only) sample's first, and how
+/// VarDict read them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReadFiles {
+    /// The BAMs, each indexed beside it.
+    pub bams: Vec<PathBuf>,
+    /// How VarDict read them.
+    pub options: ReadOptions,
+}
 
 /// How VarDict read the BAM, so the reads followed are the reads it counted.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -116,6 +132,39 @@ pub struct Summary {
     pub empty: usize,
 }
 
+/// How many SNV rows were recounted from the tumor (or only) sample's reads, and what was found.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RecountSummary {
+    /// SNV rows recounted.
+    pub rows: usize,
+    /// Rows found short of the floor they were recounted against.
+    pub short: usize,
+    /// Rows no read in the pileup supports at all.
+    pub unsupported: usize,
+}
+
+/// The high-quality ALT reads of an SNV found in one sample's reads, by how each carries the ALT
+/// base: aligned at the site, or first in a soft clip at the site that matches the reference beyond
+/// it, which both support the call; or first in a soft clip that does not, which VarDict counted
+/// anyway when the clip's second base matched.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Recount {
+    /// Reads with the ALT base aligned at the site, once VarDict's end clipping is replayed.
+    pub aligned: i32,
+    /// Reads whose soft clip starts at the site with the ALT base and matches the reference past it.
+    pub clean_clips: i32,
+    /// Reads whose soft clip starts at the site with the ALT base and does not match the reference
+    /// past it, though its second base does.
+    pub foreign_clips: i32,
+}
+
+impl Recount {
+    /// The reads that support the call: aligned, or in a clip that matches the reference.
+    pub fn supporting(&self) -> i32 {
+        self.aligned + self.clean_clips
+    }
+}
+
 /// One sample's indexed BAM.
 struct Sample {
     path: PathBuf,
@@ -129,6 +178,8 @@ pub struct ReadSources {
     options: ReadOptions,
     /// What the reads decided so far.
     pub summary: Summary,
+    /// What the recounts found so far.
+    pub recounts: RecountSummary,
 }
 
 impl ReadSources {
@@ -165,6 +216,7 @@ impl ReadSources {
             samples,
             options,
             summary: Summary::default(),
+            recounts: RecountSummary::default(),
         })
     }
 
@@ -351,6 +403,35 @@ impl ReadSources {
         self.summary.pileups += 1;
         Ok(survey)
     }
+
+    /// Recounts an SNV's high-quality ALT reads from the tumor (or only) sample's reads, noting in
+    /// the summary whether they fall short of `min_hicnt`.
+    pub fn recount(
+        &mut self,
+        call: &TumorOnlyVariant,
+        min_hicnt: i32,
+        reference: &mut Reference,
+    ) -> Result<Recount, String> {
+        let options = self.options;
+        let window = Window::around(call, options, reference)?;
+        let survey = self.survey_sample(0, &window)?;
+        let recount = recount(&survey, &window, call, options, reference)?;
+        self.recounts.rows += 1;
+        self.recounts.short += usize::from(recount.supporting() < min_hicnt);
+        self.recounts.unsupported += usize::from(recount.supporting() == 0);
+        debug!(
+            "{}:{} {}>{} in sample 1: VarDict counted {} high-quality ALT reads; the reads hold {} aligned, {} first in a soft clip that matches the reference and {} first in one that does not.",
+            call.contig,
+            call.start,
+            call.ref_allele,
+            call.alt_allele,
+            call.hicnt_value(),
+            recount.aligned,
+            recount.clean_clips,
+            recount.foreign_clips,
+        );
+        Ok(recount)
+    }
 }
 
 /// The records an indexed query returns, read one at a time into a builder's record.
@@ -372,19 +453,19 @@ struct Window {
 }
 
 impl Window {
-    /// The window around an MNV row: its span plus a flank on each side, within the contig.
+    /// The window around a row: its span plus a flank on each side, within the contig.
     fn around(
-        mnv: &TumorOnlyVariant,
+        row: &TumorOnlyVariant,
         options: ReadOptions,
         reference: &mut Reference,
     ) -> Result<Self, String> {
-        let length = reference.length(mnv.contig)?;
-        let start = (mnv.start - 1).saturating_sub(options.flank() as u64);
-        let end = (mnv.end + options.flank() as u64).min(length);
+        let length = reference.length(row.contig)?;
+        let start = (row.start - 1).saturating_sub(options.flank() as u64);
+        let end = (row.end + options.flank() as u64).min(length);
         Ok(Window {
-            contig: mnv.contig.to_string(),
+            contig: row.contig.to_string(),
             start: start as usize,
-            reference: reference.bases(mnv.contig, start, end)?.to_vec(),
+            reference: reference.bases(row.contig, start, end)?.to_vec(),
         })
     }
 
@@ -392,6 +473,11 @@ impl Window {
     fn column(&self, position: u64) -> Option<usize> {
         let column = position.checked_sub(self.start as u64 + 1)? as usize;
         (column < self.reference.len()).then_some(column)
+    }
+
+    /// The 1-based position of a column, outside the window included.
+    fn position(&self, column: i64) -> i64 {
+        self.start as i64 + column + 1
     }
 }
 
@@ -420,6 +506,10 @@ struct ReadView {
     /// Whether the CIGAR starts and ends with a match operation, the only ends VarDict clips.
     starts_with_match: bool,
     ends_with_match: bool,
+    /// The bases the aligner soft-clipped at each end, with their qualities, outward from the
+    /// alignment.
+    head_clip: Vec<(u8, u8)>,
+    tail_clip: Vec<(u8, u8)>,
     /// The alleles the read feeds as aligned, and once VarDict's end clipping is replayed.
     aligned: Vec<Found>,
     clipped: Vec<Found>,
@@ -569,6 +659,7 @@ impl ReadView {
     /// a window starting at a 0-based position.
     fn new(record: &bam::Record, template: usize, window_start: usize, columns: usize) -> Self {
         let mut leading_clip = 0;
+        let mut trailing_clip = 0;
         let mut aligned_length = 0;
         let mut reference_span = 0;
         let mut before_alignment = true;
@@ -579,7 +670,8 @@ impl ReadView {
             last_op = Some(op.kind());
             match op.kind() {
                 Kind::SoftClip if before_alignment => leading_clip += op.len(),
-                Kind::HardClip | Kind::Pad | Kind::SoftClip => {}
+                Kind::SoftClip => trailing_clip += op.len(),
+                Kind::HardClip | Kind::Pad => {}
                 Kind::Match | Kind::SequenceMatch | Kind::SequenceMismatch | Kind::Insertion => {
                     before_alignment = false;
                     aligned_length += op.len();
@@ -601,6 +693,19 @@ impl ReadView {
                 let first = usize::from(start) as i64 - 1 - window_start as i64;
                 (first, first + reference_span as i64 - 1)
             });
+        let sequence = record.sequence();
+        let qualities = record.quality_scores();
+        let clip = |range: std::ops::Range<usize>| -> Vec<(u8, u8)> {
+            sequence
+                .iter()
+                .zip(qualities.iter())
+                .skip(range.start)
+                .take(range.len())
+                .collect()
+        };
+        let mut head_clip = clip(0..leading_clip);
+        head_clip.reverse();
+        let tail_clip = clip(sequence.len().saturating_sub(trailing_clip)..sequence.len());
         ReadView {
             template,
             bases: vec![None; columns],
@@ -613,9 +718,71 @@ impl ReadView {
             span,
             starts_with_match: first_op == Some(Kind::Match),
             ends_with_match: last_op == Some(Kind::Match),
+            head_clip,
+            tail_clip,
             aligned: Vec::new(),
             clipped: Vec::new(),
         }
+    }
+
+    /// The soft clip starting at a column, if the read has one there: VarDict's own, from a
+    /// mismatch near a match-operation end, or the aligner's, after VarDict extends the alignment
+    /// through its clipped bases that match the reference at a quality above 10.
+    fn clip_at(
+        &self,
+        column: usize,
+        window: &Window,
+        reference: &mut Reference,
+    ) -> Result<Option<Clip>, String> {
+        let Some((start, end)) = self.span else {
+            return Ok(None);
+        };
+        let site = column as i64;
+        let clips = self.clips(window);
+        let held = |columns: Vec<usize>| -> Vec<(u8, u8)> {
+            columns
+                .into_iter()
+                .filter_map(|column| self.bases[column])
+                .map(|base| (base.base, base.quality))
+                .collect()
+        };
+        if clips.tail > 0 {
+            if end - clips.tail as i64 + 1 == site {
+                let bases = held((column..=end as usize).collect());
+                return Ok(Some(Clip {
+                    bases,
+                    direction: 1,
+                }));
+            }
+        } else if !self.tail_clip.is_empty() && end < site {
+            let innermost = window.position(end + 1);
+            let extended = extension(&self.tail_clip, &window.contig, innermost, 1, reference)?;
+            if end + 1 + extended as i64 == site {
+                return Ok(Some(Clip {
+                    bases: self.tail_clip[extended..].to_vec(),
+                    direction: 1,
+                }));
+            }
+        }
+        if clips.head > 0 {
+            if start + clips.head as i64 - 1 == site {
+                let bases = held((start as usize..=column).rev().collect());
+                return Ok(Some(Clip {
+                    bases,
+                    direction: -1,
+                }));
+            }
+        } else if !self.head_clip.is_empty() && start > site {
+            let innermost = window.position(start - 1);
+            let extended = extension(&self.head_clip, &window.contig, innermost, -1, reference)?;
+            if start - 1 - extended as i64 == site {
+                return Ok(Some(Clip {
+                    bases: self.head_clip[extended..].to_vec(),
+                    direction: -1,
+                }));
+            }
+        }
+        Ok(None)
     }
 
     /// The read's first and last columns within the window, if any.
@@ -804,6 +971,189 @@ impl Found {
     fn is(&self, row: &TumorOnlyVariant) -> bool {
         self.start == row.start && self.alt == row.alt_allele.as_bytes()
     }
+}
+
+/// A soft clip starting at a site: its bases with their qualities, outward from the alignment, and
+/// the direction it runs in along the contig, 1 at a read's 3' end and -1 at its 5' end.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Clip {
+    bases: Vec<(u8, u8)>,
+    direction: i64,
+}
+
+/// How a soft clip starting at an SNV with the ALT base reads past it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ClipSupport {
+    /// The rest matches the reference, so the read supports the call.
+    Clean,
+    /// The rest does not match the reference, though its second base does, so VarDict counted the
+    /// read anyway.
+    Foreign,
+}
+
+/// The most clipped bases VarDict's `adjSNV` reads into an SNV.
+const ADJ_SNV_MAX_CLIP: usize = 5;
+/// The base quality at or below which VarDict reads a clipped base as low.
+const CLIP_LOW_QUALITY: u8 = 12;
+/// The base quality VarDict's `CigarParser` needs to extend an alignment through a clipped base.
+const CLIP_EXTENSION_QUALITY: u8 = 10;
+
+/// Recounts an SNV's high-quality ALT reads in a surveyed sample: a read supports the call when its
+/// walk, as VarDict clips it, feeds the SNV at or above `-q`, or when its soft clip at the site is
+/// clean; a foreign clip is counted apart.
+fn recount(
+    survey: &Survey,
+    window: &Window,
+    call: &TumorOnlyVariant,
+    options: ReadOptions,
+    reference: &mut Reference,
+) -> Result<Recount, String> {
+    let mut recount = Recount::default();
+    let Some(column) = window.column(call.start) else {
+        return Ok(recount);
+    };
+    let alt = call.alt_allele.as_bytes()[0].to_ascii_uppercase();
+    for read in &survey.reads {
+        if read
+            .clipped
+            .iter()
+            .any(|found| found.is(call) && found.quality >= options.base_quality)
+        {
+            recount.aligned += 1;
+            continue;
+        }
+        let Some(clip) = read.clip_at(column, window, reference)? else {
+            continue;
+        };
+        match classify_clip(
+            &clip,
+            alt,
+            &window.contig,
+            call.start as i64,
+            options,
+            reference,
+        )? {
+            Some(ClipSupport::Clean) => recount.clean_clips += 1,
+            Some(ClipSupport::Foreign) => recount.foreign_clips += 1,
+            None => {}
+        }
+    }
+    Ok(recount)
+}
+
+/// How a soft clip at an SNV reads, as VarDict reads it: the clip is cut at its first no-call and
+/// before its second base at a low quality, as `CigarParser` cuts it, and is read only when it
+/// keeps a base and more bases than low ones; it is a high-quality ALT read only when it starts
+/// with the ALT base and its mean quality reaches `-q`. It is clean when the rest matches the
+/// reference by VarDict's `ismatchref`, with at most 3 mismatches and under 15%, and foreign when
+/// the rest does not match but its first base does and the clip is short enough for `adjSNV`.
+fn classify_clip(
+    clip: &Clip,
+    alt: u8,
+    contig: &str,
+    site: i64,
+    options: ReadOptions,
+    reference: &mut Reference,
+) -> Result<Option<ClipSupport>, String> {
+    let mut kept: Vec<(u8, u8)> = Vec::new();
+    let mut low = 0;
+    for &(base, quality) in &clip.bases {
+        if base.eq_ignore_ascii_case(&b'N') {
+            break;
+        }
+        if quality <= CLIP_LOW_QUALITY {
+            low += 1;
+            if low > 1 {
+                break;
+            }
+        }
+        kept.push((base.to_ascii_uppercase(), quality));
+    }
+    if kept.is_empty() || kept.len() <= low || kept[0].0 != alt {
+        return Ok(None);
+    }
+    let mean = kept
+        .iter()
+        .map(|&(_, quality)| f64::from(quality))
+        .sum::<f64>()
+        / kept.len() as f64;
+    if mean < options.base_quality {
+        return Ok(None);
+    }
+    let rest: Vec<u8> = kept[1..].iter().map(|&(base, _)| base).collect();
+    let outward = outward(
+        reference,
+        contig,
+        site + clip.direction,
+        clip.direction,
+        rest.len(),
+    )?;
+    if matches_reference(&rest, &outward) {
+        Ok(Some(ClipSupport::Clean))
+    } else if kept.len() <= ADJ_SNV_MAX_CLIP && outward.first() == rest.first() {
+        Ok(Some(ClipSupport::Foreign))
+    } else {
+        Ok(None)
+    }
+}
+
+/// VarDict's `ismatchref`: whether clipped bases match the reference with at most 3 mismatches and
+/// under 15% of them, and never where the reference runs out; nothing to compare matches.
+fn matches_reference(bases: &[u8], reference: &[u8]) -> bool {
+    if reference.len() < bases.len() {
+        return false;
+    }
+    let mismatches = bases
+        .iter()
+        .zip(reference)
+        .filter(|(base, reference)| base != reference)
+        .count();
+    mismatches <= 3 && (bases.is_empty() || (mismatches as f64) < 0.15 * bases.len() as f64)
+}
+
+/// How many of a clip's innermost bases VarDict's `CigarParser` aligns before reading the clip:
+/// those matching the reference, from the 1-based position of the innermost outward, at a quality
+/// above 10.
+fn extension(
+    clip: &[(u8, u8)],
+    contig: &str,
+    innermost: i64,
+    direction: i64,
+    reference: &mut Reference,
+) -> Result<usize, String> {
+    let outward = outward(reference, contig, innermost, direction, clip.len())?;
+    Ok(clip
+        .iter()
+        .zip(&outward)
+        .take_while(|((base, quality), reference)| {
+            base.to_ascii_uppercase() == **reference && *quality > CLIP_EXTENSION_QUALITY
+        })
+        .count())
+}
+
+/// Up to `count` uppercase reference bases from a 1-based position outward along `direction`,
+/// fewer where the contig ends.
+fn outward(
+    reference: &mut Reference,
+    contig: &str,
+    from: i64,
+    direction: i64,
+    count: usize,
+) -> Result<Vec<u8>, String> {
+    let length = reference.length(contig)? as i64;
+    let (start, end) = if direction > 0 {
+        (from - 1, (from - 1 + count as i64).min(length))
+    } else {
+        ((from - count as i64).max(0), from.min(length))
+    };
+    if start < 0 || start >= end {
+        return Ok(Vec::new());
+    }
+    let mut bases = reference.bases(contig, start as u64, end as u64)?.to_vec();
+    if direction < 0 {
+        bases.reverse();
+    }
+    Ok(bases)
 }
 
 /// Whose molecule a template with the partial's ALT bases is.
@@ -2373,5 +2723,262 @@ mod tests {
             split_bams("t.bam|n.bam"),
             vec![PathBuf::from("t.bam"), PathBuf::from("n.bam")]
         );
+    }
+
+    /// A fragment aligned over 1-based `start..=end` of the window, carrying the reference with
+    /// these edits, with these soft-clipped bases and qualities at its head and tail, in the order
+    /// the BAM holds them.
+    fn clipped(
+        start: u64,
+        end: u64,
+        edits: &[(u64, u8)],
+        head: &[(u8, u8)],
+        tail: &[(u8, u8)],
+    ) -> Frag {
+        let (from, to) = ((start - 101) as usize, (end - 100) as usize);
+        let mut bases: Vec<u8> = head.iter().map(|&(base, _)| base).collect();
+        bases.extend_from_slice(&edited(edits).as_bytes()[from..to]);
+        bases.extend(tail.iter().map(|&(base, _)| base));
+        let mut quals: Vec<u8> = head.iter().map(|&(_, quality)| quality).collect();
+        quals.extend(std::iter::repeat_n(40u8, to - from));
+        quals.extend(tail.iter().map(|&(_, quality)| quality));
+        let clip = |count: usize| {
+            if count > 0 {
+                format!("{count}S")
+            } else {
+                String::new()
+            }
+        };
+        let cigar = format!("{}{}M{}", clip(head.len()), to - from, clip(tail.len()));
+        Frag::at(start as usize)
+            .bases(String::from_utf8(bases).unwrap())
+            .quals(quals)
+            .cigar(cigar)
+            .attr(Tag::EDIT_DISTANCE, edits.len() as i32)
+    }
+
+    /// Bases at quality 40 as a clip, with `n` for a no-call at quality 2 and any other lowercase base
+    /// at quality 12.
+    fn clip(text: &str) -> Vec<(u8, u8)> {
+        text.bytes()
+            .map(|base| match base {
+                b'n' => (b'N', 2),
+                base if base.is_ascii_lowercase() => (base.to_ascii_uppercase(), 12),
+                base => (base, 40),
+            })
+            .collect()
+    }
+
+    /// Recounts the SNV C>T at 110 from these fragments at the window, under these options, in a
+    /// reference of `ACGT` repeated, whose bases at 101-120 are the window's.
+    fn recount_frags(frags: Vec<Frag>, options: ReadOptions) -> Recount {
+        let (_dir, path) = crate::reference::tests::fasta(&[("chr1", &"ACGT".repeat(50))]);
+        let mut reference = Reference::from_path(&path).unwrap();
+        let mut builder = SamBuilder::new().read_length(REFERENCE.len());
+        for frag in frags {
+            builder.add_frag(frag);
+        }
+        let survey = survey(builder.to_source(), builder.header(), &window(), options).unwrap();
+        recount(
+            &survey,
+            &window(),
+            &row(110, "C", "T", 2),
+            options,
+            &mut reference,
+        )
+        .unwrap()
+    }
+
+    fn counts(recount: Recount) -> (i32, i32, i32) {
+        (recount.aligned, recount.clean_clips, recount.foreign_clips)
+    }
+
+    #[rstest]
+    #[case::no_remainder("T", (0, 1, 0))]
+    #[case::one_matching_base("TG", (0, 1, 0))]
+    #[case::two_matching_bases("TGT", (0, 1, 0))]
+    #[case::three_matching_bases("TGTA", (0, 1, 0))]
+    #[case::four_matching_bases("TGTAC", (0, 1, 0))]
+    #[case::a_mismatch_past_a_matching_second_base("TGA", (0, 0, 1))]
+    #[case::mismatches_past_a_matching_second_base("TGACA", (0, 0, 1))]
+    #[case::a_mismatch_at_the_second_base("TAT", (0, 0, 0))]
+    #[case::another_base_first("AGT", (0, 0, 0))]
+    #[case::six_matching_bases("TGTACG", (0, 1, 0))]
+    #[case::six_bases_with_a_mismatch("TGTACT", (0, 0, 0))]
+    #[case::six_bases_with_mismatches_past_a_matching_second_base("TGACAC", (0, 0, 0))]
+    #[case::cut_at_a_no_call("TGnTA", (0, 1, 0))]
+    #[case::cut_at_a_no_call_after_the_alt("TnACA", (0, 1, 0))]
+    #[case::a_no_call_first("nTGT", (0, 0, 0))]
+    #[case::a_low_quality_base_kept("TgT", (0, 1, 0))]
+    #[case::cut_before_a_second_low_quality_base("TGtaAC", (0, 1, 0))]
+    #[case::low_quality_bases_outnumbering_the_rest("Tgt", (0, 0, 0))]
+    fn test_a_tail_clip_at_the_site_is_read_as_vardict_reads_it(
+        #[case] bases: &str,
+        #[case] expected: (i32, i32, i32),
+    ) {
+        let recount = recount_frags(
+            vec![clipped(101, 109, &[], &[], &clip(bases))],
+            ReadOptions::default(),
+        );
+        assert_eq!(counts(recount), expected);
+    }
+
+    #[rstest]
+    #[case::no_remainder("T", (0, 1, 0))]
+    #[case::matching_bases("GTAT", (0, 1, 0))]
+    #[case::a_mismatch_past_a_matching_second_base("GAT", (0, 0, 1))]
+    #[case::a_mismatch_at_the_second_base("TGT", (0, 0, 0))]
+    #[case::cut_at_a_no_call("CnAT", (0, 1, 0))]
+    fn test_a_head_clip_at_the_site_is_read_outward(
+        #[case] bases: &str,
+        #[case] expected: (i32, i32, i32),
+    ) {
+        let recount = recount_frags(
+            vec![clipped(111, 120, &[], &clip(bases), &[])],
+            ReadOptions::default(),
+        );
+        assert_eq!(counts(recount), expected);
+    }
+
+    #[test]
+    fn test_an_aligned_alt_read_and_a_clean_clip_both_support_the_call() {
+        let recount = recount_frags(
+            vec![
+                clipped(101, 120, &[(110, b'T')], &[], &[]),
+                clipped(101, 109, &[], &[], &clip("TGT")),
+            ],
+            ReadOptions::default(),
+        );
+        assert_eq!(counts(recount), (1, 1, 0));
+        assert_eq!(recount.supporting(), 2);
+    }
+
+    #[test]
+    fn test_clips_piled_at_one_site_are_each_read_on_their_own() {
+        let recount = recount_frags(
+            vec![
+                clipped(101, 109, &[], &[], &clip("TGT")),
+                clipped(101, 109, &[], &[], &clip("TGA")),
+                clipped(101, 109, &[], &[], &clip("TAC")),
+                clipped(111, 120, &[], &clip("GAT"), &[]),
+            ],
+            ReadOptions::default(),
+        );
+        assert_eq!(counts(recount), (0, 1, 2));
+    }
+
+    #[test]
+    fn test_reverse_strand_reads_are_read_the_same() {
+        let recount = recount_frags(
+            vec![
+                clipped(101, 120, &[(110, b'T')], &[], &[]).strand(Strand::Minus),
+                clipped(101, 109, &[], &[], &clip("TGA")).strand(Strand::Minus),
+                clipped(111, 120, &[], &clip("TAT"), &[]).strand(Strand::Minus),
+            ],
+            ReadOptions::default(),
+        );
+        assert_eq!(counts(recount), (1, 1, 1));
+    }
+
+    #[rstest]
+    #[case::at_the_end(110, &[(110, b'T')], (0, 1, 0))]
+    #[case::one_matching_base_after(111, &[(110, b'T')], (0, 1, 0))]
+    #[case::two_matching_bases_after(112, &[(110, b'T')], (0, 1, 0))]
+    #[case::a_mismatch_at_the_end(111, &[(110, b'T'), (111, b'A')], (0, 0, 0))]
+    #[case::a_mismatch_two_after(112, &[(110, b'T'), (112, b'A')], (0, 0, 1))]
+    #[case::three_matching_bases_after(113, &[(110, b'T')], (1, 0, 0))]
+    fn test_a_clip_vardict_makes_at_a_read_end_is_read_like_the_aligners(
+        #[case] end: u64,
+        #[case] edits: &[(u64, u8)],
+        #[case] expected: (i32, i32, i32),
+    ) {
+        let recount = recount_frags(
+            vec![clipped(101, end, edits, &[], &[])],
+            ReadOptions::default(),
+        );
+        assert_eq!(counts(recount), expected);
+    }
+
+    #[rstest]
+    #[case::matching_bases_before_the_alt_are_aligned(&[(b'T', 40), (b'A', 40)], (0, 1, 0))]
+    #[case::not_at_a_low_quality(&[(b'T', 10), (b'A', 40)], (0, 0, 0))]
+    #[case::not_through_a_mismatch(&[(b'C', 40), (b'A', 40)], (0, 0, 0))]
+    fn test_vardict_extends_an_alignment_through_clipped_bases_that_match(
+        #[case] before: &[(u8, u8)],
+        #[case] expected: (i32, i32, i32),
+    ) {
+        // The clip starts at 108, where the reference reads TA before the site.
+        let mut tail = before.to_vec();
+        tail.extend(clip("TG"));
+        let recount = recount_frags(
+            vec![clipped(101, 107, &[], &[], &tail)],
+            ReadOptions::default(),
+        );
+        assert_eq!(counts(recount), expected);
+    }
+
+    #[rstest]
+    #[case::mean_at_q(&[(b'T', 20), (b'G', 40)], (0, 1, 0))]
+    #[case::mean_below_q(&[(b'T', 20), (b'G', 39)], (0, 0, 0))]
+    #[case::aligned_below_q(&[], (0, 0, 0))]
+    fn test_a_clip_is_a_high_quality_read_by_its_mean_quality(
+        #[case] tail: &[(u8, u8)],
+        #[case] expected: (i32, i32, i32),
+    ) {
+        let options = ReadOptions {
+            base_quality: 30.0,
+            ..ReadOptions::default()
+        };
+        let frag = if tail.is_empty() {
+            Frag::at(101)
+                .bases(edited(&[(110, b'T')]))
+                .quals(quals(&[(110, 29)]))
+                .attr(Tag::EDIT_DISTANCE, 1)
+        } else {
+            clipped(101, 109, &[], &[], tail)
+        };
+        assert_eq!(counts(recount_frags(vec![frag], options)), expected);
+    }
+
+    #[test]
+    fn test_a_read_feeding_an_mnv_through_the_site_does_not_support_the_snv() {
+        let recount = recount_frags(
+            vec![clipped(101, 120, &[(110, b'T'), (111, b'A')], &[], &[])],
+            ReadOptions::default(),
+        );
+        assert_eq!(counts(recount), (0, 0, 0));
+    }
+
+    #[rstest]
+    #[case::nothing_to_compare(b"", b"", true)]
+    #[case::all_matching(b"TGTA", b"TGTA", true)]
+    #[case::one_of_four(b"TGTX", b"TGTA", false)]
+    #[case::one_of_seven(b"TGTACGX", b"TGTACGT", true)]
+    #[case::three_of_twenty(b"XXXTTTTTTTTTTTTTTTTT", b"TTTTTTTTTTTTTTTTTTTT", false)]
+    #[case::three_of_twenty_one(b"XXXTTTTTTTTTTTTTTTTTT", b"TTTTTTTTTTTTTTTTTTTTT", true)]
+    #[case::four_of_forty(
+        b"XXXXTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT",
+        b"TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT",
+        false
+    )]
+    #[case::reference_runs_out(b"TG", b"T", false)]
+    fn test_matches_reference_is_vardicts_ismatchref(
+        #[case] bases: &[u8],
+        #[case] reference: &[u8],
+        #[case] expected: bool,
+    ) {
+        assert_eq!(matches_reference(bases, reference), expected);
+    }
+
+    #[test]
+    fn test_outward_bases_stop_at_the_contig_ends() {
+        let (_dir, path) = crate::reference::tests::fasta(&[("c1", "ACGTAC")]);
+        let mut reference = Reference::from_path(&path).unwrap();
+        assert_eq!(outward(&mut reference, "c1", 3, 1, 2).unwrap(), b"GT");
+        assert_eq!(outward(&mut reference, "c1", 3, -1, 2).unwrap(), b"GC");
+        assert_eq!(outward(&mut reference, "c1", 5, 1, 4).unwrap(), b"AC");
+        assert_eq!(outward(&mut reference, "c1", 2, -1, 4).unwrap(), b"CA");
+        assert_eq!(outward(&mut reference, "c1", 7, 1, 2).unwrap(), b"");
+        assert_eq!(outward(&mut reference, "c1", 0, -1, 2).unwrap(), b"");
     }
 }

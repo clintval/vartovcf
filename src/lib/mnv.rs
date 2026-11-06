@@ -20,9 +20,7 @@
 //! of another allele stay on the partial, which is then written with only them.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 
-use crate::reads::ReadOptions;
 use crate::record::TumorOnlyVariant;
 use crate::vcf::Numeric;
 
@@ -112,18 +110,15 @@ fn binomial_upper_tail(trials: i64, successes: i64, p: f64) -> f64 {
 }
 
 /// How the partial rows of a region are folded: by their counts, or by their reads.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LeakyMnvFix {
     /// Fold a partial whose reads are plausible leakage at this rate.
     Counts(LeakRate),
-    /// Fold the reads of a partial that the BAMs VarDict read show to be the MNV's molecules or
-    /// consistent with leakage, one BAM per sample.
-    Reads {
-        /// The indexed BAMs, the tumor (or only) sample's first.
-        bams: Vec<PathBuf>,
-        /// How VarDict read them.
-        options: ReadOptions,
-    },
+    /// Fold the reads of a partial that the BAMs VarDict read, given as [`Options::reads`], show
+    /// to be the MNV's molecules or consistent with leakage.
+    ///
+    /// [`Options::reads`]: crate::Options::reads
+    Reads,
 }
 
 /// What the reads say about a partial row under an MNV, per sample, the tumor (or only) sample
