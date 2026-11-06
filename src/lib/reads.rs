@@ -23,6 +23,12 @@
 //! beyond it. VarDict's `adjSNV` adds a soft clip of up to 5 bases to an SNV after comparing only
 //! its second base to the reference, so a clip whose later bases are foreign lifts a one-read SNV
 //! over its `-r` floor; the recount leaves such clips out.
+//!
+//! The pileup also looks for the reads that carry an insertion whole, as an insertion operation of
+//! its bases: an aligner soft-clips a read at an insertion too long to open as a gap, so VarDict
+//! assembles such an insertion from the soft clips at its ends (`VariationRealigner.realignlgins`)
+//! and no read holds it. A read whose insertion operation sits where the insertion slides to, in
+//! a repeat, carries it too.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -165,6 +171,27 @@ impl Recount {
     }
 }
 
+/// What the reads say about one call, for the labels that ask them: an SNV's high-quality ALT
+/// reads recounted, and the reads carrying an insertion whole; `None` where the label is not
+/// applied, the call is not one it tests, or no reads were given.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReadEvidence {
+    /// An SNV's recount, for FOREIGN_CLIP_SUPPORT.
+    pub recount: Option<Recount>,
+    /// The reads carrying an insertion whole as an insertion operation, for UNSPANNED_INSERTION.
+    pub spanning: Option<i32>,
+}
+
+/// How many insertion rows were looked for in the tumor (or only) sample's reads, and how many a
+/// read carried whole.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SpanningSummary {
+    /// Insertion rows looked for.
+    pub rows: usize,
+    /// Rows some read carried whole.
+    pub spanned: usize,
+}
+
 /// One sample's indexed BAM.
 struct Sample {
     path: PathBuf,
@@ -180,6 +207,8 @@ pub struct ReadSources {
     pub summary: Summary,
     /// What the recounts found so far.
     pub recounts: RecountSummary,
+    /// What the searches for reads carrying an insertion whole found so far.
+    pub spans: SpanningSummary,
 }
 
 impl ReadSources {
@@ -217,6 +246,7 @@ impl ReadSources {
             options,
             summary: Summary::default(),
             recounts: RecountSummary::default(),
+            spans: SpanningSummary::default(),
         })
     }
 
@@ -432,6 +462,34 @@ impl ReadSources {
         );
         Ok(recount)
     }
+
+    /// Counts the reads of the tumor (or only) sample that carry an insertion whole: those with an
+    /// insertion operation of its bases, at or above `-q`, at its position or one it slides to.
+    pub fn spanning(
+        &mut self,
+        call: &TumorOnlyVariant,
+        reference: &mut Reference,
+    ) -> Result<i32, String> {
+        let options = self.options;
+        let window = Window::sliding(call, options, reference)?;
+        let survey = self.survey_sample(0, &window)?;
+        let mut spanning = 0;
+        for read in &survey.reads {
+            spanning += i32::from(read.carries(call, options, reference)?);
+        }
+        self.spans.rows += 1;
+        self.spans.spanned += usize::from(spanning > 0);
+        debug!(
+            "{}:{} {}>{} in sample 1: VarDict counted {} high-quality ALT reads; {} read(s) carry the insertion whole.",
+            call.contig,
+            call.start,
+            call.ref_allele,
+            call.alt_allele,
+            call.hicnt_value(),
+            spanning,
+        );
+        Ok(spanning)
+    }
 }
 
 /// The records an indexed query returns, read one at a time into a builder's record.
@@ -462,6 +520,25 @@ impl Window {
         let length = reference.length(row.contig)?;
         let start = (row.start - 1).saturating_sub(options.flank() as u64);
         let end = (row.end + options.flank() as u64).min(length);
+        Ok(Window {
+            contig: row.contig.to_string(),
+            start: start as usize,
+            reference: reference.bases(row.contig, start, end)?.to_vec(),
+        })
+    }
+
+    /// The window around an indel row's position and every position its indel slides to, its 3'
+    /// shift, plus a flank on each side, within the contig, so a read placing the indel anywhere
+    /// along the slide is piled up.
+    fn sliding(
+        row: &TumorOnlyVariant,
+        options: ReadOptions,
+        reference: &mut Reference,
+    ) -> Result<Self, String> {
+        let length = reference.length(row.contig)?;
+        let shift = row.num_bases_3_prime_shift_for_deletions.max(0) as u64;
+        let start = (row.start - 1).saturating_sub(options.flank() as u64);
+        let end = (row.end + shift + options.flank() as u64).min(length);
         Ok(Window {
             contig: row.contig.to_string(),
             start: start as usize,
@@ -510,9 +587,20 @@ struct ReadView {
     /// alignment.
     head_clip: Vec<(u8, u8)>,
     tail_clip: Vec<(u8, u8)>,
+    /// The read's insertion operations.
+    insertions: Vec<Inserted>,
     /// The alleles the read feeds as aligned, and once VarDict's end clipping is replayed.
     aligned: Vec<Found>,
     clipped: Vec<Found>,
+}
+
+/// One insertion operation of a read: the 1-based position of the reference base before the
+/// inserted bases, the bases, and their mean quality.
+#[derive(Clone, Debug, PartialEq)]
+struct Inserted {
+    anchor: u64,
+    bases: Vec<u8>,
+    quality: f64,
 }
 
 /// The bases VarDict's `CigarModifier` soft-clips from a read's ends before walking it.
@@ -658,13 +746,26 @@ impl ReadView {
     /// A read with no bases recorded yet, with what VarDict's per-read measures need from it, over
     /// a window starting at a 0-based position.
     fn new(record: &bam::Record, template: usize, window_start: usize, columns: usize) -> Self {
+        let sequence = record.sequence();
+        let qualities = record.quality_scores();
+        let clip = |range: std::ops::Range<usize>| -> Vec<(u8, u8)> {
+            sequence
+                .iter()
+                .zip(qualities.iter())
+                .skip(range.start)
+                .take(range.len())
+                .collect()
+        };
+        let alignment_start = record.alignment_start().and_then(Result::ok);
         let mut leading_clip = 0;
         let mut trailing_clip = 0;
         let mut aligned_length = 0;
         let mut reference_span = 0;
+        let mut query_position = 0;
         let mut before_alignment = true;
         let mut first_op = None;
         let mut last_op = None;
+        let mut insertions = Vec::new();
         for op in record.cigar().iter().filter_map(|op| op.ok()) {
             first_op.get_or_insert(op.kind());
             last_op = Some(op.kind());
@@ -677,6 +778,20 @@ impl ReadView {
                     aligned_length += op.len();
                     if op.kind() != Kind::Insertion {
                         reference_span += op.len();
+                    } else if let Some(start) = alignment_start {
+                        let inserted = clip(query_position..query_position + op.len());
+                        let quality: f64 = inserted
+                            .iter()
+                            .map(|&(_, quality)| f64::from(quality))
+                            .sum();
+                        insertions.push(Inserted {
+                            anchor: (usize::from(start) + reference_span) as u64 - 1,
+                            bases: inserted
+                                .iter()
+                                .map(|&(base, _)| base.to_ascii_uppercase())
+                                .collect(),
+                            quality: quality / op.len() as f64,
+                        });
                     }
                 }
                 Kind::Deletion | Kind::Skip => {
@@ -684,25 +799,14 @@ impl ReadView {
                     reference_span += op.len();
                 }
             }
+            if op.kind().consumes_read() {
+                query_position += op.len();
+            }
         }
-        let span = record
-            .alignment_start()
-            .and_then(Result::ok)
-            .filter(|_| reference_span > 0)
-            .map(|start| {
-                let first = usize::from(start) as i64 - 1 - window_start as i64;
-                (first, first + reference_span as i64 - 1)
-            });
-        let sequence = record.sequence();
-        let qualities = record.quality_scores();
-        let clip = |range: std::ops::Range<usize>| -> Vec<(u8, u8)> {
-            sequence
-                .iter()
-                .zip(qualities.iter())
-                .skip(range.start)
-                .take(range.len())
-                .collect()
-        };
+        let span = alignment_start.filter(|_| reference_span > 0).map(|start| {
+            let first = usize::from(start) as i64 - 1 - window_start as i64;
+            (first, first + reference_span as i64 - 1)
+        });
         let mut head_clip = clip(0..leading_clip);
         head_clip.reverse();
         let tail_clip = clip(sequence.len().saturating_sub(trailing_clip)..sequence.len());
@@ -720,9 +824,34 @@ impl ReadView {
             ends_with_match: last_op == Some(Kind::Match),
             head_clip,
             tail_clip,
+            insertions,
             aligned: Vec::new(),
             clipped: Vec::new(),
         }
+    }
+
+    /// Whether the read carries an insertion row's inserted bases whole: in an insertion operation
+    /// whose bases' mean quality reaches `-q`, at the row's position or one the insertion slides to.
+    fn carries(
+        &self,
+        row: &TumorOnlyVariant,
+        options: ReadOptions,
+        reference: &mut Reference,
+    ) -> Result<bool, String> {
+        let inserted = row.alt_allele.as_bytes()[row.ref_allele.len()..].to_ascii_uppercase();
+        for insertion in &self.insertions {
+            if insertion.quality >= options.base_quality
+                && same_insertion(
+                    row.contig,
+                    (row.start, &inserted),
+                    (insertion.anchor, &insertion.bases),
+                    reference,
+                )?
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// The soft clip starting at a column, if the read has one there: VarDict's own, from a
@@ -1129,6 +1258,36 @@ fn extension(
             base.to_ascii_uppercase() == **reference && *quality > CLIP_EXTENSION_QUALITY
         })
         .count())
+}
+
+/// Whether two insertions, each as the bases inserted after a 1-based anchor position, give the
+/// same haplotype: the same bases at one anchor, or, where the reference between the anchors
+/// repeats the inserted bases, the bases rotated by the distance between them.
+fn same_insertion(
+    contig: &str,
+    (anchor, bases): (u64, &[u8]),
+    (other_anchor, other): (u64, &[u8]),
+    reference: &mut Reference,
+) -> Result<bool, String> {
+    if bases.len() != other.len() || bases.is_empty() {
+        return Ok(false);
+    }
+    let ((left, left_bases), (right, right_bases)) = if anchor <= other_anchor {
+        ((anchor, bases), (other_anchor, other))
+    } else {
+        ((other_anchor, other), (anchor, bases))
+    };
+    if right > reference.length(contig)? {
+        return Ok(false);
+    }
+    let between = reference.bases(contig, left, right)?;
+    let repeats = between
+        .iter()
+        .enumerate()
+        .all(|(offset, &base)| base == left_bases[offset % left_bases.len()]);
+    let rotation = between.len() % left_bases.len();
+    let rotated = left_bases[rotation..].iter().chain(&left_bases[..rotation]);
+    Ok(repeats && rotated.eq(right_bases.iter()))
 }
 
 /// Up to `count` uppercase reference bases from a 1-based position outward along `direction`,
@@ -2653,6 +2812,95 @@ mod tests {
     }
 
     /// Writes one indexed BAM per read group sample name and opens them in that order.
+    /// Whether a read carries the row's insertion whole, for each of these fragments, in a
+    /// reference of `ACGT` repeated, whose bases at 101-120 are the window's.
+    fn carries_frags(frags: Vec<Frag>, row: &TumorOnlyVariant) -> Vec<bool> {
+        let (_dir, path) = crate::reference::tests::fasta(&[("chr1", &"ACGT".repeat(50))]);
+        let mut reference = Reference::from_path(&path).unwrap();
+        let mut builder = SamBuilder::new().read_length(REFERENCE.len());
+        for frag in frags {
+            builder.add_frag(frag);
+        }
+        let options = ReadOptions::default();
+        let survey = survey(builder.to_source(), builder.header(), &window(), options).unwrap();
+        survey
+            .reads
+            .iter()
+            .map(|read| read.carries(row, options, &mut reference).unwrap())
+            .collect()
+    }
+
+    /// A fragment at 101 with these bases inserted after this position, at this quality, and the
+    /// reference elsewhere over 101-120.
+    fn inserting(anchor: usize, inserted: &str, quality: u8) -> Frag {
+        let before = anchor - 100;
+        let bases = format!(
+            "{}{inserted}{}",
+            &edited(&[])[..before],
+            &edited(&[])[before..]
+        );
+        let mut quals = vec![40u8; bases.len()];
+        quals[before..before + inserted.len()].fill(quality);
+        Frag::at(101)
+            .bases(bases)
+            .quals(quals)
+            .cigar(format!("{before}M{}I{}M", inserted.len(), 20 - before))
+            .attr(Tag::EDIT_DISTANCE, inserted.len() as i32)
+    }
+
+    #[rstest]
+    #[case::at_the_rows_position(110, "GTAC", 40, true)]
+    #[case::slid_along_the_repeat(112, "ACGT", 40, true)]
+    #[case::slid_to_a_place_that_is_not_the_same_haplotype(111, "ACGT", 40, false)]
+    #[case::other_bases(110, "GTAA", 40, false)]
+    #[case::shorter(110, "GTA", 40, false)]
+    #[case::longer(110, "GTACG", 40, false)]
+    #[case::below_q(110, "GTAC", 20, false)]
+    fn test_a_read_carries_an_insertion_in_an_insertion_operation(
+        #[case] anchor: usize,
+        #[case] inserted: &str,
+        #[case] quality: u8,
+        #[case] expected: bool,
+    ) {
+        let frags = vec![
+            inserting(anchor, inserted, quality),
+            Frag::at(101).bases(edited(&[])).quals(quals(&[])),
+        ];
+        assert_eq!(
+            carries_frags(frags, &row(110, "C", "CGTAC", 1)),
+            vec![expected, false]
+        );
+    }
+
+    #[rstest]
+    #[case::same_place("GTAC", 110, "GTAC", true)]
+    #[case::same_place_other_bases("GTAC", 110, "GTAA", false)]
+    #[case::one_base_right_along_the_repeat("GTAC", 111, "TACG", true)]
+    #[case::one_repeat_right("GTAC", 114, "GTAC", true)]
+    #[case::one_repeat_and_two_right("GTAC", 116, "ACGT", true)]
+    #[case::one_base_left("GTAC", 109, "CGTA", true)]
+    #[case::two_right_but_not_rotated("GTAC", 112, "GTAC", false)]
+    #[case::two_right_along_a_shorter_repeat("GTAA", 112, "AAGT", true)]
+    #[case::not_a_repeat_of_the_reference("TTTT", 112, "TTTT", false)]
+    #[case::past_the_contig("GTAC", 400, "GTAC", false)]
+    fn test_insertions_slid_along_a_repeat_are_the_same(
+        #[case] bases: &str,
+        #[case] other_anchor: u64,
+        #[case] other: &str,
+        #[case] expected: bool,
+    ) {
+        let (_dir, path) = crate::reference::tests::fasta(&[("chr1", &"ACGT".repeat(50))]);
+        let mut reference = Reference::from_path(&path).unwrap();
+        let same = same_insertion(
+            "chr1",
+            (110, bases.as_bytes()),
+            (other_anchor, other.as_bytes()),
+            &mut reference,
+        )
+        .unwrap();
+        assert_eq!(same, expected);
+    }
+
     fn open_bams(dir: &std::path::Path, read_group_samples: &[&str]) -> ReadSources {
         use noodles::sam::header::record::value::map::read_group::tag::SAMPLE;
         let mut builder = SamBuilder::new().read_length(REFERENCE.len());
