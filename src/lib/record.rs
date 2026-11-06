@@ -377,6 +377,16 @@ impl<'a> TumorOnlyVariant<'a> {
                 .all(|base| base.is_ascii_alphabetic())
     }
 
+    /// The bases this record inserts after its REF base, when it is an insertion of sequence.
+    pub fn inserted_length(&self) -> Option<usize> {
+        (self.variant_class() == Some("Insertion")
+            && self
+                .alt_allele
+                .bytes()
+                .all(|base| base.is_ascii_alphabetic()))
+        .then(|| self.alt_allele.len() - self.ref_allele.len())
+    }
+
     /// Return the "AF" formatted VCF field for this record: the ALT depth over DP at full precision,
     /// clamped to [0, 1], and missing without an ALT allele or without depth.
     pub fn af_value(&self) -> f32 {
@@ -1105,6 +1115,27 @@ mod tests {
         variant.alt_allele = alt_allele;
         variant.variant_type = variant_type;
         assert_eq!(variant.variant_class(), expected);
+    }
+
+    #[rstest]
+    #[case("G", "GTT", Some(2))]
+    #[case("g", "gacgt", Some(4))]
+    #[case("G", "A", None)]
+    #[case("GTT", "G", None)]
+    #[case("GA", "GTTA", None)]
+    #[case("G", "GT&T", None)]
+    #[case("G", "<DUP>", None)]
+    #[case("G", "G", None)]
+    fn test_tumor_only_variant_inserted_length(
+        variants: Vec<TumorOnlyVariant<'static>>,
+        #[case] ref_allele: &'static str,
+        #[case] alt_allele: &'static str,
+        #[case] expected: Option<usize>,
+    ) {
+        let mut variant = variants.into_iter().nth(2).unwrap();
+        variant.ref_allele = ref_allele;
+        variant.alt_allele = alt_allele;
+        assert_eq!(variant.inserted_length(), expected);
     }
 
     #[rstest]
