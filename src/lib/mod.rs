@@ -181,7 +181,8 @@ pub struct Options<'a> {
     pub fill_gvcf_bed_layout: BedLayout,
     /// The indexed BAMs VarDict read, one per sample, for the fold to decide each partial row by
     /// its reads, for the FOREIGN_CLIP_SUPPORT label to recount each SNV's and for the
-    /// UNSPANNED_INSERTION label to look for reads carrying an insertion whole; see [`reads`].
+    /// LOW_SUPPORT_LONG_INSERTION label to look for reads carrying an insertion whole; see
+    /// [`reads`].
     pub reads: Option<ReadFiles>,
     /// How to fold the partial rows of each MNV back into it, by their counts at a leak rate or
     /// by [`Options::reads`], or `None` to not fold; see [`mnv`].
@@ -470,7 +471,7 @@ fn convert<I: Read>(
             );
         }
     }
-    if let (Some(rule), Some(sources)) = (filters.unspanned_insertion, &sink.reads) {
+    if let (Some(rule), Some(sources)) = (filters.low_support_long_insertion, &sink.reads) {
         let spans = sources.spans;
         info!(
             "Looked in the reads for {} insertion(s) of at least {} bases with fewer than {} high-quality ALT reads: {} carried whole by a read, so not labelled.",
@@ -618,9 +619,10 @@ impl Sink<'_> {
     }
 
     /// The reads of the tumor (or only) sample carrying a normalized call's insertion whole, when
-    /// UNSPANNED_INSERTION is applied and the call is one it tests.
+    /// LOW_SUPPORT_LONG_INSERTION is applied and the call is one it tests.
     fn spanning(&mut self, call: &TumorOnlyVariant) -> Result<Option<i32>, String> {
-        let (Some(rule), Some(sources)) = (self.filters.unspanned_insertion, &mut self.reads)
+        let (Some(rule), Some(sources)) =
+            (self.filters.low_support_long_insertion, &mut self.reads)
         else {
             return Ok(None);
         };

@@ -42,24 +42,24 @@ pub const LOW_HICNT: &str = "LOW_HICNT";
 pub const FOREIGN_CLIP_SUPPORT: &str = "FOREIGN_CLIP_SUPPORT";
 
 /// The FILTER label for long insertions with few high-quality ALT reads that no read carries
-/// whole, which VarDict assembled from soft clips.
-pub const UNSPANNED_INSERTION: &str = "UNSPANNED_INSERTION";
+/// whole.
+pub const LOW_SUPPORT_LONG_INSERTION: &str = "LOW_SUPPORT_LONG_INSERTION";
 
-/// The rule of the UNSPANNED_INSERTION label: which insertions it tests, by their inserted bases,
-/// and the high-quality ALT reads one needs.
+/// The rule of the LOW_SUPPORT_LONG_INSERTION label: which insertions it tests, by the bases they
+/// add, and the high-quality ALT reads one needs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct UnspannedInsertion {
-    /// The fewest inserted bases of an insertion the label tests.
+pub struct LowSupportLongInsertion {
+    /// The fewest added bases of an insertion the label tests.
     pub min_length: usize,
     /// The number of high-quality ALT reads below which a tested insertion is labelled.
     pub min_hicnt: i32,
 }
 
-impl UnspannedInsertion {
+impl LowSupportLongInsertion {
     /// Whether a call is one the label tests, and so is looked for in the reads when they are
-    /// given: an insertion of at least the length, with its high-quality ALT reads known and under
-    /// the floor, and with REF reads, since a site where every read carries the insertion is the
-    /// sample's own sequence.
+    /// given: an insertion, or a Complex call longer than its REF, adding at least the length,
+    /// with its high-quality ALT reads known and under the floor, and with REF reads, since a
+    /// site where every read carries the insertion is the sample's own sequence.
     pub fn tests(&self, variant: &TumorOnlyVariant) -> bool {
         let hicnt = variant.hicnt_value();
         variant
@@ -107,9 +107,9 @@ pub struct FilterThresholds {
     /// Whether SNVs are recounted from the reads and held to the LOW_HICNT threshold; applied only
     /// with that threshold.
     pub foreign_clip_support: bool,
-    /// The insertions to label when no read carries them whole, and the high-quality ALT reads
-    /// that exempt one.
-    pub unspanned_insertion: Option<UnspannedInsertion>,
+    /// The long insertions to label when they have few high-quality ALT reads and no read carries
+    /// them whole.
+    pub low_support_long_insertion: Option<LowSupportLongInsertion>,
 }
 
 impl FilterThresholds {
@@ -126,7 +126,7 @@ impl FilterThresholds {
             || self.low_qmean.is_some()
             || self.low_dp.is_some()
             || self.low_hicnt.is_some()
-            || self.unspanned_insertion.is_some()
+            || self.low_support_long_insertion.is_some()
     }
 
     /// The read floor FOREIGN_CLIP_SUPPORT holds recounted SNVs to: LOW_HICNT's, when both apply.
@@ -234,10 +234,10 @@ impl FilterThresholds {
                 format!(r#"SNV with at least {min_hicnt} high-quality ALT reads by VarDict (FORMAT HICNT), a count the reads it reassigned to the allele (FORMAT REALIGNED_FRAC_OF_DP) could have lifted to {min_hicnt}, but fewer than {min_hicnt} in the reads it was run on: reads carrying the ALT base aligned at the site at or above VarDict's -q, once its clipping of mismatches at read ends is replayed, or first in a soft clip at the site whose later bases match the reference. The shortfall is most often a soft clip VarDict added after comparing only its second base to the reference. Every count is left as VarDict wrote it."#),
             ));
         }
-        if let Some(rule) = self.unspanned_insertion {
+        if let Some(rule) = self.low_support_long_insertion {
             filters.push((
-                UNSPANNED_INSERTION,
-                format!(r#"Insertion of at least {} bases with fewer than {} high-quality ALT reads (FORMAT HICNT) and at least one REF read (FORMAT AD) that no read carries whole. An aligner soft-clips a read at an insertion this long rather than opening a gap, so VarDict assembles the call from the soft clips at its ends, taking the inserted bases from the reference between a clip and where its bases match. When the reads VarDict ran on are given, a read with every inserted base in one insertion operation, at a mean quality at or above VarDict's -q, at the call's position or one its insertion slides to, exempts the call. Every count is left as VarDict wrote it."#, rule.min_length, rule.min_hicnt),
+                LOW_SUPPORT_LONG_INSERTION,
+                format!(r#"Insertion, or Complex call longer than its REF, adding at least {} bases to the reference, with fewer than {} high-quality ALT reads (FORMAT HICNT), at least one read VarDict counted as REF (FORMAT AD, left missing for Complex calls) and, when the reads VarDict ran on are given, no read carrying it whole: for an insertion, every added base in one insertion operation at a mean quality at or above VarDict's -q, at the call's position or one its insertion slides to; for a Complex call, its ALT spelled by the read's bases over its REF and the insertion operations among them. Every count is left as VarDict wrote it."#, rule.min_length, rule.min_hicnt),
             ));
         }
         filters
@@ -351,11 +351,11 @@ impl FilterThresholds {
             labels.push(FOREIGN_CLIP_SUPPORT);
         }
         if self
-            .unspanned_insertion
+            .low_support_long_insertion
             .is_some_and(|rule| rule.tests(variant))
             && reads.spanning.is_none_or(|spanning| spanning == 0)
         {
-            labels.push(UNSPANNED_INSERTION);
+            labels.push(LOW_SUPPORT_LONG_INSERTION);
         }
         labels
     }
@@ -1140,9 +1140,9 @@ mod tests {
         }
     }
 
-    fn unspanned() -> FilterThresholds {
+    fn low_support() -> FilterThresholds {
         FilterThresholds {
-            unspanned_insertion: Some(UnspannedInsertion {
+            low_support_long_insertion: Some(LowSupportLongInsertion {
                 min_length: 50,
                 min_hicnt: 8,
             }),
@@ -1151,23 +1151,25 @@ mod tests {
     }
 
     #[rstest]
-    #[case::few_reads_and_no_reads_given(insertion(60, 3, 10), None, vec![UNSPANNED_INSERTION])]
-    #[case::few_reads_and_no_read_carries_it(insertion(60, 3, 10), Some(0), vec![UNSPANNED_INSERTION])]
+    #[case::few_reads_and_no_reads_given(insertion(60, 3, 10), None, vec![LOW_SUPPORT_LONG_INSERTION])]
+    #[case::few_reads_and_no_read_carries_it(insertion(60, 3, 10), Some(0), vec![LOW_SUPPORT_LONG_INSERTION])]
     #[case::a_read_carries_it(insertion(60, 3, 10), Some(1), vec![])]
-    #[case::at_the_length(insertion(50, 7, 10), None, vec![UNSPANNED_INSERTION])]
+    #[case::at_the_length(insertion(50, 7, 10), None, vec![LOW_SUPPORT_LONG_INSERTION])]
     #[case::under_the_length(insertion(49, 3, 10), None, vec![])]
     #[case::at_the_floor(insertion(60, 8, 10), None, vec![])]
     #[case::no_ref_reads(insertion(60, 3, 0), None, vec![])]
     #[case::hicnt_unknown(insertion(60, i32::missing(), 10), None, vec![])]
     #[case::a_deletion(TumorOnlyVariant { ref_allele: insertion(60, 3, 10).alt_allele, ..insertion(60, 3, 10) }, None, vec![])]
-    #[case::a_complex_call(TumorOnlyVariant { ref_allele: "GA", ..insertion(60, 3, 10) }, None, vec![])]
+    #[case::a_complex_call_adding_the_length(TumorOnlyVariant { ref_allele: "GA", variant_type: "Complex", ..insertion(51, 3, 10) }, None, vec![LOW_SUPPORT_LONG_INSERTION])]
+    #[case::a_complex_call_adding_less(TumorOnlyVariant { ref_allele: "GA", variant_type: "Complex", ..insertion(50, 3, 10) }, None, vec![])]
+    #[case::a_complex_call_a_read_spells(TumorOnlyVariant { ref_allele: "GA", variant_type: "Complex", ..insertion(51, 3, 10) }, Some(1), vec![])]
     #[case::a_symbolic_allele(TumorOnlyVariant { alt_allele: "<DUP>", ..insertion(60, 3, 10) }, None, vec![])]
-    fn test_unspanned_insertion(
+    fn test_low_support_long_insertion(
         #[case] call: TumorOnlyVariant<'static>,
         #[case] spanning: Option<i32>,
         #[case] expected: Vec<&str>,
     ) {
-        let filters = unspanned();
+        let filters = low_support();
         assert!(filters.any());
         let reads = ReadEvidence {
             spanning,
@@ -1175,30 +1177,30 @@ mod tests {
         };
         assert_eq!(filters.labels(&call, reads), expected);
         assert_eq!(
-            filters.unspanned_insertion.unwrap().tests(&call),
+            filters.low_support_long_insertion.unwrap().tests(&call),
             spanning.is_some() || !expected.is_empty()
         );
         assert!(FilterThresholds::default().labels(&call, reads).is_empty());
     }
 
     #[test]
-    fn test_unspanned_insertion_beside_low_hicnt() {
+    fn test_low_support_long_insertion_beside_low_hicnt() {
         let filters = FilterThresholds {
             low_hicnt: Some(2),
-            ..unspanned()
+            ..low_support()
         };
         assert_eq!(
             filters.labels(&insertion(60, 1, 10), ReadEvidence::default()),
-            vec![LOW_HICNT, UNSPANNED_INSERTION]
+            vec![LOW_HICNT, LOW_SUPPORT_LONG_INSERTION]
         );
     }
 
     #[test]
-    fn test_unspanned_insertion_header_line_states_the_thresholds() {
+    fn test_low_support_long_insertion_header_line_states_the_thresholds() {
         assert_eq!(
-            unspanned().header_lines(),
+            low_support().header_lines(),
             vec![
-                r#"##FILTER=<ID=UNSPANNED_INSERTION,Description="Insertion of at least 50 bases with fewer than 8 high-quality ALT reads (FORMAT HICNT) and at least one REF read (FORMAT AD) that no read carries whole. An aligner soft-clips a read at an insertion this long rather than opening a gap, so VarDict assembles the call from the soft clips at its ends, taking the inserted bases from the reference between a clip and where its bases match. When the reads VarDict ran on are given, a read with every inserted base in one insertion operation, at a mean quality at or above VarDict's -q, at the call's position or one its insertion slides to, exempts the call. Every count is left as VarDict wrote it.">"#
+                r#"##FILTER=<ID=LOW_SUPPORT_LONG_INSERTION,Description="Insertion, or Complex call longer than its REF, adding at least 50 bases to the reference, with fewer than 8 high-quality ALT reads (FORMAT HICNT), at least one read VarDict counted as REF (FORMAT AD, left missing for Complex calls) and, when the reads VarDict ran on are given, no read carrying it whole: for an insertion, every added base in one insertion operation at a mean quality at or above VarDict's -q, at the call's position or one its insertion slides to; for a Complex call, its ALT spelled by the read's bases over its REF and the insertion operations among them. Every count is left as VarDict wrote it.">"#
             ]
         );
     }

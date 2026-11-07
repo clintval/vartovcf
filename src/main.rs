@@ -14,14 +14,14 @@ use signal_hook::consts::{SIGINT, SIGTERM};
 use signal_hook::flag;
 
 use vartovcflib::fill::BedLayout;
-use vartovcflib::filter::{FilterThresholds, UnspannedInsertion};
+use vartovcflib::filter::{FilterThresholds, LowSupportLongInsertion};
 use vartovcflib::mnv::{LeakRate, LeakyMnvFix};
 use vartovcflib::reads::{ReadFiles, ReadOptions, parse_flags, split_bams};
 use vartovcflib::{Options, vartovcf};
 
 #[derive(Clone, Debug, Parser)]
 #[command(version, about)]
-#[command(group = ArgGroup::new("reads_users").multiple(true).args(["fix_leaky_mnv", "filter_foreign_clip_support", "filter_unspanned_insertion"]))]
+#[command(group = ArgGroup::new("reads_users").multiple(true).args(["fix_leaky_mnv", "filter_foreign_clip_support", "filter_low_support_long_insertion"]))]
 struct Opt {
     /// The indexed FASTA reference VarDict was run with, which every record is checked and normalized against
     #[arg(short, long)]
@@ -84,7 +84,7 @@ struct Opt {
     #[arg(long, value_name = "RATE", default_value_t = LeakRate::default().value(), requires = "fix_leaky_mnv", conflicts_with = "reads")]
     leaky_mnv_rate: f64,
 
-    /// The indexed BAM VarDict read for the tumor (or only) sample, or `tumor.bam|normal.bam` for both, as VarDict's -b takes them, for --fix-leaky-mnv, --filter-foreign-clip-support or --filter-unspanned-insertion. With --fix-leaky-mnv, each partial row's reads are followed to the MNV's other changed bases, and only those that are the MNV's own molecules, or consistent with leakage, are folded; a row whose reads are another allele's keeps them. With --filter-foreign-clip-support, each SNV's high-quality ALT reads are recounted. With --filter-unspanned-insertion, a read carrying an insertion whole exempts it. See the README
+    /// The indexed BAM VarDict read for the tumor (or only) sample, or `tumor.bam|normal.bam` for both, as VarDict's -b takes them, for --fix-leaky-mnv, --filter-foreign-clip-support or --filter-low-support-long-insertion. With --fix-leaky-mnv, each partial row's reads are followed to the MNV's other changed bases, and only those that are the MNV's own molecules, or consistent with leakage, are folded; a row whose reads are another allele's keeps them. With --filter-foreign-clip-support, each SNV's high-quality ALT reads are recounted. With --filter-low-support-long-insertion, a read carrying an insertion whole exempts it. See the README
     #[arg(long, value_name = "BAMS", requires = "reads_users")]
     reads: Option<String>,
 
@@ -172,18 +172,21 @@ struct Opt {
     #[arg(long, requires_all = ["reads", "filter_low_hicnt"])]
     filter_foreign_clip_support: bool,
 
-    /// Label insertions of at least --filter-unspanned-insertion-min-length bases UNSPANNED_INSERTION when they have fewer high-quality ALT reads (FORMAT HICNT) than this and at least one REF read: an aligner soft-clips a read at an insertion that long rather than opening a gap, so VarDict assembles the call from the clips and no read carries it whole. With --reads, a read carrying the insertion whole as an insertion operation exempts the call. Counts are left as VarDict wrote them; not applied when not given
-    #[arg(long, value_name = "MIN_HICNT")]
-    filter_unspanned_insertion: Option<i32>,
+    /// Label insertions, and Complex calls longer than their REF, that add at least --filter-low-support-long-insertion-min-length bases LOW_SUPPORT_LONG_INSERTION when they have fewer high-quality ALT reads (FORMAT HICNT) than this and at least one REF read. With --reads, a read carrying the call whole exempts it. Counts are left as VarDict wrote them; not applied when not given
+    #[arg(
+        long,
+        value_name = "MIN_HICNT",
+        requires = "filter_low_support_long_insertion_min_length"
+    )]
+    filter_low_support_long_insertion: Option<i32>,
 
-    /// Only test insertions of at least this many inserted bases for UNSPANNED_INSERTION
+    /// Test only calls that add at least this many bases for LOW_SUPPORT_LONG_INSERTION; given with --filter-low-support-long-insertion
     #[arg(
         long,
         value_name = "BASES",
-        default_value_t = 50,
-        requires = "filter_unspanned_insertion"
+        requires = "filter_low_support_long_insertion"
     )]
-    filter_unspanned_insertion_min_length: usize,
+    filter_low_support_long_insertion_min_length: Option<usize>,
 }
 
 /// Main binary entrypoint.
@@ -274,12 +277,13 @@ fn main() -> Result<(), Error> {
             low_dp: opt.filter_low_dp,
             low_hicnt: opt.filter_low_hicnt,
             foreign_clip_support: opt.filter_foreign_clip_support,
-            unspanned_insertion: opt.filter_unspanned_insertion.map(|min_hicnt| {
-                UnspannedInsertion {
-                    min_length: opt.filter_unspanned_insertion_min_length,
+            low_support_long_insertion: opt
+                .filter_low_support_long_insertion
+                .zip(opt.filter_low_support_long_insertion_min_length)
+                .map(|(min_hicnt, min_length)| LowSupportLongInsertion {
+                    min_length,
                     min_hicnt,
-                }
-            }),
+                }),
         },
     };
 

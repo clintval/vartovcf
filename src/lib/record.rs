@@ -377,13 +377,15 @@ impl<'a> TumorOnlyVariant<'a> {
                 .all(|base| base.is_ascii_alphabetic())
     }
 
-    /// The bases this record inserts after its REF base, when it is an insertion of sequence.
+    /// The bases this record adds to the reference: an insertion's inserted bases, or the bases a
+    /// Complex call's ALT has beyond its REF, as a call that inserts bases and changes the bases
+    /// beside them is written; `None` for a call that adds none, and for a symbolic allele.
     pub fn inserted_length(&self) -> Option<usize> {
-        (self.variant_class() == Some("Insertion")
-            && self
-                .alt_allele
-                .bytes()
-                .all(|base| base.is_ascii_alphabetic()))
+        let sequence = |allele: &str| allele.bytes().all(|base| base.is_ascii_alphabetic());
+        (matches!(self.variant_class(), Some("Insertion" | "Complex"))
+            && self.alt_allele.len() > self.ref_allele.len()
+            && sequence(self.ref_allele)
+            && sequence(self.alt_allele))
         .then(|| self.alt_allele.len() - self.ref_allele.len())
     }
 
@@ -1120,9 +1122,12 @@ mod tests {
     #[rstest]
     #[case("G", "GTT", Some(2))]
     #[case("g", "gacgt", Some(4))]
+    #[case("GA", "GTTTC", Some(3))]
+    #[case("T", "ACGTA", Some(4))]
+    #[case("GA", "GT", None)]
     #[case("G", "A", None)]
     #[case("GTT", "G", None)]
-    #[case("GA", "GTTA", None)]
+    #[case("GAT", "GC", None)]
     #[case("G", "GT&T", None)]
     #[case("G", "<DUP>", None)]
     #[case("G", "G", None)]

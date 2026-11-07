@@ -25,10 +25,11 @@
 //! over its `-r` floor; the recount leaves such clips out.
 //!
 //! The pileup also looks for the reads that carry an insertion whole, as an insertion operation of
-//! its bases: an aligner soft-clips a read at an insertion too long to open as a gap, so VarDict
-//! assembles such an insertion from the soft clips at its ends (`VariationRealigner.realignlgins`)
-//! and no read holds it. A read whose insertion operation sits where the insertion slides to, in
-//! a repeat, carries it too.
+//! its bases, which an aligner writes only for an insertion short enough to open as a gap: it
+//! soft-clips a read at a longer one, and VarDict then assembles the insertion from the soft clips
+//! at its ends (`VariationRealigner.realignlgins`). A read whose insertion operation sits where the
+//! insertion slides to, in a repeat, carries it too, and a read carries a Complex call when its
+//! bases and insertion operations over the call's REF spell its ALT.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -179,7 +180,7 @@ impl Recount {
 pub struct ReadEvidence {
     /// An SNV's recount, for FOREIGN_CLIP_SUPPORT.
     pub recount: Option<Recount>,
-    /// The reads carrying an insertion whole as an insertion operation, for UNSPANNED_INSERTION.
+    /// The reads carrying an insertion whole, for LOW_SUPPORT_LONG_INSERTION.
     pub spanning: Option<i32>,
 }
 
@@ -465,7 +466,8 @@ impl ReadSources {
     }
 
     /// Counts the reads of the tumor (or only) sample that carry an insertion whole: those with an
-    /// insertion operation of its bases, at or above `-q`, at its position or one it slides to.
+    /// insertion operation of its bases, at or above `-q`, at its position or one it slides to, or
+    /// that spell a Complex call's ALT over its REF.
     pub fn spanning(
         &mut self,
         call: &TumorOnlyVariant,
@@ -476,7 +478,7 @@ impl ReadSources {
         let survey = self.survey_sample(0, &window)?;
         let mut spanning = 0;
         for read in &survey.reads {
-            spanning += i32::from(read.carries(call, options, reference)?);
+            spanning += i32::from(read.carries(call, &window, options, reference)?);
         }
         self.spans.rows += 1;
         self.spans.spanned += usize::from(spanning > 0);
@@ -851,14 +853,20 @@ impl ReadView {
         }
     }
 
-    /// Whether the read carries an insertion row's inserted bases whole: in an insertion operation
-    /// whose bases' mean quality reaches `-q`, at the row's position or one the insertion slides to.
+    /// Whether the read carries a row's insertion whole: an insertion row's inserted bases in an
+    /// insertion operation whose bases' mean quality reaches `-q`, at the row's position or one
+    /// the insertion slides to, or a Complex row's ALT spelled by the read's bases over its REF
+    /// and the insertion operations among them, at that quality.
     fn carries(
         &self,
         row: &TumorOnlyVariant,
+        window: &Window,
         options: ReadOptions,
         reference: &mut Reference,
     ) -> Result<bool, String> {
+        if row.variant_class() != Some("Insertion") {
+            return Ok(self.spells(row, window, options));
+        }
         let inserted = row.alt_allele.as_bytes()[row.ref_allele.len()..].to_ascii_uppercase();
         for insertion in &self.insertions {
             if insertion.quality >= options.base_quality
@@ -873,6 +881,31 @@ impl ReadView {
             }
         }
         Ok(false)
+    }
+
+    /// Whether the read's bases at every position of a row's REF, with the bases of its insertion
+    /// operations before each and after the last, spell the row's ALT, every insertion at a mean
+    /// quality reaching `-q`.
+    fn spells(&self, row: &TumorOnlyVariant, window: &Window, options: ReadOptions) -> bool {
+        let mut spelled: Vec<u8> = Vec::new();
+        for position in (row.start - 1)..=row.end {
+            if position >= row.start {
+                let Some(base) = window
+                    .column(position)
+                    .and_then(|column| self.bases[column])
+                else {
+                    return false;
+                };
+                spelled.push(base.base);
+            }
+            for insertion in self.insertions.iter().filter(|op| op.anchor == position) {
+                if insertion.quality < options.base_quality {
+                    return false;
+                }
+                spelled.extend_from_slice(&insertion.bases);
+            }
+        }
+        spelled == row.alt_allele.to_ascii_uppercase().as_bytes()
     }
 
     /// The soft clip starting at a column, if the read has one there: VarDict's own, from a
@@ -2851,18 +2884,21 @@ mod tests {
         survey
             .reads
             .iter()
-            .map(|read| read.carries(row, options, &mut reference).unwrap())
+            .map(|read| {
+                read.carries(row, &window(), options, &mut reference)
+                    .unwrap()
+            })
             .collect()
     }
 
     /// A fragment at 101 with these bases inserted after this position, at this quality, and the
-    /// reference elsewhere over 101-120.
-    fn inserting(anchor: usize, inserted: &str, quality: u8) -> Frag {
+    /// reference elsewhere over 101-120, but for these substitutions.
+    fn inserting(anchor: usize, inserted: &str, quality: u8, edits: &[(u64, u8)]) -> Frag {
         let before = anchor - 100;
         let bases = format!(
             "{}{inserted}{}",
-            &edited(&[])[..before],
-            &edited(&[])[before..]
+            &edited(edits)[..before],
+            &edited(edits)[before..]
         );
         let mut quals = vec![40u8; bases.len()];
         quals[before..before + inserted.len()].fill(quality);
@@ -2888,13 +2924,38 @@ mod tests {
         #[case] expected: bool,
     ) {
         let frags = vec![
-            inserting(anchor, inserted, quality),
+            inserting(anchor, inserted, quality, &[]),
             Frag::at(101).bases(edited(&[])).quals(quals(&[])),
         ];
         assert_eq!(
             carries_frags(frags, &row(110, "C", "CGTAC", 1)),
             vec![expected, false]
         );
+    }
+
+    #[rstest]
+    #[case::the_insertion_before_the_changed_base(110, "ACGT", 40, &[(111, b'T')], true)]
+    #[case::the_insertion_without_the_changed_base(110, "ACGT", 40, &[], false)]
+    #[case::the_changed_base_without_the_insertion(110, "", 40, &[(111, b'T')], false)]
+    #[case::the_insertion_slid_along_the_repeat(112, "ACGT", 40, &[(111, b'T')], false)]
+    #[case::below_q(110, "ACGT", 20, &[(111, b'T')], false)]
+    fn test_a_read_carries_a_complex_call_by_spelling_its_alt(
+        #[case] anchor: usize,
+        #[case] inserted: &str,
+        #[case] quality: u8,
+        #[case] edits: &[(u64, u8)],
+        #[case] expected: bool,
+    ) {
+        let frag = if inserted.is_empty() {
+            Frag::at(101).bases(edited(edits)).quals(quals(&[]))
+        } else {
+            inserting(anchor, inserted, quality, edits)
+        };
+        let complex = TumorOnlyVariant {
+            variant_type: "Complex",
+            ..row(111, "G", "ACGTT", 1)
+        };
+        assert_eq!(carries_frags(vec![frag], &complex), vec![expected]);
     }
 
     #[rstest]

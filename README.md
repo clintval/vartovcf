@@ -132,7 +132,7 @@ Six of the labels are patterns in the reads:
 | `LOW_HICNT` | `HICNT` is below the threshold |
 | `LOW_DP` | `DP` is below the threshold |
 | `FOREIGN_CLIP_SUPPORT` | An SNV with `HICNT` at or above the `LOW_HICNT` threshold, which its reassigned reads could have lifted there, has fewer high-quality ALT reads than that in `--reads`, aligned or in a soft clip that matches the reference past the ALT base |
-| `UNSPANNED_INSERTION` | An insertion of at least 50 bases (`--filter-unspanned-insertion-min-length`) has fewer high-quality ALT reads than the threshold and at least one REF read, and no read in `--reads`, when given, carries it whole |
+| `LOW_SUPPORT_LONG_INSERTION` | An insertion, or a Complex call longer than its REF, adding at least the length's bases has fewer high-quality ALT reads than the threshold and at least one REF read, and no read in `--reads`, when given, carries it whole |
 
 #### Recounting an SNV's Reads From Soft Clips
 
@@ -157,24 +157,26 @@ vartovcf \
 
 The recount reads each soft clip on its own, where VarDict reads the consensus of the clips at a position, and it does not replay VarDict's turning of an indel near a read end into a soft clip, which the recount never counts as support either way.
 
-#### Labelling Insertions Assembled From Soft Clips
+#### Labelling Long Insertions With Few Reads
 
-An aligner soft-clips a read at an insertion too long to open as a gap, so no read carries the inserted bases in an insertion operation.
-VarDict assembles such an insertion from the soft clips at a position (`VariationRealigner.realignlgins`): it matches the clipped bases to the reference nearby and takes the inserted bases from the reference between the clip and its match, a tandem copy, counting the clipped reads toward the call.
-With `--filter-unspanned-insertion`, an insertion of at least `--filter-unspanned-insertion-min-length` bases (default 50) with fewer high-quality ALT reads than the threshold, and at least one REF read, is labelled `UNSPANNED_INSERTION`.
-With `--reads`, a read carrying the insertion whole, in one insertion operation at the call's position or one its insertion slides to, exempts the call; every count stays as VarDict wrote it.
-This repository's test data has two 60-base copies carried by three clipped reads, which VarDict counts as four, one carried whole by two reads, and a 16-base copy:
+With `--filter-low-support-long-insertion` and `--filter-low-support-long-insertion-min-length`, given together, an insertion that adds at least the length's bases with fewer high-quality ALT reads than the threshold, and at least one REF read, is labelled `LOW_SUPPORT_LONG_INSERTION`.
+A Complex call whose ALT is longer than its REF counts by the bases it adds, as VarDict writes an insertion beside a changed base.
+This is a rule on length and support alone: an aligner soft-clips a read at an insertion too long to open as a gap, VarDict then assembles the insertion from the soft clips at its ends (`VariationRealigner.realignlgins`), and the label marks such a call when few high-quality reads back it.
+A pipeline chooses both values from its own data, the length from where its aligner stops writing an insertion operation and the threshold from the support its true insertions reach, so neither has a default.
+With `--reads`, a read carrying the call whole, in one insertion operation of its bases or, for a Complex call, by spelling its ALT, exempts it; with a short-read aligner this rarely applies, as such a read is what the assembly from clips lacks.
+Every count stays as VarDict wrote it.
+This repository's test data has three 60-base copies on clipped reads, one of them beside a changed base, one copy carried whole by two reads, and a 16-base copy:
 
 ```bash
-vartovcf --reference "tests/reference.fa" --input "tests/calls.unspanned-insertion.var" --filter-unspanned-insertion 8 --output "calls.vcf.gz"
-bcftools query -f '%POS\t%FILTER[\t%AD\t%HICNT]\n' "calls.vcf.gz"
+vartovcf --reference "tests/reference.fa" --input "tests/calls.low-support-long-insertion.var" --filter-low-support-long-insertion 8 --filter-low-support-long-insertion-min-length 50 --output "calls.vcf.gz"
+bcftools query -i 'STRLEN(ALT)-STRLEN(REF)>=50' -f '%POS\t%INFO/TYPE\t%FILTER[\t%AD\t%HICNT]\n' "calls.vcf.gz"
 ```
 
 ```text
-1400	UNSPANNED_INSERTION	5,4	4
-1700	UNSPANNED_INSERTION	3,2	2
-2000	PASS	5,2	2
-2300	PASS	0,4	4
+1400	Insertion	LOW_SUPPORT_LONG_INSERTION	5,4	4
+1700	Insertion	LOW_SUPPORT_LONG_INSERTION	3,2	2
+2300	Insertion	PASS	0,4	4
+2661	Complex	LOW_SUPPORT_LONG_INSERTION	.,3	3
 ```
 
 The insertion at 1700 passes once `--reads` shows the two reads carrying it whole, and the one at 2300 is never labelled, as no read there carries the reference.
