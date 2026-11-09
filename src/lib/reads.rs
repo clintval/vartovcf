@@ -45,6 +45,7 @@ use streampile::{
     AgreementStrategy, DisagreementStrategy, EntryKind, RecordSource, StreamingPileupBuilder,
 };
 
+use crate::fill::parse_segment;
 use crate::mnv::{ReadFate, ReadFates, is_sub_event, is_substitution};
 use crate::record::TumorOnlyVariant;
 use crate::reference::Reference;
@@ -445,11 +446,13 @@ impl<R: bgzf::io::BufRead + bgzf::io::Seek> RecordSource for Query<'_, R> {
     }
 }
 
-/// The reference bases over the span piled up, starting at a 0-based position.
+/// The reference bases over the span piled up, starting at a 0-based position, and the 1-based,
+/// inclusive VarDict region the row came from, if known.
 struct Window {
     contig: String,
     start: usize,
     reference: Vec<u8>,
+    region: Option<(u64, u64)>,
 }
 
 impl Window {
@@ -466,7 +469,18 @@ impl Window {
             contig: row.contig.to_string(),
             start: start as usize,
             reference: reference.bases(row.contig, start, end)?.to_vec(),
+            region: parse_segment(row.segment)
+                .filter(|&(contig, _, _)| contig == row.contig)
+                .map(|(_, start, end)| (start, end)),
         })
+    }
+
+    /// Whether a column is in the VarDict region, which VarDict only grows alleles into and only
+    /// starts them in; every column is when the region is unknown.
+    fn in_region(&self, column: usize) -> bool {
+        let position = self.start as u64 + column as u64 + 1;
+        self.region
+            .is_none_or(|(start, end)| (start..=end).contains(&position))
     }
 
     /// The column of a 1-based position, if it is in the window.
@@ -848,8 +862,8 @@ impl ReadView {
     }
 
     /// The alleles VarDict counts this read toward over the window, by replaying its walk: an
-    /// allele starts at each mismatch and grows through the following bases as an MNV while they
-    /// are contiguous in the read, not no-calls, at least `-q` plus 5, and either mismatches or
+    /// allele starts at each mismatch in the region and grows through the following bases as an MNV
+    /// while the next base is in the region, they are contiguous in the read, not no-calls, at least `-q` plus 5, and either mismatches or
     /// matches bridged within the gap to a mismatch. An allele with an insertion, deletion or skip
     /// within the gap of either end feeds no substitution row, as VarDict folds it into a complex
     /// allele with the indel. The bases under the clips are left out, as soft-clipped bases are.
@@ -890,6 +904,9 @@ impl ReadView {
             if options.is_good(first.quality) {
                 loop {
                     let next = last + 1;
+                    if !window.in_region(next) {
+                        break;
+                    }
                     let Some(base) = (next < columns).then(|| contiguous(last, next)).flatten()
                     else {
                         break;
@@ -932,7 +949,7 @@ impl ReadView {
                 (indel < column && indel + options.mnv_gap >= column)
                     || (indel >= last && indel <= last + options.mnv_gap)
             });
-            if !dropped && !near_indel {
+            if !dropped && !near_indel && window.in_region(column) {
                 let in_read = at(last).expect("the last base is held").query_position
                     - self.leading_clip
                     - clips.head;
@@ -1560,6 +1577,7 @@ mod tests {
             contig: "chr1".to_string(),
             start: 100,
             reference: REFERENCE.to_vec(),
+            region: None,
         }
     }
 
@@ -2791,6 +2809,55 @@ mod tests {
 
     fn counts(recount: Recount) -> (i32, i32, i32) {
         (recount.aligned, recount.clean_clips, recount.foreign_clips)
+    }
+
+    #[rstest]
+    #[case::no_region(None, 0)]
+    #[case::a_region_past_the_snv(Some((101, 120)), 0)]
+    #[case::a_region_ending_at_the_snv(Some((101, 110)), 1)]
+    #[case::a_region_starting_past_the_snv(Some((111, 120)), 0)]
+    fn test_an_allele_grows_and_starts_only_in_the_region_as_vardict_walks_it(
+        #[case] region: Option<(u64, u64)>,
+        #[case] aligned: i32,
+    ) {
+        let (_dir, path) = crate::reference::tests::fasta(&[("chr1", &"ACGT".repeat(50))]);
+        let mut reference = Reference::from_path(&path).unwrap();
+        let mut builder = SamBuilder::new().read_length(REFERENCE.len());
+        builder.add_frag(
+            Frag::at(101)
+                .bases(edited(&[(110, b'T'), (111, b'A')]))
+                .quals(quals(&[])),
+        );
+        let window = Window { region, ..window() };
+        let options = ReadOptions::default();
+        let survey = survey(builder.to_source(), builder.header(), &window, options).unwrap();
+        let recount = recount(
+            &survey,
+            &window,
+            &row(110, "C", "T", 2),
+            options,
+            &mut reference,
+        )
+        .unwrap();
+        assert_eq!(recount.aligned, aligned);
+    }
+
+    #[rstest]
+    #[case::the_rows_region("chr1:101-110", Some((101, 110)))]
+    #[case::another_contigs_region("chr2:101-110", None)]
+    #[case::no_region("", None)]
+    fn test_a_window_takes_the_region_of_its_row(
+        #[case] segment: &'static str,
+        #[case] expected: Option<(u64, u64)>,
+    ) {
+        let (_dir, path) = crate::reference::tests::fasta(&[("chr1", &"ACGT".repeat(50))]);
+        let mut reference = Reference::from_path(&path).unwrap();
+        let call = TumorOnlyVariant {
+            segment,
+            ..row(110, "C", "T", 2)
+        };
+        let window = Window::around(&call, ReadOptions::default(), &mut reference).unwrap();
+        assert_eq!(window.region, expected);
     }
 
     #[rstest]

@@ -280,15 +280,17 @@ impl<'a> TumorOnlyVariant<'a> {
         }
     }
 
-    /// Return the most reads VarDict can have reassigned to the ALT allele by local realignment
-    /// or MNV merging, read back from REALIGNED_FRAC_OF_DP: VarDict divides that count by a depth
-    /// no larger than DP or the ALT reads, whichever is larger, and rounds half-even to 4 decimals.
-    /// Unbounded when the fraction is missing.
+    /// Return an upper bound on the reads VarDict reassigned to the ALT allele by local realignment
+    /// or MNV merging, from REALIGNED_FRAC_OF_DP: VarDict divides that count by a depth no larger
+    /// than DP or the ALT reads, whichever is larger, and rounds half-even to 4 decimals. Unbounded
+    /// when the fraction is missing, and no fraction is taken below 0.
     pub fn max_reassigned_reads(&self) -> i64 {
         if self.af_adjusted.is_missing() || !self.af_adjusted.is_finite() {
             return i64::MAX;
         }
-        let ten_thousandths = (f64::from(self.af_adjusted) * 10_000.0).round() as i64;
+        let ten_thousandths = (f64::from(self.af_adjusted) * 10_000.0)
+            .round()
+            .clamp(0.0, 1e9) as i64;
         let depth = i64::from(self.depth.max(self.alt_depth).max(0));
         (2 * ten_thousandths + 1) * depth / 20_000
     }
@@ -1161,6 +1163,9 @@ mod tests {
     #[case::one_of_14(0.0714, 14, 2, 1)]
     #[case::two_of_1_000(0.002, 1_000, 3, 2)]
     #[case::a_depth_raised_to_the_alt_reads(0.25, 10, 12, 3)]
+    #[case::one_over_between_10_000_and_20_000(0.0001, 15_000, 2, 2)]
+    #[case::a_negative_fraction_taken_as_none(-0.5, 100, 2, 0)]
+    #[case::the_largest_fraction_without_overflow(f32::MAX, 100, 2, 10_000_000)]
     fn test_tumor_only_variant_max_reassigned_reads(
         variants: Vec<TumorOnlyVariant<'static>>,
         #[case] af_adjusted: f32,

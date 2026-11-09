@@ -37,8 +37,8 @@ pub const LOW_DP: &str = "LOW_DP";
 /// The FILTER label for calls with few high-quality ALT reads.
 pub const LOW_HICNT: &str = "LOW_HICNT";
 
-/// The FILTER label for SNVs that VarDict counted at the read floor but whose reads fall short of
-/// it when recounted.
+/// The FILTER label for SNVs that VarDict counted at or above the read floor, by no more than the
+/// reads it reassigned could add, but whose reads fall short of it when recounted.
 pub const FOREIGN_CLIP_SUPPORT: &str = "FOREIGN_CLIP_SUPPORT";
 
 /// The thresholds of the FILTER labels to apply; a label without a threshold is not applied.

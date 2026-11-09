@@ -459,7 +459,7 @@ fn convert<I: Read>(
     if let (Some(min_hicnt), Some(sources)) = (filters.foreign_clip_support_floor(), &sink.reads) {
         let recounts = sources.recounts;
         info!(
-            "Recounted {} SNV(s) from the reads: {} fell short of {} high-quality ALT reads once the soft clips VarDict added that do not match the reference were left out.",
+            "Recounted {} SNV(s) from the reads: {} fell short of {} high-quality ALT reads in the reads VarDict was run on.",
             recounts.rows, recounts.short, min_hicnt
         );
         if recounts.unsupported * 2 > recounts.rows {

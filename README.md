@@ -139,7 +139,7 @@ VarDict adds the reads of a soft clip to an SNV when the clip starts at the SNV 
 A read end that is foreign to the site, such as a chimeric template end, can so lift a one-read SNV over VarDict's `-r` floor.
 With `--reads`, `--filter-foreign-clip-support` recounts each SNV's high-quality ALT reads from the BAM, as the reads carrying the ALT base aligned at the site, once VarDict's clipping of mismatches at read ends is replayed, and the reads whose soft clip starts at the site with the ALT base and matches the reference past it, by VarDict's own test.
 The floor is the `--filter-low-hicnt` threshold, so a call kept by that label is held to the same count.
-Only an SNV whose `HICNT` is at the floor or above, and less than the floor plus the reads VarDict reassigned to it, is recounted: VarDict adds soft clips to an SNV only as reassigned reads, and their number can be read back from `REALIGNED_FRAC_OF_DP`, so an SNV that reached the floor without them is never read.
+Only an SNV whose `HICNT` is at the floor or above, and less than the floor plus the reads VarDict reassigned to it, is recounted: VarDict adds soft clips to an SNV only as reassigned reads, and `REALIGNED_FRAC_OF_DP` bounds their number from above, so an SNV that reached the floor without them is never read.
 An SNV that falls short of the floor in the recount is labelled `FOREIGN_CLIP_SUPPORT`; every count stays as VarDict wrote it.
 Set the `--reads-*` options to the values VarDict ran with, as for [deciding partials by their reads](#deciding-partials-by-their-reads):
 
