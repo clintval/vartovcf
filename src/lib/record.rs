@@ -377,6 +377,18 @@ impl<'a> TumorOnlyVariant<'a> {
                 .all(|base| base.is_ascii_alphabetic())
     }
 
+    /// The bases this record adds to the reference: an insertion's inserted bases, or the bases a
+    /// Complex call's ALT has beyond its REF, as a call that inserts bases and changes the bases
+    /// beside them is written; `None` for a call that adds none, and for a symbolic allele.
+    pub fn inserted_length(&self) -> Option<usize> {
+        let sequence = |allele: &str| allele.bytes().all(|base| base.is_ascii_alphabetic());
+        (matches!(self.variant_class(), Some("Insertion" | "Complex"))
+            && self.alt_allele.len() > self.ref_allele.len()
+            && sequence(self.ref_allele)
+            && sequence(self.alt_allele))
+        .then(|| self.alt_allele.len() - self.ref_allele.len())
+    }
+
     /// Return the "AF" formatted VCF field for this record: the ALT depth over DP at full precision,
     /// clamped to [0, 1], and missing without an ALT allele or without depth.
     pub fn af_value(&self) -> f32 {
@@ -1105,6 +1117,30 @@ mod tests {
         variant.alt_allele = alt_allele;
         variant.variant_type = variant_type;
         assert_eq!(variant.variant_class(), expected);
+    }
+
+    #[rstest]
+    #[case("G", "GTT", Some(2))]
+    #[case("g", "gacgt", Some(4))]
+    #[case("GA", "GTTTC", Some(3))]
+    #[case("T", "ACGTA", Some(4))]
+    #[case("GA", "GT", None)]
+    #[case("G", "A", None)]
+    #[case("GTT", "G", None)]
+    #[case("GAT", "GC", None)]
+    #[case("G", "GT&T", None)]
+    #[case("G", "<DUP>", None)]
+    #[case("G", "G", None)]
+    fn test_tumor_only_variant_inserted_length(
+        variants: Vec<TumorOnlyVariant<'static>>,
+        #[case] ref_allele: &'static str,
+        #[case] alt_allele: &'static str,
+        #[case] expected: Option<usize>,
+    ) {
+        let mut variant = variants.into_iter().nth(2).unwrap();
+        variant.ref_allele = ref_allele;
+        variant.alt_allele = alt_allele;
+        assert_eq!(variant.inserted_length(), expected);
     }
 
     #[rstest]

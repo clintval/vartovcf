@@ -19,7 +19,7 @@ use crate::filter::FilterThresholds;
 use crate::mnv::{Clusters, Fold, LeakRate, LeakyMnvFix, Merged, Rule, fold_partials};
 use crate::normalize::{Normalized, normalize};
 use crate::output::{Index, Output};
-use crate::reads::{ReadFiles, ReadSources, Recount};
+use crate::reads::{ReadEvidence, ReadFiles, ReadSources, Recount};
 use crate::record::MIN_HOM_ALT_AF;
 use crate::record::TumorNormalVariant;
 use crate::record::TumorOnlyVariant;
@@ -180,7 +180,9 @@ pub struct Options<'a> {
     /// How VarDict turned the BED file's lines into its regions.
     pub fill_gvcf_bed_layout: BedLayout,
     /// The indexed BAMs VarDict read, one per sample, for the fold to decide each partial row by
-    /// its reads and for the FOREIGN_CLIP_SUPPORT label to recount each SNV's; see [`reads`].
+    /// its reads, for the FOREIGN_CLIP_SUPPORT label to recount each SNV's and for the
+    /// LOW_SUPPORT_LONG_INSERTION label to look for reads carrying an insertion whole; see
+    /// [`reads`].
     pub reads: Option<ReadFiles>,
     /// How to fold the partial rows of each MNV back into it, by their counts at a leak rate or
     /// by [`Options::reads`], or `None` to not fold; see [`mnv`].
@@ -469,6 +471,13 @@ fn convert<I: Read>(
             );
         }
     }
+    if let (Some(rule), Some(sources)) = (filters.low_support_long_insertion, &sink.reads) {
+        let spans = sources.spans;
+        info!(
+            "Looked in the reads for {} insertion(s) of at least {} bases with fewer than {} high-quality ALT reads: {} carried whole by a read, so not labelled.",
+            spans.rows, rule.min_length, rule.min_hicnt, spans.spanned
+        );
+    }
     output
         .write_all(&header_text)
         .map_err(|error| format!("Could not write the output: {error}!"))?;
@@ -564,10 +573,13 @@ impl Sink<'_> {
         let written: Vec<TumorOnlyVariant> =
             calls.iter().map(|call| normalized.apply(call)).collect();
         let context = self.context(&written[0])?;
-        let recount = self.recount(&calls[0])?;
+        let reads = ReadEvidence {
+            recount: self.recount(&calls[0])?,
+            spanning: self.spanning(&written[0])?,
+        };
         let extras = Extras {
             context: context.as_deref(),
-            recount,
+            reads,
             ..extras
         };
         let Some(record) = build_record(&mut self.records, &written, status, self.filters, extras)?
@@ -604,6 +616,20 @@ impl Sink<'_> {
         sources
             .recount(call, min_hicnt, &mut self.reference)
             .map(Some)
+    }
+
+    /// The reads of the tumor (or only) sample carrying a normalized call's insertion whole, when
+    /// LOW_SUPPORT_LONG_INSERTION is applied and the call is one it tests.
+    fn spanning(&mut self, call: &TumorOnlyVariant) -> Result<Option<i32>, String> {
+        let (Some(rule), Some(sources)) =
+            (self.filters.low_support_long_insertion, &mut self.reads)
+        else {
+            return Ok(None);
+        };
+        if !rule.tests(call) {
+            return Ok(None);
+        }
+        sources.spanning(call, &mut self.reference).map(Some)
     }
 
     /// Folds the leaky MNV partials of each VarDict region's rows, read back from their sort a
@@ -1158,14 +1184,14 @@ fn is_substitution(call: &Normalized) -> bool {
 }
 
 /// What a record carries besides its calls: the merge of an MNV that absorbed partials, the reads
-/// a partial lost to its MNV per sample, its reference 3-mer, the recount of an SNV's ALT reads
-/// from the reads, and its depth at POS per sample, FORMAT SITE_DP, left out when empty.
+/// a partial lost to its MNV per sample, its reference 3-mer, what the reads say of it for the
+/// labels that asked, and its depth at POS per sample, FORMAT SITE_DP, left out when empty.
 #[derive(Clone, Copy, Default)]
 struct Extras<'e> {
     merged: Option<&'e Merged<'e>>,
     moved: Option<&'e [i32]>,
     context: Option<&'e str>,
-    recount: Option<Recount>,
+    reads: ReadEvidence,
     site_dp: &'e [i32],
 }
 
@@ -1191,7 +1217,7 @@ fn build_record<'w>(
     };
 
     if filters.any() && var.has_alt_reads() {
-        let labels = filters.labels(var, extras.recount);
+        let labels = filters.labels(var, extras.reads);
         if labels.is_empty() {
             variant.push_filter("PASS")?;
         }

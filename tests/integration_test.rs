@@ -1764,11 +1764,8 @@ mod tests {
         Ok(())
     }
 
-    /// A reference-only row for every base of the test reference's chr1, enough output to fill
-    /// several blocks of a bgzipped file.
-    fn reference_only_rows() -> String {
-        let template = read_to_string("tests/calls.g.var").unwrap();
-        let template: Vec<&str> = template.lines().nth(1).unwrap().split('\t').collect();
+    /// The uppercase bases of the test reference's chr1.
+    fn chr1() -> String {
         let fasta = read_to_string("tests/reference.fa").unwrap();
         let chr1: String = fasta
             .split('>')
@@ -1777,8 +1774,16 @@ mod tests {
             .lines()
             .skip(1)
             .collect();
+        chr1.to_uppercase()
+    }
+
+    /// A reference-only row for every base of the test reference's chr1, enough output to fill
+    /// several blocks of a bgzipped file.
+    fn reference_only_rows() -> String {
+        let template = read_to_string("tests/calls.g.var").unwrap();
+        let template: Vec<&str> = template.lines().nth(1).unwrap().split('\t').collect();
         let mut rows = String::new();
-        for (index, base) in chr1.to_uppercase().chars().enumerate() {
+        for (index, base) in chr1().chars().enumerate() {
             let mut fields = template.clone();
             let position = (index + 1).to_string();
             let base = base.to_string();
@@ -2525,6 +2530,278 @@ mod tests {
             .arg("--input").arg("tests/calls.reads.var")
             .args(args);
         cmd.assert().failure().code(1);
+        Ok(())
+    }
+
+    /// The tumor-only reads of `tests/calls.low-support-long-insertion.var`, which is VarDictJava
+    /// 1.8.4's output for them with `-q 30 -Q 20 -F 0x504 -z 1 -P 0 -K`: tandem copies of the
+    /// reference after 1400, 1700, 2000, 2300 and 2600. At 1400, reads a1 and a2 run from the
+    /// reference into a copy of 1401-1460 and are soft-clipped after 1460, and a3 starts inside the
+    /// copy with its end soft-clipped before 1401, as an aligner writes an insertion too long to
+    /// open as a gap, so VarDict assembles the insertion from the clips and counts the three reads
+    /// as four. At 1700 reads b1 and b2 carry a copy of 1701-1760 whole, as a 60-base insertion
+    /// operation, b2's placed one base later, and at 2000 reads c1 and c2 carry a copy of
+    /// 2001-2016 whole. At 2300 three reads start inside a copy of 2301-2360 with its end
+    /// soft-clipped before 2301, and no read carries the reference there. At 2600 three reads are
+    /// soft-clipped after 2660 with a copy of 2601-2660 then a changed base at 2661 in the clip,
+    /// which VarDict writes as a Complex call at 2661, followed by SNVs at 2661-2674 that it takes
+    /// from the clip's later bases one position early. Five reference reads cover each site but
+    /// 2300.
+    fn low_support_long_insertion_reads() -> SamBuilder {
+        let chr1 = chr1();
+        let reference = |start: usize, end: usize| chr1[start - 1..end].to_string();
+        let frag = |name: &str, start: usize, bases: String, cigar: &str, mismatches: i32| {
+            Frag::at(start)
+                .name(name)
+                .quals(vec![40u8; bases.len()])
+                .bases(bases)
+                .cigar(cigar)
+                .attr(Tag::EDIT_DISTANCE, mismatches)
+        };
+        let (a, b, c, e, f) = (1400, 1700, 2000, 2300, 2600);
+        let mut builder = SamBuilder::new();
+        builder.add_frag(frag(
+            "a1",
+            a - 19,
+            reference(a - 19, a + 60) + &reference(a + 1, a + 20),
+            "80M20S",
+            0,
+        ));
+        builder.add_frag(frag(
+            "a2",
+            a - 9,
+            reference(a - 9, a + 60) + &reference(a + 1, a + 30),
+            "70M30S",
+            0,
+        ));
+        builder.add_frag(frag(
+            "a3",
+            a + 1,
+            reference(a + 36, a + 60) + &reference(a + 1, a + 75),
+            "25S75M",
+            0,
+        ));
+        builder.add_frag(frag(
+            "b1",
+            b - 39,
+            reference(b - 39, b + 60) + &reference(b + 1, b + 40),
+            "40M60I40M",
+            60,
+        ));
+        builder.add_frag(frag(
+            "b2",
+            b - 29,
+            reference(b - 29, b + 1)
+                + &reference(b + 2, b + 60)
+                + &reference(b + 1, b + 1)
+                + &reference(b + 2, b + 50),
+            "31M60I49M",
+            60,
+        ));
+        builder.add_frag(frag(
+            "c1",
+            c - 39,
+            reference(c - 39, c + 16) + &reference(c + 1, c + 44),
+            "40M16I44M",
+            16,
+        ));
+        builder.add_frag(frag(
+            "c2",
+            c - 29,
+            reference(c - 29, c + 16) + &reference(c + 1, c + 54),
+            "30M16I54M",
+            16,
+        ));
+        builder.add_frag(frag(
+            "e1",
+            e + 1,
+            reference(e + 36, e + 60) + &reference(e + 1, e + 75),
+            "25S75M",
+            0,
+        ));
+        builder.add_frag(frag(
+            "e2",
+            e + 1,
+            reference(e + 41, e + 60) + &reference(e + 1, e + 80),
+            "20S80M",
+            0,
+        ));
+        builder.add_frag(frag(
+            "e3",
+            e + 1,
+            reference(e + 31, e + 60) + &reference(e + 1, e + 70),
+            "30S70M",
+            0,
+        ));
+        let mismatched = |end: usize| "A".to_string() + &reference(f + 62, end);
+        builder.add_frag(frag(
+            "f1",
+            f + 41,
+            reference(f + 41, f + 60) + &reference(f + 1, f + 60) + &mismatched(f + 80),
+            "20M80S",
+            0,
+        ));
+        builder.add_frag(frag(
+            "f2",
+            f + 31,
+            reference(f + 31, f + 60) + &reference(f + 1, f + 60) + &mismatched(f + 70),
+            "30M70S",
+            0,
+        ));
+        builder.add_frag(frag(
+            "f3",
+            f + 36,
+            reference(f + 36, f + 60) + &reference(f + 1, f + 60) + &mismatched(f + 75),
+            "25M75S",
+            0,
+        ));
+        for (site, anchor) in [("a", a), ("b", b), ("c", c), ("f", f)] {
+            for index in 0..5 {
+                let start = anchor - 89 + 20 * index;
+                builder.add_frag(frag(
+                    &format!("{site}r{index}"),
+                    start,
+                    reference(start, start + 99),
+                    "100M",
+                    0,
+                ));
+            }
+        }
+        builder
+    }
+
+    /// The FILTER of each record longer than its REF in `tests/calls.low-support-long-insertion.var`
+    /// run with these arguments, with its reads when asked, and the run's standard error.
+    fn low_support_long_insertion_filters(
+        args: &[&str],
+        with_reads: bool,
+    ) -> Result<(Vec<String>, String), Box<dyn std::error::Error>> {
+        let dir = TempDir::new()?;
+        let output = dir.path().join("out.vcf");
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        cmd.arg("--reference")
+            .arg("tests/reference.fa")
+            .arg("--sample")
+            .arg("dna00001")
+            .arg("--input")
+            .arg("tests/calls.low-support-long-insertion.var")
+            .arg("--output")
+            .arg(&output)
+            .args(args);
+        if with_reads {
+            let bam = write_bam(dir.path(), "tumor", &low_support_long_insertion_reads());
+            cmd.arg("--reads")
+                .arg(&bam)
+                .arg("--reads-base-quality")
+                .arg("30")
+                .arg("--reads-min-mapq")
+                .arg("20");
+        }
+        let assert = cmd.assert().success();
+        let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+        let filters = read_to_string(&output)?
+            .lines()
+            .filter(|line| !line.starts_with('#'))
+            .map(|line| line.split('\t').collect::<Vec<&str>>())
+            .filter(|fields| fields[4].len() > fields[3].len())
+            .map(|fields| {
+                format!(
+                    "{} {} +{} {}",
+                    fields[0],
+                    fields[1],
+                    fields[4].len() - fields[3].len(),
+                    fields[6]
+                )
+            })
+            .collect();
+        Ok((filters, stderr))
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn run_end_to_end_labels_long_insertions_with_few_reads_by_their_rows() -> Result<(), Box<dyn std::error::Error>> {
+        let (filters, stderr) = low_support_long_insertion_filters(&["--filter-low-support-long-insertion", "8", "--filter-low-support-long-insertion-min-length", "50"], false)?;
+        assert_eq!(
+            filters,
+            vec![
+                "chr1 1400 +60 LOW_SUPPORT_LONG_INSERTION",
+                "chr1 1700 +60 LOW_SUPPORT_LONG_INSERTION",
+                "chr1 2000 +16 PASS",
+                "chr1 2300 +60 PASS",
+                "chr1 2661 +60 LOW_SUPPORT_LONG_INSERTION",
+            ]
+        );
+        assert!(!stderr.contains("Looked in the reads"), "{stderr}");
+        Ok(())
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn run_end_to_end_exempts_an_insertion_a_read_carries_whole() -> Result<(), Box<dyn std::error::Error>> {
+        let (filters, stderr) = low_support_long_insertion_filters(&["--filter-low-support-long-insertion", "8", "--filter-low-support-long-insertion-min-length", "50"], true)?;
+        assert_eq!(
+            filters,
+            vec![
+                "chr1 1400 +60 LOW_SUPPORT_LONG_INSERTION",
+                "chr1 1700 +60 PASS",
+                "chr1 2000 +16 PASS",
+                "chr1 2300 +60 PASS",
+                "chr1 2661 +60 LOW_SUPPORT_LONG_INSERTION",
+            ]
+        );
+        assert!(stderr.contains("Looked in the reads for 3 insertion(s) of at least 50 bases with fewer than 8 high-quality ALT reads: 1 carried whole by a read"), "{stderr}");
+        assert!(!stderr.contains("Check that --reads"), "{stderr}");
+        Ok(())
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn run_end_to_end_tests_insertions_from_the_given_length() -> Result<(), Box<dyn std::error::Error>> {
+        let (filters, stderr) = low_support_long_insertion_filters(&["--filter-low-support-long-insertion", "8", "--filter-low-support-long-insertion-min-length", "16"], true)?;
+        assert_eq!(
+            filters,
+            vec![
+                "chr1 1400 +60 LOW_SUPPORT_LONG_INSERTION",
+                "chr1 1700 +60 PASS",
+                "chr1 2000 +16 PASS",
+                "chr1 2300 +60 PASS",
+                "chr1 2661 +60 LOW_SUPPORT_LONG_INSERTION",
+            ]
+        );
+        assert!(stderr.contains("Looked in the reads for 4 insertion(s) of at least 16 bases with fewer than 8 high-quality ALT reads: 2 carried whole by a read"), "{stderr}");
+        Ok(())
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn run_end_to_end_keeps_an_insertion_at_the_read_floor() -> Result<(), Box<dyn std::error::Error>> {
+        let (filters, _) = low_support_long_insertion_filters(&["--filter-low-support-long-insertion", "4", "--filter-low-support-long-insertion-min-length", "50", "--filter-low-hicnt", "3"], false)?;
+        assert_eq!(
+            filters,
+            vec![
+                "chr1 1400 +60 PASS",
+                "chr1 1700 +60 LOW_HICNT;LOW_SUPPORT_LONG_INSERTION",
+                "chr1 2000 +16 LOW_HICNT",
+                "chr1 2300 +60 PASS",
+                "chr1 2661 +60 LOW_SUPPORT_LONG_INSERTION",
+            ]
+        );
+        Ok(())
+    }
+
+    #[rstest]
+    #[case::the_length_alone(&["--filter-low-support-long-insertion-min-length", "50"], "--filter-low-support-long-insertion <MIN_HICNT>")]
+    #[case::the_threshold_alone(&["--filter-low-support-long-insertion", "8"], "--filter-low-support-long-insertion-min-length <BASES>")]
+    #[rustfmt::skip]
+    fn run_end_to_end_refuses_the_long_insertion_options_apart(#[case] args: &[&str], #[case] missing: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        cmd
+            .arg("--reference").arg("tests/reference.fa")
+            .arg("--input").arg("tests/calls.low-support-long-insertion.var")
+            .args(args);
+        let assert = cmd.assert().failure().code(1);
+        let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+        assert!(stderr.contains(missing), "{stderr}");
         Ok(())
     }
 }
