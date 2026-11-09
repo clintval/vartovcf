@@ -1159,7 +1159,7 @@ mod tests {
     #[case::at_the_floor(insertion(60, 8, 10), None, vec![])]
     #[case::no_ref_reads(insertion(60, 3, 0), None, vec![])]
     #[case::hicnt_unknown(insertion(60, i32::missing(), 10), None, vec![])]
-    #[case::a_deletion(TumorOnlyVariant { ref_allele: insertion(60, 3, 10).alt_allele, ..insertion(60, 3, 10) }, None, vec![])]
+    #[case::a_deletion(TumorOnlyVariant { ref_allele: insertion(60, 3, 10).alt_allele, alt_allele: "G", ..insertion(60, 3, 10) }, None, vec![])]
     #[case::a_complex_call_adding_the_length(TumorOnlyVariant { ref_allele: "GA", variant_type: "Complex", ..insertion(51, 3, 10) }, None, vec![LOW_SUPPORT_LONG_INSERTION])]
     #[case::a_complex_call_adding_less(TumorOnlyVariant { ref_allele: "GA", variant_type: "Complex", ..insertion(50, 3, 10) }, None, vec![])]
     #[case::a_complex_call_a_read_spells(TumorOnlyVariant { ref_allele: "GA", variant_type: "Complex", ..insertion(51, 3, 10) }, Some(1), vec![])]

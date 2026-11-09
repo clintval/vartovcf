@@ -2869,7 +2869,6 @@ mod tests {
         assert_eq!((moved.alt_depth, kept.alt_depth), (0, 1));
     }
 
-    /// Writes one indexed BAM per read group sample name and opens them in that order.
     /// Whether a read carries the row's insertion whole, for each of these fragments, in a
     /// reference of `ACGT` repeated, whose bases at 101-120 are the window's.
     fn carries_frags(frags: Vec<Frag>, row: &TumorOnlyVariant) -> Vec<bool> {
@@ -2987,6 +2986,7 @@ mod tests {
         assert_eq!(same, expected);
     }
 
+    /// Writes one indexed BAM per read group sample name and opens them in that order.
     fn open_bams(dir: &std::path::Path, read_group_samples: &[&str]) -> ReadSources {
         use noodles::sam::header::record::value::map::read_group::tag::SAMPLE;
         let mut builder = SamBuilder::new().read_length(REFERENCE.len());
@@ -3014,6 +3014,71 @@ mod tests {
             })
             .collect();
         ReadSources::open(&paths, ReadOptions::default()).unwrap()
+    }
+
+    /// Writes one indexed BAM of these fragments per sample and opens them in that order.
+    fn open_samples(dir: &std::path::Path, samples: Vec<Vec<Frag>>) -> ReadSources {
+        let paths: Vec<PathBuf> = samples
+            .into_iter()
+            .enumerate()
+            .map(|(index, frags)| {
+                let mut builder = SamBuilder::new().read_length(REFERENCE.len());
+                for frag in frags {
+                    builder.add_frag(frag);
+                }
+                let path = dir.join(format!("{index}.bam"));
+                builder.write_bam(&path).unwrap();
+                let bai = bam::fs::index(&path).unwrap();
+                bam::bai::fs::write(dir.join(format!("{index}.bam.bai")), &bai).unwrap();
+                path
+            })
+            .collect();
+        ReadSources::open(&paths, ReadOptions::default()).unwrap()
+    }
+
+    #[rstest]
+    #[case::in_the_tumor(0, 1)]
+    #[case::in_the_normal_only(1, 0)]
+    fn test_only_the_tumor_reads_are_looked_in_for_an_insertion_carried_whole(
+        #[case] carrier_sample: usize,
+        #[case] expected: i32,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut samples = vec![
+            vec![Frag::at(101).bases(edited(&[])).quals(quals(&[]))],
+            vec![Frag::at(101).bases(edited(&[])).quals(quals(&[]))],
+        ];
+        samples[carrier_sample].push(inserting(110, "GTAC", 40, &[]));
+        let mut sources = open_samples(dir.path(), samples);
+        let (_fasta, path) = crate::reference::tests::fasta(&[("chr1", &"ACGT".repeat(50))]);
+        let mut reference = Reference::from_path(&path).unwrap();
+        let call = row(110, "C", "CGTAC", 1);
+        assert_eq!(sources.spanning(&call, &mut reference).unwrap(), expected);
+    }
+
+    #[rstest]
+    #[case::within_the_slide(12, 1)]
+    #[case::past_the_slide(0, 0)]
+    fn test_a_read_placing_the_insertion_at_the_end_of_its_slide_is_looked_in(
+        #[case] shift: i32,
+        #[case] expected: i32,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let repeat = "ACGT".repeat(50);
+        let bases = format!("{}GTAC{}", &repeat[119..122], &repeat[122..139]);
+        let carrier = Frag::at(120)
+            .quals(vec![40u8; bases.len()])
+            .bases(bases)
+            .cigar("3M4I17M")
+            .attr(Tag::EDIT_DISTANCE, 4);
+        let mut sources = open_samples(dir.path(), vec![vec![carrier]]);
+        let (_fasta, path) = crate::reference::tests::fasta(&[("chr1", &repeat)]);
+        let mut reference = Reference::from_path(&path).unwrap();
+        let call = TumorOnlyVariant {
+            num_bases_3_prime_shift_for_deletions: shift,
+            ..row(110, "C", "CGTAC", 1)
+        };
+        assert_eq!(sources.spanning(&call, &mut reference).unwrap(), expected);
     }
 
     #[rstest]
