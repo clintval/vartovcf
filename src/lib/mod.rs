@@ -19,7 +19,7 @@ use crate::filter::FilterThresholds;
 use crate::mnv::{Clusters, Fold, LeakRate, LeakyMnvFix, Merged, Rule, fold_partials};
 use crate::normalize::{Normalized, normalize};
 use crate::output::{Index, Output};
-use crate::reads::ReadSources;
+use crate::reads::{ReadFiles, ReadSources, Recount};
 use crate::record::MIN_HOM_ALT_AF;
 use crate::record::TumorNormalVariant;
 use crate::record::TumorOnlyVariant;
@@ -179,8 +179,11 @@ pub struct Options<'a> {
     pub fill_gvcf_bed: Option<PathBuf>,
     /// How VarDict turned the BED file's lines into its regions.
     pub fill_gvcf_bed_layout: BedLayout,
+    /// The indexed BAMs VarDict read, one per sample, for the fold to decide each partial row by
+    /// its reads and for the FOREIGN_CLIP_SUPPORT label to recount each SNV's; see [`reads`].
+    pub reads: Option<ReadFiles>,
     /// How to fold the partial rows of each MNV back into it, by their counts at a leak rate or
-    /// by their reads, or `None` to not fold; see [`mnv`].
+    /// by [`Options::reads`], or `None` to not fold; see [`mnv`].
     pub fix_leaky_mnv: Option<LeakyMnvFix>,
     /// The FILTER labels to apply.
     pub filters: FilterThresholds,
@@ -286,33 +289,10 @@ fn convert<I: Read>(
     }
 
     let filters = &options.filters;
-    let mut header = match &normal_sample {
-        Some(normal_sample) => tumor_normal_header(
-            &sample,
-            normal_sample,
-            filters,
-            options.fix_leaky_mnv.as_ref(),
-            options.context_3mer,
-        ),
-        None => tumor_only_header(
-            &sample,
-            filters,
-            options.fix_leaky_mnv.as_ref(),
-            options.context_3mer,
-            options.fill_gvcf,
-        ),
-    };
-
-    fasta_contigs_to_vcf_header(&options.reference, &mut header);
-    fasta_path_to_vcf_header(&options.reference, &mut header)
-        .expect("Adding FASTA path to header failed!");
-    let header_text = header_bytes(&header)?;
-
-    let folder = match &options.fix_leaky_mnv {
+    let reads = match &options.reads {
         None => None,
-        Some(LeakyMnvFix::Counts(leak_rate)) => Some(Folder::Counts(*leak_rate)),
-        Some(LeakyMnvFix::Reads { bams, options }) => {
-            let sources = ReadSources::open(bams, *options)?;
+        Some(reads) => {
+            let sources = ReadSources::open(&reads.bams, reads.options)?;
             if peeked && sources.samples() != layout.samples() {
                 return Err(format!(
                     "--reads names {} BAM(s) for {} sample(s): give one per sample, the tumor (or only) sample's first!",
@@ -327,9 +307,56 @@ fn convert<I: Read>(
             for warning in sources.sample_warnings(&names) {
                 warn!("{warning}");
             }
-            Some(Folder::Reads(sources))
+            Some(sources)
         }
     };
+    let folder = match &options.fix_leaky_mnv {
+        None => None,
+        Some(LeakyMnvFix::Counts(leak_rate)) => Some(Folder::Counts(*leak_rate)),
+        Some(LeakyMnvFix::Reads) if reads.is_none() => {
+            return Err(
+                "Folding leaky MNV partials by their reads needs the BAMs VarDict read: give --reads!"
+                    .into(),
+            );
+        }
+        Some(LeakyMnvFix::Reads) => Some(Folder::Reads),
+    };
+    if filters.foreign_clip_support && filters.low_hicnt.is_none() {
+        return Err(
+            "--filter-foreign-clip-support holds SNVs to the LOW_HICNT floor: give --filter-low-hicnt!"
+                .into(),
+        );
+    }
+    if filters.foreign_clip_support && reads.is_none() {
+        return Err(
+            "--filter-foreign-clip-support needs the BAMs VarDict read: give --reads!".into(),
+        );
+    }
+    let read_options = options.reads.as_ref().map(|reads| &reads.options);
+    let mut header = match &normal_sample {
+        Some(normal_sample) => tumor_normal_header(
+            &sample,
+            normal_sample,
+            filters,
+            options.fix_leaky_mnv.as_ref(),
+            read_options,
+            options.context_3mer,
+        ),
+        None => tumor_only_header(
+            &sample,
+            filters,
+            options.fix_leaky_mnv.as_ref(),
+            read_options,
+            options.context_3mer,
+            options.fill_gvcf,
+        ),
+    };
+
+    fasta_contigs_to_vcf_header(&options.reference, &mut header);
+    fasta_path_to_vcf_header(&options.reference, &mut header)
+        .expect("Adding FASTA path to header failed!");
+    let header_text = header_bytes(&header)?;
+
     let mut sink = Sink {
         records: RecordWriter::new(header),
         reference,
@@ -338,6 +365,7 @@ fn convert<I: Read>(
         seen: SeenRows::default(),
         filters,
         context_3mer: options.context_3mer,
+        reads,
         folder,
         folds: FoldCounts::default(),
         bed,
@@ -398,7 +426,7 @@ fn convert<I: Read>(
     if !sink.fold_rows(columns, &|| signal() != 0)? {
         return Ok(None);
     }
-    if let Some(Folder::Reads(sources)) = &sink.folder {
+    if let (Some(Folder::Reads), Some(sources)) = (&sink.folder, &sink.reads) {
         let summary = sources.summary;
         info!(
             "Reads decided {} partial row(s) and sample(s) under {} MNV pileup(s); {} reconciled with VarDict's ALT reads, {} of them only once VarDict's end clipping was replayed, and {} of the {} whose reads would have moved did not.",
@@ -427,6 +455,19 @@ fn convert<I: Read>(
             "Folded {} partial row(s) whole and {} in part into {} MNV(s), moving {} ALT read(s).",
             folds.whole, folds.split, folds.mnvs, folds.reads
         );
+    }
+    if let (Some(min_hicnt), Some(sources)) = (filters.foreign_clip_support_floor(), &sink.reads) {
+        let recounts = sources.recounts;
+        info!(
+            "Recounted {} SNV(s) from the reads: {} fell short of {} high-quality ALT reads in the reads VarDict was run on.",
+            recounts.rows, recounts.short, min_hicnt
+        );
+        if recounts.unsupported * 2 > recounts.rows {
+            warn!(
+                "No read in the reads supports {} of the {} SNV(s) recounted. Check that --reads names the BAMs VarDict was run on, in sample order, and that --reads-base-quality, --reads-min-mapq, --reads-exclude-flags, --reads-max-mismatches and --reads-mnv-gap match the run.",
+                recounts.unsupported, recounts.rows
+            );
+        }
     }
     output
         .write_all(&header_text)
@@ -474,6 +515,7 @@ struct Sink<'r> {
     seen: SeenRows,
     filters: &'r FilterThresholds,
     context_3mer: bool,
+    reads: Option<ReadSources>,
     folder: Option<Folder>,
     folds: FoldCounts,
     bed: Option<Bed>,
@@ -499,10 +541,10 @@ struct FoldCounts {
     reads: i64,
 }
 
-/// How a sink folds leaky MNV partials.
+/// How a sink folds leaky MNV partials: by their counts, or by the sink's reads.
 enum Folder {
     Counts(LeakRate),
-    Reads(ReadSources),
+    Reads,
 }
 
 impl Sink<'_> {
@@ -522,8 +564,10 @@ impl Sink<'_> {
         let written: Vec<TumorOnlyVariant> =
             calls.iter().map(|call| normalized.apply(call)).collect();
         let context = self.context(&written[0])?;
+        let recount = self.recount(&calls[0])?;
         let extras = Extras {
             context: context.as_deref(),
+            recount,
             ..extras
         };
         let Some(record) = build_record(&mut self.records, &written, status, self.filters, extras)?
@@ -544,6 +588,22 @@ impl Sink<'_> {
         self.context_3mer
             .then(|| self.reference.context(call.contig, call.start, 1))
             .transpose()
+    }
+
+    /// The tumor (or only) sample's call recounted from the reads, when FOREIGN_CLIP_SUPPORT is
+    /// applied and the call is one it tests.
+    fn recount(&mut self, call: &TumorOnlyVariant) -> Result<Option<Recount>, String> {
+        let (Some(min_hicnt), Some(sources)) =
+            (self.filters.foreign_clip_support_floor(), &mut self.reads)
+        else {
+            return Ok(None);
+        };
+        if !self.filters.recounts(call) {
+            return Ok(None);
+        }
+        sources
+            .recount(call, min_hicnt, &mut self.reference)
+            .map(Some)
     }
 
     /// Folds the leaky MNV partials of each VarDict region's rows, read back from their sort a
@@ -623,7 +683,11 @@ impl Sink<'_> {
             Some(Folder::Counts(leak_rate)) => {
                 fold_partials(&calls, &written, Rule::Counts(*leak_rate))
             }
-            Some(Folder::Reads(sources)) => {
+            Some(Folder::Reads) => {
+                let sources = self
+                    .reads
+                    .as_mut()
+                    .ok_or("Folding by reads needs the BAMs VarDict read!")?;
                 let fates = sources.fates(&calls, &written, &mut self.reference)?;
                 fold_partials(&calls, &written, Rule::Reads(&fates))
             }
@@ -1094,13 +1158,14 @@ fn is_substitution(call: &Normalized) -> bool {
 }
 
 /// What a record carries besides its calls: the merge of an MNV that absorbed partials, the reads
-/// a partial lost to its MNV per sample, its reference 3-mer, and its depth at POS per sample,
-/// FORMAT SITE_DP, left out when empty.
+/// a partial lost to its MNV per sample, its reference 3-mer, the recount of an SNV's ALT reads
+/// from the reads, and its depth at POS per sample, FORMAT SITE_DP, left out when empty.
 #[derive(Clone, Copy, Default)]
 struct Extras<'e> {
     merged: Option<&'e Merged<'e>>,
     moved: Option<&'e [i32]>,
     context: Option<&'e str>,
+    recount: Option<Recount>,
     site_dp: &'e [i32],
 }
 
@@ -1126,7 +1191,7 @@ fn build_record<'w>(
     };
 
     if filters.any() && var.has_alt_reads() {
-        let labels = filters.labels(var);
+        let labels = filters.labels(var, extras.recount);
         if labels.is_empty() {
             variant.push_filter("PASS")?;
         }

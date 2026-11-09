@@ -2353,10 +2353,170 @@ mod tests {
         Ok(())
     }
 
+    /// The tumor-only reads of `tests/calls.foreign-clip.var`, which is VarDictJava 1.8.4's output
+    /// for them with `-q 30 -Q 20 -F 0x504 -z 1 -P 0 -K`. C>T at 1090 on two aligned reads. C>A at
+    /// 1095 on one aligned read and one read starting at 1096 whose 3-base soft clip reads A at
+    /// 1095, the reference at 1094 and a foreign base at 1093, which VarDict adds to the call after
+    /// comparing only the base at 1094. G>T at 1100 on two aligned reads and one read ending at
+    /// 1099 whose 3-base soft clip reads T at 1100, the reference at 1101 and a foreign base at
+    /// 1102, added the same way. C>A at 1110 on one aligned read and one read ending at 1109 whose
+    /// soft clip reads A at 1110 then the reference at 1111 and 1112. And five reference reads.
+    fn foreign_clip_reads() -> SamBuilder {
+        let mut builder = SamBuilder::new().read_length(40);
+        for index in 0..2 {
+            builder.add_frag(frag(&format!("c{index}"), &[(1090, b'T')], &[]));
+        }
+        builder.add_frag(frag("d0", &[(1095, b'A')], &[]));
+        builder.add_frag(
+            Frag::at(1096)
+                .name("d1")
+                .bases(format!("CGA{}", &read(&[])[15..]))
+                .quals(vec![40u8; 28])
+                .cigar("3S25M")
+                .attr(Tag::EDIT_DISTANCE, 0),
+        );
+        for index in 0..2 {
+            builder.add_frag(frag(&format!("a{index}"), &[(1100, b'T')], &[]));
+        }
+        builder.add_frag(
+            Frag::at(1081)
+                .name("a2")
+                .bases(format!("{}TGA", &read(&[])[..19]))
+                .quals(vec![40u8; 22])
+                .cigar("19M3S")
+                .attr(Tag::EDIT_DISTANCE, 0),
+        );
+        builder.add_frag(frag("b0", &[(1110, b'A')], &[]));
+        builder.add_frag(
+            Frag::at(1081)
+                .name("b1")
+                .bases(format!("{}ACT", &read(&[])[..29]))
+                .quals(vec![40u8; 32])
+                .cigar("29M3S")
+                .attr(Tag::EDIT_DISTANCE, 0),
+        );
+        for index in 0..5 {
+            builder.add_frag(frag(&format!("r{index}"), &[], &[]));
+        }
+        builder
+    }
+
+    /// The FILTER of each record of `tests/calls.foreign-clip.var` run with these arguments, with
+    /// the run's standard error.
+    fn foreign_clip_filters(
+        args: &[&str],
+    ) -> Result<(Vec<String>, String), Box<dyn std::error::Error>> {
+        let dir = TempDir::new()?;
+        let bam = write_bam(dir.path(), "tumor", &foreign_clip_reads());
+        let output = dir.path().join("out.vcf");
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        cmd.arg("--reference")
+            .arg("tests/reference.fa")
+            .arg("--sample")
+            .arg("dna00001")
+            .arg("--input")
+            .arg("tests/calls.foreign-clip.var")
+            .arg("--output")
+            .arg(&output)
+            .arg("--reads")
+            .arg(&bam)
+            .arg("--reads-base-quality")
+            .arg("30")
+            .arg("--reads-min-mapq")
+            .arg("20")
+            .args(args);
+        let assert = cmd.assert().success();
+        let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+        let filters = read_to_string(&output)?
+            .lines()
+            .filter(|line| !line.starts_with('#'))
+            .map(|line| line.split('\t').take(7).collect::<Vec<_>>().join(" "))
+            .collect();
+        Ok((filters, stderr))
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn run_end_to_end_labels_an_snv_that_reaches_the_floor_through_a_foreign_clip() -> Result<(), Box<dyn std::error::Error>> {
+        let (filters, stderr) = foreign_clip_filters(&["--filter-low-hicnt", "2", "--filter-foreign-clip-support"])?;
+        assert_eq!(
+            filters,
+            vec![
+                "chr1 1090 . C T . PASS",
+                "chr1 1095 . C A . FOREIGN_CLIP_SUPPORT",
+                "chr1 1100 . G T . PASS",
+                "chr1 1110 . C A . PASS",
+            ]
+        );
+        assert!(stderr.contains("Recounted 2 SNV(s) from the reads: 1 fell short of 2 high-quality ALT reads"), "{stderr}");
+        assert!(!stderr.contains("WARN"), "{stderr}");
+        Ok(())
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn run_end_to_end_recounts_only_snvs_reassigned_reads_could_have_lifted_to_the_floor() -> Result<(), Box<dyn std::error::Error>> {
+        let (filters, stderr) = foreign_clip_filters(&["--filter-low-hicnt", "3", "--filter-foreign-clip-support"])?;
+        assert_eq!(
+            filters,
+            vec![
+                "chr1 1090 . C T . LOW_HICNT",
+                "chr1 1095 . C A . LOW_HICNT",
+                "chr1 1100 . G T . FOREIGN_CLIP_SUPPORT",
+                "chr1 1110 . C A . LOW_HICNT",
+            ]
+        );
+        assert!(stderr.contains("Recounted 1 SNV(s) from the reads: 1 fell short of 3 high-quality ALT reads"), "{stderr}");
+        Ok(())
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn run_end_to_end_recounts_beside_the_leaky_mnv_fold() -> Result<(), Box<dyn std::error::Error>> {
+        let (filters, stderr) = foreign_clip_filters(&["--fix-leaky-mnv", "--filter-low-hicnt", "2", "--filter-foreign-clip-support"])?;
+        assert_eq!(
+            filters,
+            vec![
+                "chr1 1090 . C T . PASS",
+                "chr1 1095 . C A . FOREIGN_CLIP_SUPPORT",
+                "chr1 1100 . G T . PASS",
+                "chr1 1110 . C A . PASS",
+            ]
+        );
+        assert!(stderr.contains("Folded 0 partial row(s)"), "{stderr}");
+        assert!(stderr.contains("Recounted 2 SNV(s)"), "{stderr}");
+        Ok(())
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn run_end_to_end_warns_when_no_read_supports_the_snvs() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = TempDir::new()?;
+        let mut builder = SamBuilder::new().read_length(40);
+        builder.add_frag(frag("r0", &[], &[]));
+        let bam = write_bam(dir.path(), "tumor", &builder);
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        cmd
+            .arg("--reference").arg("tests/reference.fa")
+            .arg("--sample").arg("dna00001")
+            .arg("--input").arg("tests/calls.foreign-clip.var")
+            .arg("--output").arg(dir.path().join("out.vcf"))
+            .arg("--reads").arg(&bam)
+            .arg("--filter-low-hicnt").arg("2")
+            .arg("--filter-foreign-clip-support");
+        let assert = cmd.assert().success();
+        let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+        assert!(stderr.contains("No read in the reads supports 2 of the 2 SNV(s) recounted"), "{stderr}");
+        Ok(())
+    }
+
     #[rstest]
-    #[case::without_the_fix(&["--reads", "x.bam"])]
+    #[case::without_a_use(&["--reads", "x.bam"])]
     #[case::with_a_rate(&["--fix-leaky-mnv", "--reads", "x.bam", "--leaky-mnv-rate", "0.1"])]
     #[case::read_options_without_reads(&["--fix-leaky-mnv", "--reads-base-quality", "30"])]
+    #[case::the_filter_without_reads(&["--filter-low-hicnt", "2", "--filter-foreign-clip-support"])]
+    #[case::the_filter_without_its_floor(&["--reads", "x.bam", "--filter-foreign-clip-support"])]
+    #[case::the_filter_given_a_floor_of_its_own(&["--reads", "x.bam", "--filter-low-hicnt", "2", "--filter-foreign-clip-support", "2"])]
     #[rustfmt::skip]
     fn run_end_to_end_refuses_read_options_out_of_place(#[case] args: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
         let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;

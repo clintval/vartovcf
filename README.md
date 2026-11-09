@@ -131,6 +131,30 @@ Six of the labels are patterns in the reads:
 | `LOW_QMEAN` | `QMEAN` is below the threshold |
 | `LOW_HICNT` | `HICNT` is below the threshold |
 | `LOW_DP` | `DP` is below the threshold |
+| `FOREIGN_CLIP_SUPPORT` | An SNV with `HICNT` at or above the `LOW_HICNT` threshold, which its reassigned reads could have lifted there, has fewer high-quality ALT reads than that in `--reads`, aligned or in a soft clip that matches the reference past the ALT base |
+
+#### Recounting an SNV's Reads From Soft Clips
+
+VarDict adds the reads of a soft clip to an SNV when the clip starts at the SNV with its ALT base, is 5 bases or shorter, and its second base matches the reference, however the rest of the clip reads.
+A read end that is foreign to the site, such as a chimeric template end, can so lift a one-read SNV over VarDict's `-r` floor.
+With `--reads`, `--filter-foreign-clip-support` recounts each SNV's high-quality ALT reads from the BAM, as the reads carrying the ALT base aligned at the site, once VarDict's clipping of mismatches at read ends is replayed, and the reads whose soft clip starts at the site with the ALT base and matches the reference past it, by VarDict's own test.
+The floor is the `--filter-low-hicnt` threshold, so a call kept by that label is held to the same count.
+Only an SNV whose `HICNT` is at the floor or above, and less than the floor plus the reads VarDict reassigned to it, is recounted: VarDict adds soft clips to an SNV only as reassigned reads, and `REALIGNED_FRAC_OF_DP` bounds their number from above, so an SNV that reached the floor without them is never read.
+An SNV that falls short of the floor in the recount is labelled `FOREIGN_CLIP_SUPPORT`; every count stays as VarDict wrote it.
+Set the `--reads-*` options to the values VarDict ran with, as for [deciding partials by their reads](#deciding-partials-by-their-reads):
+
+```bash
+vartovcf \
+    --reference "hg38.fa" \
+    --sample dna00001 \
+    --reads "input.bam" \
+    --reads-base-quality 30 \
+    --filter-low-hicnt 2 \
+    --filter-foreign-clip-support \
+    --output "variants.vcf.gz"
+```
+
+The recount reads each soft clip on its own, where VarDict reads the consensus of the clips at a position, and it does not replay VarDict's turning of an indel near a read end into a soft clip, which the recount never counts as support either way.
 
 ## Leaky MNVs
 

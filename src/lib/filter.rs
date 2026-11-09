@@ -1,5 +1,6 @@
 //! FILTER labels for VarDict calls.
 
+use crate::reads::Recount;
 use crate::record::TumorOnlyVariant;
 use crate::vcf::Numeric;
 
@@ -36,6 +37,10 @@ pub const LOW_DP: &str = "LOW_DP";
 /// The FILTER label for calls with few high-quality ALT reads.
 pub const LOW_HICNT: &str = "LOW_HICNT";
 
+/// The FILTER label for SNVs that VarDict counted at or above the read floor, by no more than the
+/// reads it reassigned could add, but whose reads fall short of it when recounted.
+pub const FOREIGN_CLIP_SUPPORT: &str = "FOREIGN_CLIP_SUPPORT";
+
 /// The thresholds of the FILTER labels to apply; a label without a threshold is not applied.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct FilterThresholds {
@@ -69,6 +74,9 @@ pub struct FilterThresholds {
     pub low_dp: Option<i32>,
     /// The minimum number of high-quality ALT reads.
     pub low_hicnt: Option<i32>,
+    /// Whether SNVs are recounted from the reads and held to the LOW_HICNT threshold; applied only
+    /// with that threshold.
+    pub foreign_clip_support: bool,
 }
 
 impl FilterThresholds {
@@ -85,6 +93,24 @@ impl FilterThresholds {
             || self.low_qmean.is_some()
             || self.low_dp.is_some()
             || self.low_hicnt.is_some()
+    }
+
+    /// The read floor FOREIGN_CLIP_SUPPORT holds recounted SNVs to: LOW_HICNT's, when both apply.
+    pub fn foreign_clip_support_floor(&self) -> Option<i32> {
+        self.low_hicnt.filter(|_| self.foreign_clip_support)
+    }
+
+    /// Whether an SNV call is recounted from the reads for FOREIGN_CLIP_SUPPORT: one whose known
+    /// count of high-quality ALT reads is at the floor or above, and would fall under it without
+    /// the reads VarDict reassigned to it, the only way soft clips are added to an SNV.
+    pub fn recounts(&self, variant: &TumorOnlyVariant) -> bool {
+        self.foreign_clip_support_floor().is_some_and(|min_hicnt| {
+            let hicnt = variant.hicnt_value();
+            variant.is_snv()
+                && !hicnt.is_missing()
+                && hicnt >= min_hicnt
+                && i64::from(hicnt - min_hicnt) < variant.max_reassigned_reads()
+        })
     }
 
     /// Return the ID and description of the FILTER header line of each applied label.
@@ -168,6 +194,12 @@ impl FilterThresholds {
                 format!(r#"High-quality ALT reads (FORMAT HICNT) are fewer than {min_hicnt}."#),
             ));
         }
+        if let Some(min_hicnt) = self.foreign_clip_support_floor() {
+            filters.push((
+                FOREIGN_CLIP_SUPPORT,
+                format!(r#"SNV with at least {min_hicnt} high-quality ALT reads by VarDict (FORMAT HICNT), a count the reads it reassigned to the allele (FORMAT REALIGNED_FRAC_OF_DP) could have lifted to {min_hicnt}, but fewer than {min_hicnt} in the reads it was run on: reads carrying the ALT base aligned at the site at or above VarDict's -q, once its clipping of mismatches at read ends is replayed, or first in a soft clip at the site whose later bases match the reference. The shortfall is most often a soft clip VarDict added after comparing only its second base to the reference. Every count is left as VarDict wrote it."#),
+            ));
+        }
         filters
     }
 
@@ -179,9 +211,13 @@ impl FilterThresholds {
             .collect()
     }
 
-    /// Return the FILTER labels a call fails by its FORMAT values: none without reads of an ALT
-    /// allele, and none from a value that is missing.
-    pub fn labels(&self, variant: &TumorOnlyVariant) -> Vec<&'static str> {
+    /// Return the FILTER labels a call fails by its FORMAT values, and by its recount from the reads
+    /// when it has one: none without reads of an ALT allele, and none from a value that is missing.
+    pub fn labels(
+        &self,
+        variant: &TumorOnlyVariant,
+        recount: Option<Recount>,
+    ) -> Vec<&'static str> {
         let mut labels = Vec::new();
         if !variant.has_alt_reads() {
             return labels;
@@ -271,6 +307,12 @@ impl FilterThresholds {
         }) {
             labels.push(LOW_HICNT);
         }
+        if let (Some(min_hicnt), Some(recount)) = (self.foreign_clip_support_floor(), recount)
+            && self.recounts(variant)
+            && recount.supporting() < min_hicnt
+        {
+            labels.push(FOREIGN_CLIP_SUPPORT);
+        }
         labels
     }
 }
@@ -345,7 +387,7 @@ mod tests {
             alt_reverse: 10,
             ..variant("G", "A", 0.0)
         };
-        assert!(filters.labels(&no_alt_reads).is_empty());
+        assert!(filters.labels(&no_alt_reads, None).is_empty());
     }
 
     fn mapq_variant(
@@ -364,7 +406,7 @@ mod tests {
         let filters = FilterThresholds::default();
         assert!(!filters.any());
         assert!(filters.header_lines().is_empty());
-        assert!(filters.labels(&variant("G", "A", 1.0)).is_empty());
+        assert!(filters.labels(&variant("G", "A", 1.0), None).is_empty());
     }
 
     #[rstest]
@@ -383,7 +425,7 @@ mod tests {
         };
         assert!(filters.any());
         assert_eq!(
-            filters.labels(&variant(ref_allele, alt_allele, mean_dist)),
+            filters.labels(&variant(ref_allele, alt_allele, mean_dist), None),
             expected
         );
     }
@@ -418,7 +460,7 @@ mod tests {
         };
         assert!(filters.any());
         assert_eq!(
-            filters.labels(&mapq_variant(ref_allele, alt_allele, mean_mapq)),
+            filters.labels(&mapq_variant(ref_allele, alt_allele, mean_mapq), None),
             expected
         );
     }
@@ -477,7 +519,7 @@ mod tests {
         };
         assert!(filters.any());
         let variant = repeat_variant(ref_allele, alt_allele, unit_length, copies, alt_depth);
-        assert_eq!(filters.labels(&variant), expected);
+        assert_eq!(filters.labels(&variant, None), expected);
     }
 
     #[rstest]
@@ -502,7 +544,7 @@ mod tests {
         };
         assert!(filters.any());
         let variant = repeat_variant(ref_allele, alt_allele, unit_length, copies, alt_depth);
-        assert_eq!(filters.labels(&variant), expected);
+        assert_eq!(filters.labels(&variant, None), expected);
     }
 
     #[test]
@@ -513,11 +555,11 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            filters.labels(&repeat_variant("GA", "G", 1, 13.0, 90)),
+            filters.labels(&repeat_variant("GA", "G", 1, 13.0, 90), None),
             vec![HOMOPOLYMER_INDEL]
         );
         assert_eq!(
-            filters.labels(&repeat_variant("GCA", "G", 2, 13.0, 90)),
+            filters.labels(&repeat_variant("GCA", "G", 2, 13.0, 90), None),
             vec![TANDEM_REPEAT_INDEL]
         );
     }
@@ -558,7 +600,7 @@ mod tests {
             mean_mismatches_in_reads: mean_mismatches,
             ..variant(ref_allele, alt_allele, 30.0)
         };
-        assert_eq!(filters.labels(&variant), expected);
+        assert_eq!(filters.labels(&variant, None), expected);
     }
 
     #[test]
@@ -599,7 +641,7 @@ mod tests {
             depth: 100,
             ..variant(ref_allele, alt_allele, 30.0)
         };
-        assert_eq!(filters.labels(&variant), expected);
+        assert_eq!(filters.labels(&variant, None), expected);
     }
 
     #[test]
@@ -651,7 +693,7 @@ mod tests {
         };
         assert!(filters.any());
         assert_eq!(
-            filters.labels(&strand_variant(ref_strands, alt_strands)),
+            filters.labels(&strand_variant(ref_strands, alt_strands), None),
             expected
         );
     }
@@ -663,7 +705,10 @@ mod tests {
             ..Default::default()
         };
         let modest_skew_at_high_af = strand_variant((500, 500), (200, 400));
-        assert_eq!(filters.labels(&modest_skew_at_high_af), vec![STRAND_BIAS]);
+        assert_eq!(
+            filters.labels(&modest_skew_at_high_af, None),
+            vec![STRAND_BIAS]
+        );
     }
 
     #[test]
@@ -676,7 +721,7 @@ mod tests {
             alt_allele: "G",
             ..strand_variant((500, 500), (0, 10))
         };
-        assert!(filters.labels(&reference_row).is_empty());
+        assert!(filters.labels(&reference_row, None).is_empty());
     }
 
     #[test]
@@ -726,7 +771,7 @@ mod tests {
             depth: 1000,
             ..variant(ref_allele, alt_allele, 30.0)
         };
-        assert_eq!(filters.labels(&variant), expected);
+        assert_eq!(filters.labels(&variant, None), expected);
     }
 
     #[test]
@@ -762,7 +807,7 @@ mod tests {
             base_quality_mean: qmean,
             ..variant(ref_allele, alt_allele, 30.0)
         };
-        assert_eq!(filters.labels(&variant), expected);
+        assert_eq!(filters.labels(&variant, None), expected);
     }
 
     #[test]
@@ -799,7 +844,7 @@ mod tests {
             alt_depth: 1,
             ..variant(ref_allele, alt_allele, 30.0)
         };
-        assert_eq!(filters.labels(&variant), expected);
+        assert_eq!(filters.labels(&variant, None), expected);
     }
 
     #[test]
@@ -835,7 +880,7 @@ mod tests {
             high_quality_variant_reads: hicnt,
             ..variant(ref_allele, alt_allele, 30.0)
         };
-        assert_eq!(filters.labels(&variant), expected);
+        assert_eq!(filters.labels(&variant, None), expected);
     }
 
     #[test]
@@ -852,6 +897,136 @@ mod tests {
         );
     }
 
+    /// An SNV with this many high-quality ALT reads, as VarDict counted them, or none known, of
+    /// which VarDict reassigned this many to it, at a depth of 1,000.
+    fn snv_reassigned(hicnt: i32, reassigned: i32) -> TumorOnlyVariant<'static> {
+        TumorOnlyVariant {
+            depth: 1_000,
+            alt_depth: hicnt.max(1),
+            high_quality_variant_reads: hicnt,
+            af_adjusted: reassigned as f32 / 1_000.0,
+            ..variant("G", "A", 30.0)
+        }
+    }
+
+    /// An SNV with this many high-quality ALT reads, one of them reassigned to it by VarDict.
+    fn snv_with_hicnt(hicnt: i32) -> TumorOnlyVariant<'static> {
+        snv_reassigned(hicnt, 1)
+    }
+
+    fn recount(aligned: i32, clean_clips: i32, foreign_clips: i32) -> Recount {
+        Recount {
+            aligned,
+            clean_clips,
+            foreign_clips,
+        }
+    }
+
+    #[rstest]
+    #[case::one_aligned_read_and_a_foreign_clip(2, Some(recount(1, 0, 1)), vec![FOREIGN_CLIP_SUPPORT])]
+    #[case::one_aligned_read_and_a_clean_clip(2, Some(recount(1, 1, 0)), vec![])]
+    #[case::two_aligned_reads(2, Some(recount(2, 0, 1)), vec![])]
+    #[case::a_shortfall_no_clip_explains(2, Some(recount(1, 0, 0)), vec![FOREIGN_CLIP_SUPPORT])]
+    #[case::no_read_at_all(2, Some(recount(0, 0, 0)), vec![FOREIGN_CLIP_SUPPORT])]
+    #[case::vardict_counted_under_the_floor(1, Some(recount(0, 0, 1)), vec![LOW_HICNT])]
+    #[case::hicnt_unknown(i32::missing(), Some(recount(1, 0, 1)), vec![])]
+    #[case::not_recounted(2, None, vec![])]
+    fn test_foreign_clip_support(
+        #[case] hicnt: i32,
+        #[case] recount: Option<Recount>,
+        #[case] expected: Vec<&str>,
+    ) {
+        let filters = FilterThresholds {
+            low_hicnt: Some(2),
+            foreign_clip_support: true,
+            ..Default::default()
+        };
+        assert!(filters.any());
+        assert_eq!(filters.labels(&snv_with_hicnt(hicnt), recount), expected);
+    }
+
+    #[rstest]
+    #[case::two_of_three_at_a_floor_of_three(3, 3, Some(recount(2, 0, 1)), vec![FOREIGN_CLIP_SUPPORT])]
+    #[case::two_of_three_at_a_floor_of_two(2, 3, Some(recount(2, 0, 1)), vec![])]
+    fn test_foreign_clip_support_at_the_low_hicnt_floor(
+        #[case] min_hicnt: i32,
+        #[case] hicnt: i32,
+        #[case] recount: Option<Recount>,
+        #[case] expected: Vec<&str>,
+    ) {
+        let filters = FilterThresholds {
+            low_hicnt: Some(min_hicnt),
+            foreign_clip_support: true,
+            ..Default::default()
+        };
+        assert_eq!(filters.foreign_clip_support_floor(), Some(min_hicnt));
+        assert_eq!(filters.labels(&snv_with_hicnt(hicnt), recount), expected);
+    }
+
+    #[test]
+    fn test_foreign_clip_support_is_not_applied_without_the_low_hicnt_floor() {
+        let filters = FilterThresholds {
+            foreign_clip_support: true,
+            ..Default::default()
+        };
+        assert!(!filters.any());
+        assert_eq!(filters.foreign_clip_support_floor(), None);
+        assert!(!filters.recounts(&snv_with_hicnt(2)));
+        assert!(filters.header_lines().is_empty());
+        assert_eq!(
+            filters.labels(&snv_with_hicnt(2), Some(recount(0, 0, 1))),
+            Vec::<&str>::new()
+        );
+    }
+
+    #[rstest]
+    #[case::an_snv_at_the_floor("G", "A", 2, 1, true)]
+    #[case::an_snv_at_the_floor_with_no_read_reassigned("G", "A", 2, 0, false)]
+    #[case::an_snv_its_reassigned_reads_could_have_lifted_to_the_floor("G", "A", 4, 3, true)]
+    #[case::an_snv_over_the_floor_without_its_reassigned_reads("G", "A", 5, 2, false)]
+    #[case::an_snv_under_the_floor("G", "A", 1, 1, false)]
+    #[case::an_snv_with_no_count_known("G", "A", i32::missing(), 1, false)]
+    #[case::an_mnv("GG", "AT", 2, 1, false)]
+    #[case::a_deletion("GA", "G", 2, 1, false)]
+    #[case::a_reference_row("G", "G", 2, 1, false)]
+    #[case::a_symbolic_allele("G", "<DEL>", 2, 1, false)]
+    fn test_only_snvs_reassigned_reads_could_have_lifted_to_the_floor_are_recounted(
+        #[case] ref_allele: &'static str,
+        #[case] alt_allele: &'static str,
+        #[case] hicnt: i32,
+        #[case] reassigned: i32,
+        #[case] expected: bool,
+    ) {
+        let filters = FilterThresholds {
+            low_hicnt: Some(2),
+            foreign_clip_support: true,
+            ..Default::default()
+        };
+        let call = TumorOnlyVariant {
+            ref_allele,
+            alt_allele,
+            ..snv_reassigned(hicnt, reassigned)
+        };
+        assert_eq!(filters.recounts(&call), expected);
+        assert!(!FilterThresholds::default().recounts(&call));
+    }
+
+    #[test]
+    fn test_foreign_clip_support_header_line_states_the_threshold() {
+        let filters = FilterThresholds {
+            low_hicnt: Some(2),
+            foreign_clip_support: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            filters.header_lines(),
+            vec![
+                r#"##FILTER=<ID=LOW_HICNT,Description="High-quality ALT reads (FORMAT HICNT) are fewer than 2.">"#,
+                r#"##FILTER=<ID=FOREIGN_CLIP_SUPPORT,Description="SNV with at least 2 high-quality ALT reads by VarDict (FORMAT HICNT), a count the reads it reassigned to the allele (FORMAT REALIGNED_FRAC_OF_DP) could have lifted to 2, but fewer than 2 in the reads it was run on: reads carrying the ALT base aligned at the site at or above VarDict's -q, once its clipping of mismatches at read ends is replayed, or first in a soft clip at the site whose later bases match the reference. The shortfall is most often a soft clip VarDict added after comparing only its second base to the reference. Every count is left as VarDict wrote it.">"#,
+            ]
+        );
+    }
+
     #[test]
     fn test_labels_are_listed_in_a_fixed_order() {
         let filters = FilterThresholds {
@@ -864,7 +1039,7 @@ mod tests {
             ..variant("G", "A", 3.0)
         };
         assert_eq!(
-            filters.labels(&failing_both),
+            filters.labels(&failing_both, None),
             vec![NEAR_READ_END, LOW_MEAN_MAPQ]
         );
     }
