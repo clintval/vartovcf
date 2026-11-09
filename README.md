@@ -273,6 +273,23 @@ List the mutations with their reference 3-mer and ALT reads:
 bcftools query -i 'ALT!="."' -f '%CHROM\t%POS\t%REF\t%ALT\t%CONTEXT_3mer[\t%AD{1}]\n' "calls.g.vcf.gz"
 ```
 
+## MutSeqR
+
+[MutSeqR](https://github.com/EHSRB-BSRSE-Bioinformatics/MutSeqR) 1.1.1 and later read a tumor-only gVCF directly, taking `SITE_DP` as each record's `total_depth`.
+Make the gVCF as in [Tumor-Only](#tumor-only):
+
+- Pileup mode (`-p`) with `--fill-gvcf` and `--fill-gvcf-bed` gives every position of the BED a record, so a mutation frequency counts the depth at every position, not only where VarDict made a call.
+- With `--context-3mer`, MutSeqR takes each record's `context` from `CONTEXT_3mer`, so a mutation spectrum needs no BSgenome.
+
+```r
+BiocManager::install("EHSRB-BSRSE-Bioinformatics/MutSeqR")
+
+library(MutSeqR)
+
+mutations <- import_vcf_data("dna00001.g.vcf.gz")
+mf <- calculate_mf(mutations, subtype_resolution = "base_96")
+```
+
 ## Development and Testing
 
 See the [contributing guide](./CONTRIBUTING.md) for more information.
