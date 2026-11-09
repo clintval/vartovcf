@@ -280,6 +280,19 @@ impl<'a> TumorOnlyVariant<'a> {
         }
     }
 
+    /// Return the most reads VarDict can have reassigned to the ALT allele by local realignment
+    /// or MNV merging, read back from REALIGNED_FRAC_OF_DP: VarDict divides that count by a depth
+    /// no larger than DP or the ALT reads, whichever is larger, and rounds half-even to 4 decimals.
+    /// Unbounded when the fraction is missing.
+    pub fn max_reassigned_reads(&self) -> i64 {
+        if self.af_adjusted.is_missing() || !self.af_adjusted.is_finite() {
+            return i64::MAX;
+        }
+        let ten_thousandths = (f64::from(self.af_adjusted) * 10_000.0).round() as i64;
+        let depth = i64::from(self.depth.max(self.alt_depth).max(0));
+        (2 * ten_thousandths + 1) * depth / 20_000
+    }
+
     /// Return the "MEAN_DIST_TO_READ_END" formatted VCF field for this record: missing without
     /// ALT reads.
     pub fn mean_dist_to_read_end_value(&self) -> f32 {
@@ -1138,6 +1151,37 @@ mod tests {
         let mut variant = variants.into_iter().nth(2).unwrap();
         variant.af_adjusted = 0.1364;
         assert_eq!(variant.realigned_frac_of_dp_value(), 0.1364);
+    }
+
+    #[rstest]
+    #[case::none_reassigned(0.0, 100, 2, 0)]
+    #[case::none_reassigned_seen_at_any_depth_below_20_000(0.0, 19_999, 2, 0)]
+    #[case::one_read_rounds_to_zero_at_20_000(0.0, 20_000, 2, 1)]
+    #[case::one_of_13(0.0769, 13, 2, 1)]
+    #[case::one_of_14(0.0714, 14, 2, 1)]
+    #[case::two_of_1_000(0.002, 1_000, 3, 2)]
+    #[case::a_depth_raised_to_the_alt_reads(0.25, 10, 12, 3)]
+    fn test_tumor_only_variant_max_reassigned_reads(
+        variants: Vec<TumorOnlyVariant<'static>>,
+        #[case] af_adjusted: f32,
+        #[case] depth: i32,
+        #[case] alt_depth: i32,
+        #[case] expected: i64,
+    ) {
+        let mut variant = variants.into_iter().nth(2).unwrap();
+        variant.af_adjusted = af_adjusted;
+        variant.depth = depth;
+        variant.alt_depth = alt_depth;
+        assert_eq!(variant.max_reassigned_reads(), expected);
+    }
+
+    #[rstest]
+    fn test_tumor_only_variant_max_reassigned_reads_is_unbounded_when_missing(
+        variants: Vec<TumorOnlyVariant<'static>>,
+    ) {
+        let mut variant = variants.into_iter().nth(2).unwrap();
+        variant.af_adjusted = f32::missing();
+        assert_eq!(variant.max_reassigned_reads(), i64::MAX);
     }
 
     #[rstest]

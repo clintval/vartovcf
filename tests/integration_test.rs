@@ -2438,7 +2438,7 @@ mod tests {
     #[test]
     #[rustfmt::skip]
     fn run_end_to_end_labels_an_snv_that_reaches_the_floor_through_a_foreign_clip() -> Result<(), Box<dyn std::error::Error>> {
-        let (filters, stderr) = foreign_clip_filters(&["--filter-low-hicnt", "2", "--filter-foreign-clip-support", "2"])?;
+        let (filters, stderr) = foreign_clip_filters(&["--filter-low-hicnt", "2", "--filter-foreign-clip-support"])?;
         assert_eq!(
             filters,
             vec![
@@ -2448,15 +2448,15 @@ mod tests {
                 "chr1 1110 . C A . PASS",
             ]
         );
-        assert!(stderr.contains("Recounted 4 SNV(s) from the reads: 1 fell short of 2 high-quality ALT reads"), "{stderr}");
+        assert!(stderr.contains("Recounted 2 SNV(s) from the reads: 1 fell short of 2 high-quality ALT reads"), "{stderr}");
         assert!(!stderr.contains("WARN"), "{stderr}");
         Ok(())
     }
 
     #[test]
     #[rustfmt::skip]
-    fn run_end_to_end_recounts_only_snvs_vardict_counted_at_the_floor() -> Result<(), Box<dyn std::error::Error>> {
-        let (filters, stderr) = foreign_clip_filters(&["--filter-low-hicnt", "3", "--filter-foreign-clip-support", "3"])?;
+    fn run_end_to_end_recounts_only_snvs_reassigned_reads_could_have_lifted_to_the_floor() -> Result<(), Box<dyn std::error::Error>> {
+        let (filters, stderr) = foreign_clip_filters(&["--filter-low-hicnt", "3", "--filter-foreign-clip-support"])?;
         assert_eq!(
             filters,
             vec![
@@ -2473,7 +2473,7 @@ mod tests {
     #[test]
     #[rustfmt::skip]
     fn run_end_to_end_recounts_beside_the_leaky_mnv_fold() -> Result<(), Box<dyn std::error::Error>> {
-        let (filters, stderr) = foreign_clip_filters(&["--fix-leaky-mnv", "--filter-foreign-clip-support", "2"])?;
+        let (filters, stderr) = foreign_clip_filters(&["--fix-leaky-mnv", "--filter-low-hicnt", "2", "--filter-foreign-clip-support"])?;
         assert_eq!(
             filters,
             vec![
@@ -2484,7 +2484,7 @@ mod tests {
             ]
         );
         assert!(stderr.contains("Folded 0 partial row(s)"), "{stderr}");
-        assert!(stderr.contains("Recounted 4 SNV(s)"), "{stderr}");
+        assert!(stderr.contains("Recounted 2 SNV(s)"), "{stderr}");
         Ok(())
     }
 
@@ -2502,10 +2502,11 @@ mod tests {
             .arg("--input").arg("tests/calls.foreign-clip.var")
             .arg("--output").arg(dir.path().join("out.vcf"))
             .arg("--reads").arg(&bam)
-            .arg("--filter-foreign-clip-support").arg("2");
+            .arg("--filter-low-hicnt").arg("2")
+            .arg("--filter-foreign-clip-support");
         let assert = cmd.assert().success();
         let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
-        assert!(stderr.contains("No read in the reads supports 4 of the 4 SNV(s) recounted"), "{stderr}");
+        assert!(stderr.contains("No read in the reads supports 2 of the 2 SNV(s) recounted"), "{stderr}");
         Ok(())
     }
 
@@ -2513,7 +2514,9 @@ mod tests {
     #[case::without_a_use(&["--reads", "x.bam"])]
     #[case::with_a_rate(&["--fix-leaky-mnv", "--reads", "x.bam", "--leaky-mnv-rate", "0.1"])]
     #[case::read_options_without_reads(&["--fix-leaky-mnv", "--reads-base-quality", "30"])]
-    #[case::the_filter_without_reads(&["--filter-foreign-clip-support", "2"])]
+    #[case::the_filter_without_reads(&["--filter-low-hicnt", "2", "--filter-foreign-clip-support"])]
+    #[case::the_filter_without_its_floor(&["--reads", "x.bam", "--filter-foreign-clip-support"])]
+    #[case::the_filter_given_a_floor_of_its_own(&["--reads", "x.bam", "--filter-low-hicnt", "2", "--filter-foreign-clip-support", "2"])]
     #[rustfmt::skip]
     fn run_end_to_end_refuses_read_options_out_of_place(#[case] args: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
         let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;

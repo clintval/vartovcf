@@ -321,7 +321,13 @@ fn convert<I: Read>(
         }
         Some(LeakyMnvFix::Reads) => Some(Folder::Reads),
     };
-    if filters.foreign_clip_support.is_some() && reads.is_none() {
+    if filters.foreign_clip_support && filters.low_hicnt.is_none() {
+        return Err(
+            "--filter-foreign-clip-support holds SNVs to the LOW_HICNT floor: give --filter-low-hicnt!"
+                .into(),
+        );
+    }
+    if filters.foreign_clip_support && reads.is_none() {
         return Err(
             "--filter-foreign-clip-support needs the BAMs VarDict read: give --reads!".into(),
         );
@@ -450,7 +456,7 @@ fn convert<I: Read>(
             folds.whole, folds.split, folds.mnvs, folds.reads
         );
     }
-    if let (Some(min_hicnt), Some(sources)) = (filters.foreign_clip_support, &sink.reads) {
+    if let (Some(min_hicnt), Some(sources)) = (filters.foreign_clip_support_floor(), &sink.reads) {
         let recounts = sources.recounts;
         info!(
             "Recounted {} SNV(s) from the reads: {} fell short of {} high-quality ALT reads once the soft clips VarDict added that do not match the reference were left out.",
@@ -587,7 +593,8 @@ impl Sink<'_> {
     /// The tumor (or only) sample's call recounted from the reads, when FOREIGN_CLIP_SUPPORT is
     /// applied and the call is one it tests.
     fn recount(&mut self, call: &TumorOnlyVariant) -> Result<Option<Recount>, String> {
-        let (Some(min_hicnt), Some(sources)) = (self.filters.foreign_clip_support, &mut self.reads)
+        let (Some(min_hicnt), Some(sources)) =
+            (self.filters.foreign_clip_support_floor(), &mut self.reads)
         else {
             return Ok(None);
         };

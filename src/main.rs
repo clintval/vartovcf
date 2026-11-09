@@ -168,9 +168,9 @@ struct Opt {
     #[arg(long, value_name = "MIN_HICNT")]
     filter_low_hicnt: Option<i32>,
 
-    /// Label SNVs FOREIGN_CLIP_SUPPORT when VarDict counted at least this many high-quality ALT reads (FORMAT HICNT) but fewer are found in --reads carrying the ALT base aligned, or first in a soft clip that matches the reference past it: VarDict adds a soft clip to an SNV after comparing only its second base to the reference. Counts are left as VarDict wrote them; not applied when not given
-    #[arg(long, value_name = "MIN_HICNT", requires = "reads")]
-    filter_foreign_clip_support: Option<i32>,
+    /// Label SNVs FOREIGN_CLIP_SUPPORT when VarDict counted at least --filter-low-hicnt high-quality ALT reads (FORMAT HICNT), a count the reads it reassigned to the allele could have lifted to that floor, but fewer are found in --reads carrying the ALT base aligned, or first in a soft clip that matches the reference past it: VarDict adds a soft clip to an SNV after comparing only its second base to the reference. Counts are left as VarDict wrote them
+    #[arg(long, requires_all = ["reads", "filter_low_hicnt"])]
+    filter_foreign_clip_support: bool,
 }
 
 /// Main binary entrypoint.
