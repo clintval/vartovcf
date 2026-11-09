@@ -275,8 +275,11 @@ bcftools query -i 'ALT!="."' -f '%CHROM\t%POS\t%REF\t%ALT\t%CONTEXT_3mer[\t%AD{1
 
 ## MutSeqR
 
-[MutSeqR](https://github.com/EHSRB-BSRSE-Bioinformatics/MutSeqR) 1.1.1 and later read a tumor-only gVCF directly.
-It takes `SITE_DP` as each record's `total_depth` and `CONTEXT_3mer` as its `context`, so a mutation spectrum needs no BSgenome:
+[MutSeqR](https://github.com/EHSRB-BSRSE-Bioinformatics/MutSeqR) 1.1.1 and later read a tumor-only gVCF directly, taking `SITE_DP` as each record's `total_depth`.
+Make the gVCF as in [Tumor-Only](#tumor-only):
+
+- Pileup mode (`-p`) with `--fill-gvcf` gives every position a record, so a mutation frequency counts the depth at every position, not only where VarDict made a call.
+- With `--context-3mer`, MutSeqR takes each record's `context` from `CONTEXT_3mer`, so a mutation spectrum needs no BSgenome.
 
 ```r
 BiocManager::install("EHSRB-BSRSE-Bioinformatics/MutSeqR")
