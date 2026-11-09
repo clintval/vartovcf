@@ -114,6 +114,17 @@ In pileup mode (`-p`), VarDict keeps every candidate variant call, so add these 
     --filter-low-dp 3
 ```
 
+In pileup mode or not, two more labels mark calls whose support comes from soft clips, see [Recounting an SNV's Reads From Soft Clips](#recounting-an-snvs-reads-from-soft-clips) and [Labelling Long Insertions With Few Reads](#labelling-long-insertions-with-few-reads).
+Give `--reads` the BAMs VarDict read, with the `--reads-*` options at the values it ran with, give `--filter-low-hicnt` VarDict's `-r` outside pileup mode, and choose the long-insertion values from your own data:
+
+```bash
+    --reads "input.bam" \
+    --filter-low-hicnt 2 \
+    --filter-foreign-clip-support \
+    --filter-low-support-long-insertion 8 \
+    --filter-low-support-long-insertion-min-length 50
+```
+
 Six of the labels are patterns in the reads:
 
 ![The six FILTER labels that are patterns in the reads: NEAR_READ_END, where the ALT base sits near each read's end; SAME_READ_POSITION, where every ALT read has it at one read position; STRAND_BIAS, where only forward reads carry the ALT base; HOMOPOLYMER_INDEL, a read one A short in a long run of A; TANDEM_REPEAT_INDEL, a read one CA unit short in a CA repeat; and HIGH_MEAN_MISMATCHES, where the ALT reads carry other mismatches.](.github/img/filter-signatures.svg)
@@ -329,6 +340,7 @@ Make the gVCF as in [Tumor-Only](#tumor-only):
 
 - Pileup mode (`-p`) with `--fill-gvcf` and `--fill-gvcf-bed` gives every position of the BED a record, so a mutation frequency counts the depth at every position, not only where VarDict made a call.
 - With `--context-3mer`, MutSeqR takes each record's `context` from `CONTEXT_3mer`, so a mutation spectrum needs no BSgenome.
+- With the labels of [Filters](#filters), such as `FOREIGN_CLIP_SUPPORT` and `LOW_SUPPORT_LONG_INSERTION`, MutSeqR keeps each record's FILTER in its `filter` column, and `filter_mut()` leaves the labelled calls out of a mutation frequency, also where a call carries other labels.
 
 ```r
 BiocManager::install("EHSRB-BSRSE-Bioinformatics/MutSeqR")
@@ -336,6 +348,11 @@ BiocManager::install("EHSRB-BSRSE-Bioinformatics/MutSeqR")
 library(MutSeqR)
 
 mutations <- import_vcf_data("dna00001.g.vcf.gz")
+mutations <- filter_mut(
+  mutations,
+  custom_filter_col = "filter",
+  custom_filter_val = c("FOREIGN_CLIP_SUPPORT", "LOW_SUPPORT_LONG_INSERTION")
+)
 mf <- calculate_mf(mutations, subtype_resolution = "base_96")
 ```
 
