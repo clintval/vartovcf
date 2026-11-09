@@ -273,6 +273,20 @@ List the mutations with their reference 3-mer and ALT reads:
 bcftools query -i 'ALT!="."' -f '%CHROM\t%POS\t%REF\t%ALT\t%CONTEXT_3mer[\t%AD{1}]\n' "calls.g.vcf.gz"
 ```
 
+## MutSeqR
+
+[MutSeqR](https://github.com/EHSRB-BSRSE-Bioinformatics/MutSeqR) 1.1.1 and later read a tumor-only gVCF directly.
+It takes `SITE_DP` as each record's `total_depth` and `CONTEXT_3mer` as its `context`, so a mutation spectrum needs no BSgenome:
+
+```r
+BiocManager::install("EHSRB-BSRSE-Bioinformatics/MutSeqR")
+
+library(MutSeqR)
+
+mutations <- import_vcf_data("dna00001.g.vcf.gz")
+mf <- calculate_mf(mutations, subtype_resolution = "base_96")
+```
+
 ## Development and Testing
 
 See the [contributing guide](./CONTRIBUTING.md) for more information.
