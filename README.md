@@ -53,6 +53,15 @@ vardict-java \
 With VarDict's pileup mode (`-p`) and `--fill-gvcf`, every position of the BED gets a record, so the output is a gVCF.
 Leave out `-p`, `--fill-gvcf` and `--fill-gvcf-bed` for a VCF of VarDict's calls only.
 
+> [!WARNING]
+> On MNVs and other Complex calls, `AD[0]` is missing (`.`), as VarDict also counts reads carrying part of the ALT as REF there.
+> This is valid VCF, but htsjdk, and so fgbio, GATK and Picard, drops a sample's whole `AD` when any of its values is `.`.
+> Before such a tool, fill `AD[0]` with `DP` minus `AD[1]`, at least 0, so `AD[1]` over the sum of `AD` is still `AF`:
+>
+> ```bash
+> bcftools view "dna00001.g.vcf.gz" | awk 'BEGIN{FS=OFS="\t"} !/^#/{a=d=0; n=split($9,k,":"); for(i=1;i<=n;i++){if(k[i]=="AD")a=i; if(k[i]=="DP")d=i} for(s=10;s<=NF;s++){m=split($s,v,":"); if(a && v[a]~/^\.,/){r=v[d]-substr(v[a],3); v[a]=(r>0?r:0) substr(v[a],2); $s=v[1]; for(i=2;i<=m;i++)$s=$s":"v[i]}}} 1' | bcftools view -Oz -W -o "dna00001.htsjdk.g.vcf.gz"
+> ```
+
 ## Tumor-Normal
 
 Replace `var2vcf_paired.pl` the same way, naming the normal sample:
