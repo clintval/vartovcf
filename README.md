@@ -333,10 +333,10 @@ List the mutations with their reference 3-mer and ALT reads:
 bcftools query -i 'ALT!="."' -f '%CHROM\t%POS\t%REF\t%ALT\t%CONTEXT_3mer[\t%AD{1}]\n' "calls.g.vcf.gz"
 ```
 
-## htsjdk Tools
+## HTSJDK Tools
 
 On MNVs and other Complex calls, `AD[0]` is missing (`.`), as VarDict also counts reads carrying part of the ALT as REF there.
-This is valid VCF, but htsjdk, and so fgbio, GATK and Picard, drops a sample's whole `AD` when any of its values is `.`.
+This is valid VCF, but HTSJDK, and so fgbio, GATK and Picard, drops a sample's whole `AD` when any of its values is `.`.
 Before such a tool, fill `AD[0]` with `DP` minus `AD[1]`, at least 0, so `AD[1]` over the sum of `AD` is still `AF`:
 
 ```bash
