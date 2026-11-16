@@ -333,6 +333,18 @@ List the mutations with their reference 3-mer and ALT reads:
 bcftools query -i 'ALT!="."' -f '%CHROM\t%POS\t%REF\t%ALT\t%CONTEXT_3mer[\t%AD{1}]\n' "calls.g.vcf.gz"
 ```
 
+## HTSJDK Tools
+
+On MNVs and other Complex calls, `AD[0]` is missing (`.`), as VarDict also counts reads carrying part of the ALT as REF there.
+This is valid VCF, but HTSJDK, and so fgbio, GATK and Picard, drops a sample's whole `AD` when any of its values is `.`.
+Before such a tool, fill `AD[0]` with `DP` minus `AD[1]`, at least 0, so `AD[1]` over the sum of `AD` is still `AF`:
+
+```bash
+bcftools view "calls.vcf.gz" \
+  | awk 'BEGIN{FS=OFS="\t"} !/^#/{a=d=0; n=split($9,k,":"); for(i=1;i<=n;i++){if(k[i]=="AD")a=i; if(k[i]=="DP")d=i} for(s=10;s<=NF;s++){m=split($s,v,":"); if(a && v[a]~/^\.,/){r=v[d]-substr(v[a],3); v[a]=(r>0?r:0) substr(v[a],2); $s=v[1]; for(i=2;i<=m;i++)$s=$s":"v[i]}}} 1' \
+  | bcftools view -Oz -W -o "calls.htsjdk.vcf.gz"
+```
+
 ## MutSeqR
 
 [MutSeqR](https://github.com/EHSRB-BSRSE-Bioinformatics/MutSeqR) 1.1.1 and later read a tumor-only gVCF directly, taking `SITE_DP` as each record's `total_depth`.
