@@ -491,6 +491,14 @@ impl<'a> TumorOnlyVariant<'a> {
     }
 }
 
+/// Return the call of a row, one per sample, whose genotype column carries a structural variant's
+/// length: the first with ALT reads, or the first when none has any.
+pub fn sv_call<'r, 'a>(row: &'r [TumorOnlyVariant<'a>]) -> &'r TumorOnlyVariant<'a> {
+    row.iter()
+        .find(|call| call.has_alt_reads())
+        .unwrap_or(&row[0])
+}
+
 /// Return VarDict's variant class (`Variant.varType`) for a REF and ALT allele: `None` without an ALT
 /// allele, SNV, Insertion, Deletion, Complex, or the type of a symbolic structural variant.
 pub fn variant_class<'s>(ref_allele: &'s str, alt_allele: &'s str) -> Option<&'s str> {
@@ -825,7 +833,7 @@ fn vcf_header(samples: &[&str], filters: &FilterThresholds, fix: Option<&LeakyMn
     add_info(&mut header, "INDEL_3P_SHIFT", info::Number::AlternateBases, info::Type::Integer, r#"Number of bases this insertion or deletion can slide toward the 3' end (rightward on the forward strand) and still describe the same haplotype, counted by vartovcf in the reference as VarDict counts its Shift3, but without the window that capped VarDict's at 70 for insertions and 71 for deletions; POS plus this is the right-most equivalent position. Written only for insertions and deletions."#);
     add_info(&mut header, "REPEAT_UNIT_COPIES", info::Number::AlternateBases, info::Type::Float, r#"Copies of the 1-6 bp tandem repeat unit next to the variant, counted by VarDict in the reference or ALT haplotype, whichever is larger (1 means no repeat). VarDict takes the unit from one side of the variant (for SNVs, the repeat starting at the following base), so a repeat on the other side can be missed, and for a row it labels Complex it can take the unit as for an SNV even when the call normalizes to an insertion or deletion; it also raises the count to an indel's 3' shift divided by its length when that is larger, which can make it fractional and leave REPEAT_UNIT_LEN describing a different repeat. Sequence context, not microsatellite instability. Rounded by VarDict to 3 decimals; absent when VarDict did not compute it."#);
     add_info(&mut header, "REPEAT_UNIT_LEN", info::Number::AlternateBases, info::Type::Integer, r#"Length in bp (1-6) of the repeat unit counted in REPEAT_UNIT_COPIES; absent when VarDict did not compute it."#);
-    add_info(&mut header, "END", info::Number::Count(1), info::Type::Integer, r#"End position, written only on records with a symbolic ALT allele: the last deleted base for DEL, the last inverted base for INV, and VarDict's end of the duplication for DUP, which can be off by one depending on how VarDict found it."#);
+    add_info(&mut header, "END", info::Number::Count(1), info::Type::Integer, r#"End position, written only on records with a symbolic ALT allele: the last deleted base for DEL, the last inverted base for INV, and the last duplicated base for DUP."#);
     add_info(&mut header, "SVLEN", info::Number::Count(1), info::Type::Integer, r#"Signed length of the structural variant, written only on records with a symbolic ALT allele: VarDict's own event length, negative for DEL (the deleted bases), positive for DUP (the duplicated bases) and INV (the inverted bases)."#);
     add_info(&mut header, "SVTYPE", info::Number::Count(1), info::Type::String, r#"Structural variant type, written only on records with a symbolic ALT allele: DEL, DUP or INV."#);
     if tumor_normal {

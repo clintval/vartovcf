@@ -4,10 +4,12 @@
 //! The REF allele must match the reference. A call's alleles lose their shared trailing bases, then
 //! their shared leading bases down to one, and an insertion or deletion moves left while the base
 //! before it equals its last base, keeping one base before it as its anchor. A substitution is only
-//! trimmed. Every allele is written uppercase. Reference-only calls and symbolic structural variants
-//! keep their alleles and position.
+//! trimmed. Every allele is written uppercase. Reference-only calls and deletions with a symbolic
+//! allele keep their alleles and position. VarDict places a symbolic duplication or inversion on its
+//! first affected base, so each moves onto the base before it, which VCF asks of a symbolic allele,
+//! and then END - POS is its length.
 
-use crate::record::{TumorOnlyVariant, variant_class};
+use crate::record::{TumorOnlyVariant, sv_call, variant_class};
 use crate::reference::Reference;
 
 /// A call's position and alleles after normalization.
@@ -15,7 +17,7 @@ use crate::reference::Reference;
 pub struct Normalized {
     /// The 1-based position of the first REF base.
     pub start: u64,
-    /// The 1-based position of the last REF base, or VarDict's END for a symbolic allele.
+    /// The 1-based position of the last REF base, or the END of a symbolic allele.
     pub end: u64,
     /// The REF allele, uppercase.
     pub ref_allele: String,
@@ -40,9 +42,13 @@ impl Normalized {
     }
 }
 
-/// Normalizes a call against the reference, refusing one whose REF allele the reference does not
-/// have at its position.
-pub fn normalize(reference: &mut Reference, call: &TumorOnlyVariant) -> Result<Normalized, String> {
+/// Normalizes a row's call, one per sample with a shared site, against the reference, refusing one
+/// whose REF allele the reference does not have at its position.
+pub fn normalize(
+    reference: &mut Reference,
+    row: &[TumorOnlyVariant],
+) -> Result<Normalized, String> {
+    let call = &row[0];
     let (contig, start) = (call.contig, call.start);
     check_ref(reference, contig, start, call.ref_allele)?;
     let unchanged = Normalized {
@@ -52,6 +58,9 @@ pub fn normalize(reference: &mut Reference, call: &TumorOnlyVariant) -> Result<N
         alt_allele: uppercase(call.alt_allele),
         indel_3p_shift: None,
     };
+    if matches!(call.alt_allele, "<DUP>" | "<INV>") {
+        return anchor_symbolic(reference, call, sv_call(row).sv_length(), unchanged);
+    }
     if call.ref_allele.eq_ignore_ascii_case(call.alt_allele)
         || !is_sequence(call.ref_allele)
         || !is_sequence(call.alt_allele)
@@ -80,6 +89,37 @@ pub fn normalize(reference: &mut Reference, call: &TumorOnlyVariant) -> Result<N
         ref_allele,
         alt_allele,
         indel_3p_shift,
+    })
+}
+
+/// Moves a DUP or INV of this length from its first affected base, where VarDict places it with END
+/// on the last, onto the base before it. VarDict writes a long insertion as a DUP already on the base
+/// before it but with END one past, so only its END moves. A call matching neither, or one at the
+/// contig's first base, is unchanged.
+fn anchor_symbolic(
+    reference: &mut Reference,
+    call: &TumorOnlyVariant,
+    length: Option<i32>,
+    unchanged: Normalized,
+) -> Result<Normalized, String> {
+    let Some(length) = length.and_then(|length| u64::try_from(length).ok()) else {
+        return Ok(unchanged);
+    };
+    if call.alt_allele == "<DUP>" && call.end == call.start + length + 1 {
+        return Ok(Normalized {
+            end: call.start + length,
+            ..unchanged
+        });
+    }
+    if call.end + 1 != call.start + length || call.start == 1 {
+        return Ok(unchanged);
+    }
+    let start = call.start - 1;
+    let base = reference.base(call.contig, start - 1)?.to_ascii_uppercase();
+    Ok(Normalized {
+        start,
+        ref_allele: char::from(base).to_string(),
+        ..unchanged
     })
 }
 
@@ -209,7 +249,7 @@ mod tests {
             alt_allele,
             ..Default::default()
         };
-        normalize(&mut reference, &call)
+        normalize(&mut reference, std::slice::from_ref(&call))
     }
 
     /// The 1-based position and alleles of a normalized call.
@@ -289,7 +329,74 @@ mod tests {
             alt_allele: "<DEL>",
             ..Default::default()
         };
-        assert_eq!(normalize(&mut reference, &call).unwrap().end, 6);
+        assert_eq!(
+            normalize(&mut reference, std::slice::from_ref(&call))
+                .unwrap()
+                .end,
+            6
+        );
+    }
+
+    /// Normalizes one symbolic call on contig `c` of `GCATGATTCA` and returns its POS, REF and END.
+    fn anchor(start: u64, end: u64, alt_allele: &str, gt: &str) -> (u64, String, u64) {
+        let (_dir, path) = fasta(&[("c", "GCATGATTCA")]);
+        let mut reference = Reference::from_path(&path).unwrap();
+        let ref_allele = &"GCATGATTCA"[start as usize - 1..start as usize];
+        let variant_type = &alt_allele[1..4];
+        let call = TumorOnlyVariant {
+            contig: "c",
+            start,
+            end,
+            ref_allele,
+            alt_allele,
+            gt,
+            variant_type,
+            ..Default::default()
+        };
+        let normalized = normalize(&mut reference, std::slice::from_ref(&call)).unwrap();
+        (normalized.start, normalized.ref_allele, normalized.end)
+    }
+
+    #[rstest]
+    #[case::dup_on_its_first_base(4, 8, "<DUP>", "T/+5", (3, "A", 8))]
+    #[case::inv_on_its_first_base(4, 8, "<INV>", "T/<INV5>", (3, "A", 8))]
+    #[case::long_insertion_written_as_a_dup(4, 10, "<DUP>", "T/+5", (4, "T", 9))]
+    #[case::dup_at_the_contig_start(1, 5, "<DUP>", "G/+5", (1, "G", 5))]
+    #[case::dup_without_a_length(4, 8, "<DUP>", "T/T", (4, "T", 8))]
+    #[case::dup_whose_end_disagrees(4, 20, "<DUP>", "T/+5", (4, "T", 20))]
+    #[case::del_is_unchanged(3, 8, "<DEL>", "A/-5", (3, "A", 8))]
+    fn test_normalize_anchors_a_dup_or_inv_on_the_base_before_it(
+        #[case] start: u64,
+        #[case] end: u64,
+        #[case] alt_allele: &str,
+        #[case] gt: &str,
+        #[case] expected: (u64, &str, u64),
+    ) {
+        let expected = (expected.0, expected.1.to_string(), expected.2);
+        assert_eq!(anchor(start, end, alt_allele, gt), expected);
+    }
+
+    #[test]
+    fn test_normalize_takes_a_dup_length_from_the_sample_with_alt_reads() {
+        let (_dir, path) = fasta(&[("c", "GCATGATTCA")]);
+        let mut reference = Reference::from_path(&path).unwrap();
+        let normal = TumorOnlyVariant {
+            contig: "c",
+            start: 4,
+            end: 8,
+            ref_allele: "T",
+            alt_allele: "<DUP>",
+            gt: "T/T",
+            variant_type: "DUP",
+            ..Default::default()
+        };
+        let tumor = TumorOnlyVariant {
+            gt: "T/+5",
+            alt_depth: 3,
+            ..normal.clone()
+        };
+        let normalized = normalize(&mut reference, &[normal, tumor]).unwrap();
+        assert_eq!((normalized.start, normalized.end), (3, 8));
     }
 
     #[rstest]
