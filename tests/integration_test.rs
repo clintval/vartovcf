@@ -1592,7 +1592,7 @@ mod tests {
             query(&output, "chr13", 2000, 2000)?,
             ["chr13 1141 . G <DEL>"]
         );
-        assert!(query(&output, "chr12", 1, 446)?.is_empty());
+        assert!(query(&output, "chr12", 1, 445)?.is_empty());
         Ok(())
     }
 

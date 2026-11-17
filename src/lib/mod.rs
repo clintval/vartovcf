@@ -23,7 +23,7 @@ use crate::reads::{ReadEvidence, ReadFiles, ReadSources, Recount};
 use crate::record::MIN_HOM_ALT_AF;
 use crate::record::TumorNormalVariant;
 use crate::record::TumorOnlyVariant;
-use crate::record::{tumor_normal_fisher_p_value, tumor_normal_header, tumor_only_header};
+use crate::record::{sv_call, tumor_normal_fisher_p_value, tumor_normal_header, tumor_only_header};
 use crate::reference::Reference;
 use crate::site::{Counts, PerSample, SAMPLES, Walk};
 use crate::sort::{Entry, Rank, RecordSorter, RowSorter, SortKey, resolve_tmp_dir};
@@ -697,7 +697,7 @@ impl Sink<'_> {
         let calls: Vec<&[TumorOnlyVariant]> = parsed.chunks(samples).collect();
         let normalized = calls
             .iter()
-            .map(|row| normalize(&mut self.reference, &row[0]))
+            .map(|row| normalize(&mut self.reference, row))
             .collect::<Result<Vec<_>, _>>()?;
         let written: Vec<bool> = calls
             .iter()
@@ -800,7 +800,7 @@ impl Sink<'_> {
         status: Option<&str>,
         region: u64,
     ) -> Result<(), Box<dyn error::Error>> {
-        let normalized = normalize(&mut self.reference, &calls[0])?;
+        let normalized = normalize(&mut self.reference, calls)?;
         let missing = [i32::missing(); SAMPLES];
         let extras = Extras {
             site_dp: &missing[..calls.len()],
@@ -1249,10 +1249,7 @@ fn build_record<'w>(
             );
         }
         variant.push_info_integer("END", &[var.end as i32])?;
-        let sv_call = calls
-            .iter()
-            .find(|call| call.has_alt_reads())
-            .unwrap_or(var);
+        let sv_call = sv_call(calls);
         let sv_length = sv_call.sv_length().ok_or_else(|| {
             format!(
                 "{}:{}: cannot read the {} length from the genotype column '{}'",
