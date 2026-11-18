@@ -557,13 +557,14 @@ fn call_kind(line: &[u8]) -> (&[u8], &[u8], usize) {
     let mut fields = line.split(|&byte| byte == b'\t').skip(3);
     let ref_allele = fields.next().unwrap_or_default();
     let alt_allele = fields.next().unwrap_or_default();
+    let anchored = ref_allele.first() == alt_allele.first();
     let kind = match (ref_allele.len(), alt_allele.len()) {
         _ if alt_allele == b"." => 0,
         _ if alt_allele.first() == Some(&b'<') => 6,
         (1, 1) => 1,
         (ref_length, alt_length) if ref_length == alt_length => 2,
-        (1, _) => 3,
-        (_, 1) => 4,
+        (1, _) if anchored => 3,
+        (_, 1) if anchored => 4,
         _ => 5,
     };
     (ref_allele, alt_allele, kind)
@@ -576,7 +577,8 @@ fn call_kind(line: &[u8]) -> (&[u8], &[u8], usize) {
 struct Collapses {
     other_regions: usize,
     same_region: [usize; CALL_KINDS.len()],
-    same_region_reads: u64,
+    same_region_tumor_reads: u64,
+    same_region_normal_reads: u64,
 }
 
 impl Collapses {
@@ -588,16 +590,19 @@ impl Collapses {
         }
         let (ref_allele, alt_allele, kind) = call_kind(line);
         self.same_region[kind] += 1;
-        self.same_region_reads += dropped.tumor_reads;
+        self.same_region_tumor_reads += dropped.tumor_reads;
+        self.same_region_normal_reads += dropped.normal_reads;
         debug!(
-            "Dropped the row of the {} {contig}:{position} {}>{} that VarDict wrote at {} with {} tumor ALT read(s), as the same region wrote the call at {} with {}.",
+            "Dropped the row of the {} {contig}:{position} {}>{} that VarDict wrote at {} with {} tumor and {} normal ALT read(s), as the same region wrote the call at {} with {} and {}.",
             CALL_KINDS[kind],
             String::from_utf8_lossy(ref_allele),
             String::from_utf8_lossy(alt_allele),
             dropped.start,
             dropped.tumor_reads,
+            dropped.normal_reads,
             kept.start,
-            kept.tumor_reads
+            kept.tumor_reads,
+            kept.normal_reads
         );
     }
 
@@ -613,11 +618,12 @@ impl Collapses {
             .map(|(kind, rows)| format!("{rows} {kind}"))
             .collect();
         info!(
-            "Wrote each call once, dropping {} row(s) of a call another VarDict region wrote and {} row(s) of a call the same region wrote in another row ({}), with {} tumor ALT read(s) among them.",
+            "Wrote each call once, dropping {} row(s) of a call another VarDict region wrote and {} row(s) of a call the same region wrote in another row ({}), with {} tumor and {} normal ALT read(s) among them.",
             self.other_regions,
             same_region,
             kinds.join(", "),
-            self.same_region_reads
+            self.same_region_tumor_reads,
+            self.same_region_normal_reads
         );
     }
 }
@@ -2497,6 +2503,8 @@ mod tests {
     #[case("C\tCA", 3)]
     #[case("CA\tC", 4)]
     #[case("CA\tGTT", 5)]
+    #[case("CTTGTA\tG", 5)]
+    #[case("C\tGA", 5)]
     #[case("C\t<DEL>", 6)]
     fn test_call_kind_reads_the_kind_of_call_from_ref_and_alt(
         #[case] alleles: &str,

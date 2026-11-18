@@ -626,13 +626,19 @@ mod tests {
     #[case(
         "tests/calls.leaky-mnv.overlapping.var",
         Some(
-            "dropping 2 row(s) of a call another VarDict region wrote and 0 row(s) of a call the same region wrote in another row (0 reference-only, 0 SNV, 0 MNV, 0 insertion, 0 deletion, 0 complex, 0 symbolic), with 0 tumor ALT read(s) among them."
+            "dropping 2 row(s) of a call another VarDict region wrote and 0 row(s) of a call the same region wrote in another row (0 reference-only, 0 SNV, 0 MNV, 0 insertion, 0 deletion, 0 complex, 0 symbolic), with 0 tumor and 0 normal ALT read(s) among them."
         )
     )]
     #[case(
         "tests/calls.same-call.tie.var",
         Some(
-            "dropping 0 row(s) of a call another VarDict region wrote and 1 row(s) of a call the same region wrote in another row (0 reference-only, 0 SNV, 0 MNV, 1 insertion, 0 deletion, 0 complex, 0 symbolic), with 20 tumor ALT read(s) among them."
+            "dropping 0 row(s) of a call another VarDict region wrote and 1 row(s) of a call the same region wrote in another row (0 reference-only, 0 SNV, 0 MNV, 1 insertion, 0 deletion, 0 complex, 0 symbolic), with 20 tumor and 0 normal ALT read(s) among them."
+        )
+    )]
+    #[case(
+        "tests/calls.tumor-normal.same-call.var",
+        Some(
+            "and 1 row(s) of a call the same region wrote in another row (0 reference-only, 0 SNV, 0 MNV, 0 insertion, 1 deletion, 0 complex, 0 symbolic), with 5 tumor and 100 normal ALT read(s) among them."
         )
     )]
     #[case("tests/calls.leaky-mnv.var", None)]
@@ -640,10 +646,15 @@ mod tests {
         #[case] input: &str,
         #[case] expected: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        let reference = if input.contains("tumor-normal") {
+            "tests/tumor-normal.fa"
+        } else {
+            "tests/reference.fa"
+        };
         let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
         let assert = cmd
             .env("RUST_LOG", "debug")
-            .args(["--reference", "tests/reference.fa", "--output", "/dev/null"])
+            .args(["--reference", reference, "--output", "/dev/null"])
             .args(["--input", input])
             .assert()
             .success();
@@ -654,7 +665,7 @@ mod tests {
         }
         if input.contains("same-call.tie") {
             assert!(
-                stderr.contains("Dropped the row of the insertion chr1:1153 C>CA that VarDict wrote at 1157 with 20 tumor ALT read(s), as the same region wrote the call at 1154 with 20."),
+                stderr.contains("Dropped the row of the insertion chr1:1153 C>CA that VarDict wrote at 1157 with 20 tumor and 0 normal ALT read(s), as the same region wrote the call at 1154 with 20 and 0."),
                 "{stderr}"
             );
         }

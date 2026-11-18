@@ -139,25 +139,32 @@ pub struct Row {
     pub region: u64,
     /// The ALT reads of the tumor (or only) sample.
     pub tumor_reads: u64,
+    /// The ALT reads of the normal sample, 0 without one.
+    pub normal_reads: u64,
     /// The position VarDict wrote the row at.
     pub start: u64,
 }
 
 impl Row {
-    /// The row encoded in 24 bytes.
+    /// The number of bytes a row is encoded in.
+    const LENGTH: usize = 32;
+
+    /// The row encoded in [`Row::LENGTH`] bytes.
     fn encode(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.region.to_le_bytes());
         out.extend_from_slice(&self.tumor_reads.to_le_bytes());
+        out.extend_from_slice(&self.normal_reads.to_le_bytes());
         out.extend_from_slice(&self.start.to_le_bytes());
     }
 
-    /// The row from the 24 bytes it was encoded in.
+    /// The row from the [`Row::LENGTH`] bytes it was encoded in.
     fn decode(bytes: &[u8]) -> Row {
         let at = |index: usize| u64::from_le_bytes(bytes[index..index + 8].try_into().unwrap());
         Row {
             region: at(0),
             tumor_reads: at(8),
-            start: at(16),
+            normal_reads: at(16),
+            start: at(24),
         }
     }
 }
@@ -218,6 +225,7 @@ impl RecordSorter {
         let row = Row {
             region: rank.region,
             tumor_reads: rank.tumor_reads,
+            normal_reads: rank.reads - rank.tumor_reads,
             start: rank.start,
         };
         row.encode(&mut self.value);
@@ -294,7 +302,7 @@ impl Entries {
             if !collapsed {
                 self.previous.clear();
                 self.previous.extend_from_slice(call);
-                self.kept = Row::decode(&value[18..42]);
+                self.kept = Row::decode(&value[18..18 + Row::LENGTH]);
             }
         }
         self.value.clear();
@@ -319,14 +327,14 @@ impl Entries {
                 rid,
                 position,
                 kept: self.kept,
-                dropped: Row::decode(&value[18..42]),
-                line: &value[42..],
+                dropped: Row::decode(&value[18..18 + Row::LENGTH]),
+                line: &value[18 + Row::LENGTH..],
             },
             _ => Entry::Record {
                 rid,
                 position,
                 reference_only: value[13] == 1,
-                line: &value[42..],
+                line: &value[18 + Row::LENGTH..],
             },
         };
         Ok(Some(entry))
@@ -570,6 +578,7 @@ mod tests {
         let row = |region, tumor_reads, start| Row {
             region,
             tumor_reads,
+            normal_reads: 0,
             start,
         };
         let record = |line: &[u8]| {
