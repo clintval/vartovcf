@@ -623,6 +623,45 @@ mod tests {
     }
 
     #[rstest]
+    #[case(
+        "tests/calls.leaky-mnv.overlapping.var",
+        Some(
+            "dropping 2 row(s) of a call another VarDict region wrote and 0 row(s) of a call the same region wrote in another row (0 reference-only, 0 SNV, 0 MNV, 0 insertion, 0 deletion, 0 complex, 0 symbolic), with 0 tumor ALT read(s) among them."
+        )
+    )]
+    #[case(
+        "tests/calls.same-call.tie.var",
+        Some(
+            "dropping 0 row(s) of a call another VarDict region wrote and 1 row(s) of a call the same region wrote in another row (0 reference-only, 0 SNV, 0 MNV, 1 insertion, 0 deletion, 0 complex, 0 symbolic), with 20 tumor ALT read(s) among them."
+        )
+    )]
+    #[case("tests/calls.leaky-mnv.var", None)]
+    fn run_end_to_end_counts_the_rows_of_a_call_it_drops(
+        #[case] input: &str,
+        #[case] expected: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        let assert = cmd
+            .env("RUST_LOG", "debug")
+            .args(["--reference", "tests/reference.fa", "--output", "/dev/null"])
+            .args(["--input", input])
+            .assert()
+            .success();
+        let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+        match expected {
+            Some(expected) => assert!(stderr.contains(expected), "{stderr}"),
+            None => assert!(!stderr.contains("Wrote each call once"), "{stderr}"),
+        }
+        if input.contains("same-call.tie") {
+            assert!(
+                stderr.contains("Dropped the row of the insertion chr1:1153 C>CA that VarDict wrote at 1157 with 20 tumor ALT read(s), as the same region wrote the call at 1154 with 20."),
+                "{stderr}"
+            );
+        }
+        Ok(())
+    }
+
+    #[rstest]
     #[case("tests/calls.leaky-mnv.overlapping.var", &[], Some("2 of VarDict's region(s) overlap a region before them, first chr1:1050-1250."))]
     #[case("tests/calls.site-dp.overlap.var", &[], Some("1 of VarDict's region(s) overlap a region before them, first chr1:1110-1111."))]
     #[case("tests/calls.duplicates.var", &[], Some("1 of VarDict's region(s) overlap a region before them, first chr1:749-988."))]
