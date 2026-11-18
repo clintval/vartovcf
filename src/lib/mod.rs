@@ -842,7 +842,7 @@ impl Sink<'_> {
         let rid = self.records.rid(contig)?;
         let (start, end) = (start.max(1), end.min(length));
         if start <= end {
-            self.sorter.push_region(rid, start, end)?;
+            self.sorter.push_region(rid, start, end, true)?;
         }
         Ok(())
     }
@@ -858,7 +858,8 @@ impl Sink<'_> {
             let length = self.reference.length(contig)? as i64;
             let (start, end) = (start.max(1), end.min(length));
             if start <= end {
-                self.sorter.push_region(rid, start as u64, end as u64)?;
+                self.sorter
+                    .push_region(rid, start as u64, end as u64, false)?;
             }
         }
         Ok(())
@@ -894,6 +895,9 @@ impl Sink<'_> {
             read_reference: false,
             over_depth: 0,
             first_over_depth: None,
+            vardict_end: 0,
+            overlaps: 0,
+            first_overlap: None,
         };
         while let Some(entry) = entries.next_entry()? {
             if stop() || !writer.entry(entry)? {
@@ -907,6 +911,12 @@ impl Sink<'_> {
             warn!(
                 "The reads VarDict counted at {} position(s) add up to more than VarDict's DP there without a row labeled Complex to explain it, first at {first}; SITE_DP keeps their sum.",
                 writer.over_depth
+            );
+        }
+        if let Some(first) = &writer.first_overlap {
+            warn!(
+                "{} of VarDict's region(s) overlap a region before them, first {first}. Each region counts the reads of a call in the overlap and only one region's row is written: run VarDict on regions that do not overlap, checking the BED for overlapping lines and VarDict's -x, which widens each line on both sides.",
+                writer.overlaps
             );
         }
         if fill_gvcf && writer.read_record && !writer.read_reference {
@@ -938,6 +948,9 @@ struct Writer<'w> {
     walk: Walk,
     over_depth: usize,
     first_over_depth: Option<String>,
+    vardict_end: u64,
+    overlaps: usize,
+    first_overlap: Option<String>,
     end: u64,
     position: u64,
     counts_region: Option<u64>,
@@ -968,7 +981,23 @@ impl Writer<'_> {
             self.wrote_record = false;
         }
         match entry {
-            Entry::Region { end, .. } => self.end = self.end.max(end),
+            Entry::Region {
+                start,
+                end,
+                vardict,
+                ..
+            } => {
+                if vardict {
+                    if start <= self.vardict_end {
+                        self.overlaps += 1;
+                        if self.first_overlap.is_none() {
+                            self.first_overlap = Some(format!("{}:{start}-{end}", self.contig));
+                        }
+                    }
+                    self.vardict_end = self.vardict_end.max(end);
+                }
+                self.end = self.end.max(end);
+            }
             Entry::Counts { region, counts, .. } => {
                 if self.counts_region.is_none_or(|first| first == region) {
                     self.counts_region = Some(region);
@@ -1009,6 +1038,7 @@ impl Writer<'_> {
         self.rid = Some(rid);
         self.walk = Walk::default();
         self.end = 0;
+        self.vardict_end = 0;
         self.position = 0;
         Ok(())
     }
