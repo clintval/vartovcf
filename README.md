@@ -84,6 +84,14 @@ bcftools view -f PASS -i 'INFO/VARDICT_STATUS ~ "Somatic" && INFO/TUMOR_NORMAL_F
 > VarDictJava's tumor-normal mode walks a position's alleles from the best supported down and stops at the first that fails its call rules, so it never writes the alleles below that one, about 0.4% of rows.
 > A fix is proposed in [joachimwolff/VarDictJava#4](https://github.com/joachimwolff/VarDictJava/pull/4).
 
+## Regions
+
+Run VarDict on regions that do not overlap.
+VarDict piles up each region on its own, so a call inside two regions gets a row from each, and vartovcf writes the call once, from the row of the region VarDict wrote first, dropping the others.
+Abutting regions are fine, such as the tiles a whole genome is split into for VarDict.
+VarDict's `-x` widens each line of the BED by its value on both sides, so with it set, abutting lines overlap.
+When VarDict's regions overlap, vartovcf warns and gives the first region that overlaps one before it.
+
 ## Filters
 
 FILTER stays missing (`.`) until a filter option is given.

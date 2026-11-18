@@ -622,6 +622,32 @@ mod tests {
         Ok(())
     }
 
+    #[rstest]
+    #[case("tests/calls.leaky-mnv.overlapping.var", &[], Some("2 of VarDict's region(s) overlap a region before them, first chr1:1050-1250."))]
+    #[case("tests/calls.site-dp.overlap.var", &[], Some("1 of VarDict's region(s) overlap a region before them, first chr1:1110-1111."))]
+    #[case("tests/calls.duplicates.var", &[], Some("1 of VarDict's region(s) overlap a region before them, first chr1:749-988."))]
+    #[case("tests/calls.leaky-mnv.var", &[], None)]
+    #[case("tests/calls.fill-gvcf.outside.var", &["--fill-gvcf", "--fill-gvcf-bed", "tests/calls.fill-gvcf.outside.bed"], None)]
+    fn run_end_to_end_warns_when_vardict_regions_overlap(
+        #[case] input: &str,
+        #[case] args: &[&str],
+        #[case] expected: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME"))?;
+        let assert = cmd
+            .args(["--reference", "tests/reference.fa", "--output", "/dev/null"])
+            .args(["--input", input])
+            .args(args)
+            .assert()
+            .success();
+        let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+        match expected {
+            Some(expected) => assert!(stderr.contains(expected), "{stderr}"),
+            None => assert!(!stderr.contains("overlap a region"), "{stderr}"),
+        }
+        Ok(())
+    }
+
     /// The CHROM, POS, REF, ALT and the first sample's AD of each record converted from some rows.
     fn records(rows: &str, args: &[&str]) -> Result<Vec<String>, Box<dyn std::error::Error>> {
         let reference = if rows.starts_with("T|N") {
