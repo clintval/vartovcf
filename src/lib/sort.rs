@@ -23,7 +23,8 @@ const RECORD: u8 = 2;
 
 /// Records sorted by contig, in the header's order, then POS, REF, ALT and END, the call they make,
 /// among the VarDict regions starting at each position and what VarDict counted there. Of the
-/// records of one call, only the first by [`Rank`] is read back.
+/// records of one call, only the first by [`Rank`] is read back as a record, and each other as the
+/// row it was dropped for.
 pub struct RecordSorter {
     sorter: Sorter,
     key: Vec<u8>,
@@ -116,6 +117,56 @@ pub enum Entry<'a> {
         /// The VCF line.
         line: &'a [u8],
     },
+    /// A later record of the call the last record makes, which is not written.
+    Collapsed {
+        /// The contig's index in the header.
+        rid: u32,
+        /// The record's POS.
+        position: u64,
+        /// The row of the record written for the call.
+        kept: Row,
+        /// The row of this record.
+        dropped: Row,
+        /// The VCF line this record would have had.
+        line: &'a [u8],
+    },
+}
+
+/// The VarDict row a record was written for, as its record was ranked.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Row {
+    /// The ordinal of the row's VarDict region.
+    pub region: u64,
+    /// The ALT reads of the tumor (or only) sample.
+    pub tumor_reads: u64,
+    /// The ALT reads of the normal sample, 0 without one.
+    pub normal_reads: u64,
+    /// The position VarDict wrote the row at.
+    pub start: u64,
+}
+
+impl Row {
+    /// The number of bytes a row is encoded in.
+    const LENGTH: usize = 32;
+
+    /// The row encoded in [`Row::LENGTH`] bytes.
+    fn encode(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&self.region.to_le_bytes());
+        out.extend_from_slice(&self.tumor_reads.to_le_bytes());
+        out.extend_from_slice(&self.normal_reads.to_le_bytes());
+        out.extend_from_slice(&self.start.to_le_bytes());
+    }
+
+    /// The row from the [`Row::LENGTH`] bytes it was encoded in.
+    fn decode(bytes: &[u8]) -> Row {
+        let at = |index: usize| u64::from_le_bytes(bytes[index..index + 8].try_into().unwrap());
+        Row {
+            region: at(0),
+            tumor_reads: at(8),
+            normal_reads: at(16),
+            start: at(24),
+        }
+    }
 }
 
 impl Entry<'_> {
@@ -123,9 +174,9 @@ impl Entry<'_> {
     pub fn locus(&self) -> (u32, u64) {
         match *self {
             Entry::Region { rid, start, .. } => (rid, start),
-            Entry::Counts { rid, position, .. } | Entry::Record { rid, position, .. } => {
-                (rid, position)
-            }
+            Entry::Counts { rid, position, .. }
+            | Entry::Record { rid, position, .. }
+            | Entry::Collapsed { rid, position, .. } => (rid, position),
         }
     }
 }
@@ -171,6 +222,13 @@ impl RecordSorter {
         key::push_bytes(&mut self.key, rank.alt_allele);
         self.value.push(u8::from(call.alt_allele.is_empty()));
         self.value.extend_from_slice(&call_length.to_le_bytes());
+        let row = Row {
+            region: rank.region,
+            tumor_reads: rank.tumor_reads,
+            normal_reads: rank.reads - rank.tumor_reads,
+            start: rank.start,
+        };
+        row.encode(&mut self.value);
         self.value.extend_from_slice(line);
         self.sorter.push(&self.key, &self.value).map_err(describe)
     }
@@ -215,38 +273,40 @@ impl RecordSorter {
         Ok(Entries {
             merged: self.sorter.finish().map_err(describe)?,
             previous: Vec::new(),
+            kept: Row::default(),
             value: Vec::new(),
         })
     }
 }
 
-/// The sorted entries, read back one at a time, with only the first record of each call.
+/// The sorted entries, read back one at a time, with only the first record of each call read as a
+/// record.
 pub struct Entries {
     merged: Merged,
     previous: Vec<u8>,
+    kept: Row,
     value: Vec<u8>,
 }
 
 impl Entries {
     /// The next entry, or `None` after the last.
     pub fn next_entry(&mut self) -> Result<Option<Entry<'_>>, String> {
-        loop {
-            let Some((key, value)) = self.merged.next_record().map_err(describe)? else {
-                return Ok(None);
-            };
-            if value[0] == RECORD {
-                let length = u32::from_le_bytes(value[14..18].try_into().unwrap()) as usize;
-                let call = &key[..length];
-                if self.previous == call {
-                    continue;
-                }
+        let Some((key, value)) = self.merged.next_record().map_err(describe)? else {
+            return Ok(None);
+        };
+        let mut collapsed = false;
+        if value[0] == RECORD {
+            let length = u32::from_le_bytes(value[14..18].try_into().unwrap()) as usize;
+            let call = &key[..length];
+            collapsed = self.previous == call;
+            if !collapsed {
                 self.previous.clear();
                 self.previous.extend_from_slice(call);
+                self.kept = Row::decode(&value[18..18 + Row::LENGTH]);
             }
-            self.value.clear();
-            self.value.extend_from_slice(value);
-            break;
         }
+        self.value.clear();
+        self.value.extend_from_slice(value);
         let value = &self.value;
         let rid = u32::from_le_bytes(value[1..5].try_into().unwrap());
         let position = u64::from_le_bytes(value[5..13].try_into().unwrap());
@@ -263,11 +323,18 @@ impl Entries {
                 region: u64::from_le_bytes(value[13..21].try_into().unwrap()),
                 counts: &value[21..],
             },
+            _ if collapsed => Entry::Collapsed {
+                rid,
+                position,
+                kept: self.kept,
+                dropped: Row::decode(&value[18..18 + Row::LENGTH]),
+                line: &value[18 + Row::LENGTH..],
+            },
             _ => Entry::Record {
                 rid,
                 position,
                 reference_only: value[13] == 1,
-                line: &value[18..],
+                line: &value[18 + Row::LENGTH..],
             },
         };
         Ok(Some(entry))
@@ -490,6 +557,62 @@ mod tests {
             (call, rank(1, 50, 400, 3), "best\n"),
         ]);
         assert_eq!(lines, "best\n");
+    }
+
+    #[test]
+    fn test_reads_each_dropped_record_of_a_call_beside_the_written_ones_row() {
+        let dir = TempDir::new().unwrap();
+        let mut sorter = RecordSorter::new(dir.path()).unwrap();
+        let call = key(0, 100, "AT", "A");
+        sorter.push(call, rank(1, 5, 100, 4), b"shifted\n").unwrap();
+        sorter.push(call, rank(2, 50, 100, 1), b"later\n").unwrap();
+        sorter.push(call, rank(1, 20, 100, 1), b"best\n").unwrap();
+        sorter
+            .push(key(0, 100, "A", "C"), rank(1, 3, 100, 1), b"other\n")
+            .unwrap();
+        let mut entries = sorter.entries().unwrap();
+        let mut read = Vec::new();
+        while let Some(entry) = entries.next_entry().unwrap() {
+            read.push(format!("{entry:?}"));
+        }
+        let row = |region, tumor_reads, start| Row {
+            region,
+            tumor_reads,
+            normal_reads: 0,
+            start,
+        };
+        let record = |line: &[u8]| {
+            format!(
+                "{:?}",
+                Entry::Record {
+                    rid: 0,
+                    position: 101,
+                    reference_only: false,
+                    line
+                }
+            )
+        };
+        let collapsed = |dropped: Row, line: &[u8]| {
+            format!(
+                "{:?}",
+                Entry::Collapsed {
+                    rid: 0,
+                    position: 101,
+                    kept: row(1, 20, 1),
+                    dropped,
+                    line
+                }
+            )
+        };
+        assert_eq!(
+            read,
+            vec![
+                record(b"other\n"),
+                record(b"best\n"),
+                collapsed(row(1, 5, 4), b"shifted\n"),
+                collapsed(row(2, 50, 1), b"later\n"),
+            ]
+        );
     }
 
     #[test]

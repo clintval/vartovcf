@@ -4,7 +4,7 @@
 use ahash::{AHashMap, AHashSet};
 use anyhow::Result;
 use csv::{Reader, ReaderBuilder, StringRecord};
-use log::{info, warn};
+use log::{debug, info, warn};
 use proglog::ProgLogBuilder;
 use std::error;
 use std::fmt::Debug;
@@ -26,7 +26,7 @@ use crate::record::TumorOnlyVariant;
 use crate::record::{sv_call, tumor_normal_fisher_p_value, tumor_normal_header, tumor_only_header};
 use crate::reference::Reference;
 use crate::site::{Counts, PerSample, SAMPLES, Walk};
-use crate::sort::{Entry, Rank, RecordSorter, RowSorter, SortKey, resolve_tmp_dir};
+use crate::sort::{Entry, Rank, RecordSorter, Row, RowSorter, SortKey, resolve_tmp_dir};
 use crate::vcf::{GenotypeAllele, Numeric, Record, RecordWriter, header_bytes};
 
 pub mod fai;
@@ -541,6 +541,93 @@ struct FillCounts {
     no_reads: usize,
 }
 
+/// The kinds of call a record makes, in the order [`Collapses`] reports them.
+const CALL_KINDS: [&str; 7] = [
+    "reference-only",
+    "SNV",
+    "MNV",
+    "insertion",
+    "deletion",
+    "complex",
+    "symbolic",
+];
+
+/// The REF and ALT of a VCF line and the index in [`CALL_KINDS`] of the call they make.
+fn call_kind(line: &[u8]) -> (&[u8], &[u8], usize) {
+    let mut fields = line.split(|&byte| byte == b'\t').skip(3);
+    let ref_allele = fields.next().unwrap_or_default();
+    let alt_allele = fields.next().unwrap_or_default();
+    let anchored = ref_allele.first() == alt_allele.first();
+    let kind = match (ref_allele.len(), alt_allele.len()) {
+        _ if alt_allele == b"." => 0,
+        _ if alt_allele.first() == Some(&b'<') => 6,
+        (1, 1) => 1,
+        (ref_length, alt_length) if ref_length == alt_length => 2,
+        (1, _) if anchored => 3,
+        (_, 1) if anchored => 4,
+        _ => 5,
+    };
+    (ref_allele, alt_allele, kind)
+}
+
+/// The records not written because a better ranked record of their call was, counted by whether
+/// that record came from another VarDict region, which counted the same reads, or from the same
+/// region, where VarDict wrote the call in more than one row.
+#[derive(Clone, Copy, Debug, Default)]
+struct Collapses {
+    other_regions: usize,
+    same_region: [usize; CALL_KINDS.len()],
+    same_region_tumor_reads: u64,
+    same_region_normal_reads: u64,
+}
+
+impl Collapses {
+    /// Counts a record at a position of a contig dropped for the record written for its call.
+    fn add(&mut self, contig: &str, position: u64, kept: Row, dropped: Row, line: &[u8]) {
+        if kept.region != dropped.region {
+            self.other_regions += 1;
+            return;
+        }
+        let (ref_allele, alt_allele, kind) = call_kind(line);
+        self.same_region[kind] += 1;
+        self.same_region_tumor_reads += dropped.tumor_reads;
+        self.same_region_normal_reads += dropped.normal_reads;
+        debug!(
+            "Dropped the row of the {} {contig}:{position} {}>{} that VarDict wrote at {} with {} tumor and {} normal ALT read(s), as the same region wrote the call at {} with {} and {}.",
+            CALL_KINDS[kind],
+            String::from_utf8_lossy(ref_allele),
+            String::from_utf8_lossy(alt_allele),
+            dropped.start,
+            dropped.tumor_reads,
+            dropped.normal_reads,
+            kept.start,
+            kept.tumor_reads,
+            kept.normal_reads
+        );
+    }
+
+    /// Logs how many records were dropped, when any were.
+    fn log(&self) {
+        let same_region: usize = self.same_region.iter().sum();
+        if self.other_regions + same_region == 0 {
+            return;
+        }
+        let kinds: Vec<String> = CALL_KINDS
+            .iter()
+            .zip(self.same_region)
+            .map(|(kind, rows)| format!("{rows} {kind}"))
+            .collect();
+        info!(
+            "Wrote each call once, dropping {} row(s) of a call another VarDict region wrote and {} row(s) of a call the same region wrote in another row ({}), with {} tumor and {} normal ALT read(s) among them.",
+            self.other_regions,
+            same_region,
+            kinds.join(", "),
+            self.same_region_tumor_reads,
+            self.same_region_normal_reads
+        );
+    }
+}
+
 /// How many rows the folds touched.
 #[derive(Clone, Copy, Debug, Default)]
 struct FoldCounts {
@@ -898,6 +985,7 @@ impl Sink<'_> {
             vardict_end: 0,
             overlaps: 0,
             first_overlap: None,
+            collapses: Collapses::default(),
         };
         while let Some(entry) = entries.next_entry()? {
             if stop() || !writer.entry(entry)? {
@@ -913,6 +1001,7 @@ impl Sink<'_> {
                 writer.over_depth
             );
         }
+        writer.collapses.log();
         if let Some(first) = &writer.first_overlap {
             warn!(
                 "{} of VarDict's region(s) overlap a region before them, first {first}. Each region counts the reads of a call in the overlap and only one region's row is written: run VarDict on regions that do not overlap, checking the BED for overlapping lines and VarDict's -x, which widens each line on both sides.",
@@ -951,6 +1040,7 @@ struct Writer<'w> {
     vardict_end: u64,
     overlaps: usize,
     first_overlap: Option<String>,
+    collapses: Collapses,
     end: u64,
     position: u64,
     counts_region: Option<u64>,
@@ -1021,6 +1111,15 @@ impl Writer<'_> {
                 stamp(line, &site_dp, &mut self.line);
                 self.write_line()?;
             }
+            Entry::Collapsed {
+                position,
+                kept,
+                dropped,
+                line,
+                ..
+            } => self
+                .collapses
+                .add(&self.contig, position, kept, dropped, line),
         }
         Ok(true)
     }
@@ -2395,6 +2494,24 @@ mod tests {
             indel_3p_shift: None,
         };
         (contig, call)
+    }
+
+    #[rstest]
+    #[case("C\t.", 0)]
+    #[case("C\tT", 1)]
+    #[case("CA\tTG", 2)]
+    #[case("C\tCA", 3)]
+    #[case("CA\tC", 4)]
+    #[case("CA\tGTT", 5)]
+    #[case("CTTGTA\tG", 5)]
+    #[case("C\tGA", 5)]
+    #[case("C\t<DEL>", 6)]
+    fn test_call_kind_reads_the_kind_of_call_from_ref_and_alt(
+        #[case] alleles: &str,
+        #[case] expected: usize,
+    ) {
+        let line = format!("chr1\t100\t.\t{alleles}\t.\t.\n");
+        assert_eq!(call_kind(line.as_bytes()).2, expected);
     }
 
     #[test]

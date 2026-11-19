@@ -92,6 +92,10 @@ Abutting regions are fine, such as the tiles a whole genome is split into for Va
 VarDict's `-x` widens each line of the BED by its value on both sides, so with it set, abutting lines overlap.
 When VarDict's regions overlap, vartovcf warns and gives the first region that overlaps one before it.
 
+One region can also write a call in more than one row, such as an indel in a repeat that some reads place at one position and others at another.
+Then vartovcf writes the row with the most tumor ALT reads, and the ALT reads of the others are not counted.
+The run's log gives how many rows were dropped, by whether another region or the same region wrote the call, and with `RUST_LOG=debug` each row dropped within a region.
+
 ## Filters
 
 FILTER stays missing (`.`) until a filter option is given.
