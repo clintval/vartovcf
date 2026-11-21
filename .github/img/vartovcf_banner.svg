@@ -1,0 +1,86 @@
+<svg width="1200" height="300" viewBox="0 0 1200 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="vartovcf: a VarDict row of 38 bare tab-separated columns becomes a VCF record whose values carry keys; the depth 8211 becomes DP, the mean read position 3 becomes MEAN_DIST_TO_READ_END and earns FILTER NEAR_READ_END, the mapping quality 60 becomes MEAN_MAPQ and the Fisher p-value becomes STRAND_BIAS_FISHER_P">
+<defs>
+<pattern id="hatch" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="5" stroke="#75908c" stroke-width="1.1"/></pattern>
+</defs>
+<rect width="1200" height="300" fill="#dcebfa"/>
+<rect x="523" y="63" width="296" height="200" rx="6" fill="url(#hatch)"/>
+<rect x="516" y="54" width="296" height="200" rx="6" fill="#f4f8fc"/>
+<rect x="516" y="54" width="296" height="200" rx="6" fill="none" stroke="#26443a" stroke-width="2.4"/>
+<text x="532" y="90" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11.5" fill="#26443a">dna00001</text>
+<text x="598" y="90" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11.5" fill="#26443a">NRAS-Q61</text>
+<text x="664.1" y="90" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11.5" fill="#26443a">chr1</text>
+<text x="701.6" y="90" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11.5" fill="#26443a">920</text>
+<text x="732" y="90" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11.5" fill="#26443a">920</text>
+<text x="762.4" y="90" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11.5" fill="#26443a">T</text>
+<text x="778.5" y="90" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11.5" fill="#26443a">A</text>
+<rect x="529" y="102" width="34.5" height="17" rx="3" fill="#4f7a6a" fill-opacity="0.28" stroke="#4f7a6a" stroke-width="1"/>
+<text x="532" y="114" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11.5" fill="#26443a"><tspan fill="#3d7563">8211</tspan></text>
+<text x="569.5" y="114" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11.5" fill="#26443a">1</text>
+<text x="585.6" y="114" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11.5" fill="#26443a">3001</text>
+<text x="623.2" y="114" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11.5" fill="#26443a">5130</text>
+<text x="660.7" y="114" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11.5" fill="#26443a">1</text>
+<text x="676.8" y="114" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11.5" fill="#26443a">0</text>
+<text x="692.9" y="114" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11.5" fill="#26443a">T/A</text>
+<text x="723.3" y="114" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11.5" fill="#26443a">0.1</text>
+<text x="753.7" y="114" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11.5" fill="#26443a">2;0</text>
+<rect x="781.1" y="102" width="13.1" height="17" rx="3" fill="#c9a56a" fill-opacity="0.28" stroke="#c9a56a" stroke-width="1"/>
+<text x="784.1" y="114" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11.5" fill="#26443a"><tspan fill="#866429">3</tspan></text>
+<text x="532" y="138" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11.5" fill="#26443a">0</text>
+<text x="548.1" y="138" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11.5" fill="#26443a">90</text>
+<text x="571.4" y="138" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11.5" fill="#26443a">0</text>
+<rect x="584.5" y="126" width="55.9" height="17" rx="3" fill="#8a78a8" fill-opacity="0.28" stroke="#8a78a8" stroke-width="1"/>
+<text x="587.5" y="138" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11.5" fill="#26443a"><tspan fill="#5e4d7d">0.36916</tspan></text>
+<text x="646.4" y="138" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11.5" fill="#26443a">-Inf</text>
+<rect x="680.9" y="126" width="20.3" height="17" rx="3" fill="#7a99bd" fill-opacity="0.28" stroke="#7a99bd" stroke-width="1"/>
+<text x="683.9" y="138" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11.5" fill="#26443a"><tspan fill="#46658f">60</tspan></text>
+<text x="707.2" y="138" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11.5" fill="#26443a">2</text>
+<text x="723.3" y="138" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11.5" fill="#26443a">0.0001</text>
+<text x="775.1" y="138" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11.5" fill="#26443a">0</text>
+<text x="791.2" y="138" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11.5" fill="#26443a">0</text>
+<text x="532" y="162" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11.5" fill="#26443a">2</text>
+<text x="548.1" y="162" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11.5" fill="#26443a">1</text>
+<text x="564.3" y="162" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11.5" fill="#26443a">1.0</text>
+<text x="594.6" y="162" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11.5" fill="#26443a">1</text>
+<text x="610.8" y="162" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11.5" fill="#26443a">8132</text>
+<text x="648.3" y="162" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11.5" fill="#26443a">CCTTCG…</text>
+<text x="707.2" y="162" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11.5" fill="#26443a">TGGTCT…</text>
+<text x="532" y="186" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11.5" fill="#26443a">chr1:749-988</text>
+<text x="626.6" y="186" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11.5" fill="#26443a">SNV</text>
+<text x="656.9" y="186" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11.5" fill="#26443a">0</text>
+<text x="673.1" y="186" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11.5" fill="#26443a">0</text>
+<line x1="528" y1="222" x2="800" y2="222" stroke="#75908c" stroke-width="1" stroke-dasharray="3 4" stroke-linecap="round"/>
+<text x="664" y="242" font-family="Georgia, 'Times New Roman', serif" font-style="italic" font-size="12.5" fill="#4c6d63" text-anchor="middle">38 columns and not one header</text>
+<path d="M831,135 L848,154 L831,173" fill="none" stroke="#26443a" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="873" y="63" width="288" height="200" rx="6" fill="url(#hatch)"/>
+<rect x="866" y="54" width="288" height="200" rx="6" fill="#f4f8fc"/>
+<rect x="866" y="54" width="288" height="200" rx="6" fill="none" stroke="#26443a" stroke-width="2.4"/>
+<text x="880" y="78" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11" fill="#4c6d63">CHROM</text>
+<text x="932" y="78" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11" fill="#4c6d63">POS</text>
+<text x="972" y="78" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11" fill="#4c6d63">REF</text>
+<text x="1004" y="78" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11" fill="#4c6d63">ALT</text>
+<text x="880" y="95" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11" fill="#26443a">chr1</text>
+<text x="932" y="95" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11" fill="#26443a">920</text>
+<text x="972" y="95" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11" fill="#26443a">T</text>
+<text x="1004" y="95" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11" fill="#26443a">A</text>
+<text x="880" y="115" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11" fill="#26443a"><tspan fill="#4c6d63">FILTER</tspan> <tspan fill="#866429">NEAR_READ_END</tspan></text>
+<line x1="878" y1="127" x2="1142" y2="127" stroke="#75908c" stroke-width="1"/>
+<rect x="880" y="139" width="16" height="7" rx="2.6" fill="#4f7a6a" stroke="#26443a" stroke-width="1"/>
+<text x="904" y="146" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11" fill="#26443a"><tspan fill="#4c6d63">DP=</tspan><tspan fill="#3d7563">8211</tspan></text>
+<text x="904" y="163" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11" fill="#26443a"><tspan fill="#4c6d63">AD=</tspan>8131,1</text>
+<rect x="880" y="173" width="16" height="7" rx="2.6" fill="#c9a56a" stroke="#26443a" stroke-width="1"/>
+<text x="904" y="180" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11" fill="#26443a"><tspan fill="#4c6d63">MEAN_DIST_TO_READ_END=</tspan><tspan fill="#866429">3</tspan></text>
+<rect x="880" y="190" width="16" height="7" rx="2.6" fill="#7a99bd" stroke="#26443a" stroke-width="1"/>
+<text x="904" y="197" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11" fill="#26443a"><tspan fill="#4c6d63">MEAN_MAPQ=</tspan><tspan fill="#46658f">60</tspan></text>
+<rect x="880" y="207" width="16" height="7" rx="2.6" fill="#8a78a8" stroke="#26443a" stroke-width="1"/>
+<text x="904" y="214" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11" fill="#26443a"><tspan fill="#4c6d63">STRAND_BIAS_FISHER_P=</tspan><tspan fill="#5e4d7d">0.36915886</tspan></text>
+<text x="904" y="231" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="11" fill="#26443a"><tspan fill="#4c6d63">SITE_DP=</tspan>8132</text>
+<g font-family="Georgia, 'Times New Roman', serif" fill="#26443a">
+<text x="96" y="150" font-size="86" letter-spacing="1">vartovcf</text>
+<path d="M102,186 Q257,178 412,184" fill="none" stroke="#26443a" stroke-width="1.6" stroke-linecap="round"/>
+<text x="257" y="216" text-anchor="middle" font-size="18" font-style="italic" fill="#4c6d63">Thirty-eight bare columns, one tidy VCF.</text>
+</g>
+<g font-family="Georgia, 'Times New Roman', serif" font-style="italic" font-size="13.5" fill="#4c6d63">
+<text x="664" y="38" text-anchor="middle">one VarDict row</text>
+<text x="1010" y="38" text-anchor="middle">one VCF record, every value keyed</text>
+</g>
+</svg>
