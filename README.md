@@ -1,4 +1,6 @@
-# vartovcf
+![Banner for vartovcf](https://raw.githubusercontent.com/clintval/vartovcf/main/.github/img/vartovcf_banner.svg)
+
+---
 
 [![Install with bioconda](https://img.shields.io/badge/Install%20with-bioconda-brightgreen.svg)](http://bioconda.github.io/recipes/vartovcf/README.html)
 [![Anaconda Version](https://anaconda.org/bioconda/vartovcf/badges/version.svg)](http://bioconda.github.io/recipes/vartovcf/README.html)
@@ -8,8 +10,6 @@
 [![Language](https://img.shields.io/badge/language-rust-dea588.svg)](https://www.rust-lang.org/)
 
 Convert variants from VarDict/VarDictJava into VCF v4.2/v4.3 format.
-
-![The Pacific Northwest - Fish Lake](.github/img/cover.jpg)
 
 Install with mamba, conda, or run directly with pixi:
 
